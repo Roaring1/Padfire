@@ -1,0 +1,23 @@
+#!/bin/bash
+# padfire-launch — silences JACK before python starts, then runs padfire
+export JACK_NO_AUDIO_RESERVATION=1
+export DISABLE_JACK=1
+export PULSE_SERVER="unix:/run/user/$(id -u)/pulse/native"
+
+# Silence JACK via a tiny wrapper that pre-loads libjack and overrides callbacks
+# before sounddevice/PortAudio can register them
+python3 - "$@" << 'PYEOF'
+import ctypes, sys
+try:
+    _j = ctypes.cdll.LoadLibrary("libjack.so.0")
+    _CB = ctypes.CFUNCTYPE(None, ctypes.c_char_p)
+    _noop = _CB(lambda m: None)
+    _j.jack_set_error_function(_noop)
+    _j.jack_set_info_function(_noop)
+except Exception:
+    pass
+# Hand off to the real script
+import runpy
+sys.argv = ["/home/roaring/bin/padfire.py"] + sys.argv[1:]
+runpy.run_path("/home/roaring/bin/padfire.py", run_name="__main__")
+PYEOF
