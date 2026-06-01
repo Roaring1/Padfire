@@ -28,11 +28,22 @@ except Exception:
 
 VER      = "2.0"
 HOME     = Path.home()
-CFGDIR   = HOME / ".config" / "roaring"
+CFGDIR   = HOME / ".config" / "padfire"
 SOCK     = str(CFGDIR / "padfire.sock")
 PIDF     = str(CFGDIR / "padfire.pid")
 CONF     = str(CFGDIR / "padfire.json")
-RAC_SOCK = str(CFGDIR / "rac.sock")
+HEARTH_SOCK = str(HOME / ".config" / "hearth" / "rac.sock")
+RAC_SOCK = HEARTH_SOCK  # alias -- where hearth's IPC socket lives
+
+# One-time migration: move config from old ~/.config/roaring/ location
+_OLD_CFGDIR = HOME / ".config" / "roaring"
+for _old, _new in [
+    (_OLD_CFGDIR / "padfire.json", CFGDIR / "padfire.json"),
+]:
+    if _old.exists() and not _new.exists():
+        import shutil as _shutil
+        CFGDIR.mkdir(parents=True, exist_ok=True)
+        _shutil.copy2(str(_old), str(_new))
 
 DEVICE_SUBSTR = "Launchpad Mini"
 NUM_PAGES = 8
