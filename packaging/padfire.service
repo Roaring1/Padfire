@@ -1,0 +1,13 @@
+[Unit]
+Description=Padfire Soundboard
+After=graphical-session.target pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=%h/bin/padfire-launch
+Restart=on-failure
+RestartSec=4
+
+[Install]
+WantedBy=graphical-session.target

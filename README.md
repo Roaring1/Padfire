@@ -12,7 +12,7 @@ GTK3 soundboard for the Novation Launchpad Mini (MK1/MK2).
 - Per-pad: sound file, label, volume (0-150%), output sink, loop toggle, color
 - LED feedback: pad lights on press, color reflects assignment state
 - Tray icon with page indicator and stop-all
-- IPC: `status`, `stop_all`, `show` commands via Unix socket (`~/.config/roaring/padfire.sock`)
+- IPC: `status`, `stop_all`, `show` commands via Unix socket (`~/.config/padfire/padfire.sock`)
 - Hearth integration: Padfire status panel in Hearth shows current page, playing sounds, MIDI connection state
 - MIDI input via `mido` (rtmidi backend), auto-reconnect on device unplug/replug
 - Audio via `paplay` subprocess -> PipeWire, no JACK/PortAudio dependency
@@ -46,9 +46,20 @@ python3 padfire.py      # direct launch (JACK may print errors on startup)
 
 ---
 
+## Command line
+
+```bash
+./padfire-launch --show     # show existing instance
+./padfire-launch --stop     # stop all audio
+./padfire-launch --status   # JSON status for Hearth/tools
+./padfire-launch --version  # print version
+```
+
+---
+
 ## Config
 
-Pad assignments saved to `~/.config/roaring/padfire.json`. Edit via the GUI (right-click a pad or use the assignment dialog).
+Pad assignments saved to `~/.config/padfire/padfire.json`. Edit via the GUI (right-click a pad or use the assignment dialog).
 
 ---
 
@@ -62,3 +73,12 @@ Pad assignments saved to `~/.config/roaring/padfire.json`. Edit via the GUI (rig
 | Side column notes | Assignable (same as grid pads) |
 
 LED protocol: `velocity = (green & 3) << 4 | (red & 3) | 0x0C`
+
+---
+
+## Keyboard (window)
+
+| Key | Action |
+|---|---|
+| `Esc` | Hide to tray |
+| `Ctrl+Q` | Quit |

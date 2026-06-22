@@ -26,7 +26,7 @@ try:
 except Exception:
     AI = None
 
-VER      = "2.0"
+VER      = "2.2"
 HOME     = Path.home()
 CFGDIR   = HOME / ".config" / "padfire"
 SOCK     = str(CFGDIR / "padfire.sock")
@@ -202,8 +202,16 @@ def load_config():
         return json.loads(json.dumps(DEFAULT_CONFIG))
 
 def save_config(cfg):
+    # atomic write + single rolling backup so a crash mid-save can't corrupt
+    # the file that holds every pad assignment
     CFGDIR.mkdir(parents=True, exist_ok=True)
-    Path(CONF).write_text(json.dumps(cfg, indent=2))
+    dst = Path(CONF)
+    tmp = Path(str(dst) + ".tmp")
+    tmp.write_text(json.dumps(cfg, indent=2))
+    if dst.exists():
+        try: os.replace(str(dst), str(dst) + ".bak")
+        except Exception: pass
+    os.replace(str(tmp), str(dst))
 
 
 # audio engine -- paplay subprocess, no PortAudio
@@ -249,11 +257,14 @@ class AudioEngine:
                     with self._lock: self._procs[tkey] = proc
                     _, err = proc.communicate()
                     rc = proc.returncode
-                    with self._lock: self._procs.pop(tkey, None)
                     if err and rc != 0:
                         print(f"[audio] paplay ({tkey}): {err.decode().strip()}")
-                    with self._lock: still = tkey in self._procs
-                    if not loop or not still: break
+                    with self._lock:
+                        # if stop() removed/replaced our proc, we were stopped externally
+                        stopped = self._procs.get(tkey) is not proc
+                        if (not loop or stopped) and self._procs.get(tkey) is proc:
+                            self._procs.pop(tkey, None)
+                    if not loop or stopped: break
                 except Exception as e:
                     print(f"[audio] {tkey}: {e}")
                     with self._lock: self._procs.pop(tkey, None)
@@ -549,18 +560,21 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     virt, hw = _sort_sinks(sinks)
     sink_c = Gtk.ComboBoxText()
     cur_sink = (pad_cfg.get("sink", default_sink) if pad_cfg else default_sink)
-    all_listed = virt + hw
-    for s in virt: sink_c.append_text(s)
+    combo_sinks = []
+    for s in virt:
+        sink_c.append_text(s); combo_sinks.append(s)
     if hw:
-        sink_c.append_text("-- hardware --")
-        for s in hw: sink_c.append_text(s)
-    try: sink_c.set_active(all_listed.index(cur_sink))
-    except ValueError: sink_c.set_active(0)
+        sink_c.append_text("-- hardware --"); combo_sinks.append(None)
+        for s in hw:
+            sink_c.append_text(s); combo_sinks.append(s)
+    try: sink_c.set_active(combo_sinks.index(cur_sink))
+    except ValueError: sink_c.set_active(next((i for i, v in enumerate(combo_sinks) if v), 0))
     prow("Output", sink_c)
 
     def get_sink():
-        t = sink_c.get_active_text() or default_sink
-        return default_sink if t == "-- hardware --" else t
+        idx = sink_c.get_active()
+        if 0 <= idx < len(combo_sinks) and combo_sinks[idx]: return combo_sinks[idx]
+        return default_sink
 
     vol_adj = Gtk.Adjustment(value=pad_cfg.get("vol",80) if pad_cfg else 80,
                              lower=0, upper=150, step_increment=1)
@@ -734,19 +748,22 @@ def settings_dialog(parent, cfg, sinks):
     _priority = ("vm_", "astro", "scarlett", "b1", "b2", "laptop", "loopback")
     virt = [s for s in sinks if any(k in s.lower() for k in _priority)]
     hw   = [s for s in sinks if s not in virt]
-    all_listed = virt + hw
-    for s in virt: sink_c.append_text(s)
+    combo_sinks = []
+    for s in virt:
+        sink_c.append_text(s); combo_sinks.append(s)
     if hw:
-        sink_c.append_text("-- hardware --")
-        for s in hw: sink_c.append_text(s)
+        sink_c.append_text("-- hardware --"); combo_sinks.append(None)
+        for s in hw:
+            sink_c.append_text(s); combo_sinks.append(s)
     cur = cfg.get("default_sink", "vm_game")
-    try: sink_c.set_active(all_listed.index(cur))
-    except: sink_c.set_active(0)
+    try: sink_c.set_active(combo_sinks.index(cur))
+    except ValueError: sink_c.set_active(next((i for i, v in enumerate(combo_sinks) if v), 0))
     row("Default output", sink_c)
 
     def get_sink():
-        t = sink_c.get_active_text() or "vm_game"
-        return "vm_game" if t == "-- hardware --" else t
+        idx = sink_c.get_active()
+        if 0 <= idx < len(combo_sinks) and combo_sinks[idx]: return combo_sinks[idx]
+        return "vm_game"
 
     sop_sw = Gtk.Switch(); sop_sw.set_active(cfg.get("stop_on_page_change", False))
     sb = Gtk.Box(); sb.pack_start(sop_sw, False, False, 0)
@@ -850,8 +867,13 @@ class PadfireApp:
         keys = []
         for p, page in enumerate(self.cfg["pages"]):
             for note_s, pad in page.items():
-                if pad.get("action","play") == "play" and pad.get("file"):
-                    keys.append(f"{p}:{note_s}  ({pad.get('label') or note_s})")
+                action = pad.get("action","play")
+                if action == "play" and pad.get("file"):
+                    label = pad.get("label") or Path(pad.get("file", note_s)).stem
+                    keys.append(f"{p}:{note_s}  ({label})")
+                elif action == "script" and pad.get("cmd"):
+                    label = pad.get("label") or Path(pad.get("cmd", note_s).split()[0]).stem
+                    keys.append(f"{p}:{note_s}  ({label})")
         return keys or ["(none)"]
 
     # MIDI callbacks
@@ -892,6 +914,16 @@ class PadfireApp:
         except Exception: pass
         return False
 
+    def _stop_key(self, key):
+        self.audio.stop(key)
+        proc = self._script_procs.pop(key, None)
+        if proc is not None and proc.poll() is None:
+            try: proc.terminate(); proc.wait(timeout=2)
+            except Exception:
+                try: proc.kill()
+                except Exception: pass
+        self._led_dirty = True
+
     # pad trigger
 
     def _trigger_pad(self, row, col):
@@ -922,7 +954,7 @@ class PadfireApp:
         if action == "stop_key":
             raw = pad.get("stop_key","")
             tkey = raw.split("  (")[0] if "  (" in raw else raw
-            threading.Thread(target=lambda: self.audio.stop(tkey), daemon=True).start()
+            threading.Thread(target=lambda: self._stop_key(tkey), daemon=True).start()
             self._led_dirty = True; return False
 
         if action == "script":
@@ -983,7 +1015,7 @@ class PadfireApp:
         if self.cfg.get("stop_on_page_change"):
             threading.Thread(target=self.audio.stop_all, daemon=True).start()
         self._page = max(0, min(NUM_PAGES-1, idx))
-        self._prev_leds = {}; self._pad_css.clear()
+        self._prev_leds = {}
         self._led_dirty = True; self._refresh_all()
         return False
 
@@ -1023,16 +1055,21 @@ class PadfireApp:
 
     def _apply_color(self, row, col, btn, color_key):
         k = (row, col)
-        old = self._pad_css.pop(k, None)
-        if old: btn.get_style_context().remove_provider(old)
-        if not color_key or color_key == "default": return
+        color_key = color_key or "default"
+        cur = self._pad_css.get(k)
+        # skip the costly provider rebuild when the color is unchanged
+        # (this runs for every pad ~5x/sec from the refresh tick)
+        if cur and cur[0] == color_key: return
+        if cur:
+            btn.get_style_context().remove_provider(cur[1]); self._pad_css.pop(k, None)
+        if color_key == "default": return
         entry = PAD_COLORS.get(color_key)
         if not entry or not entry[1]: return
         _, bg, border, fg = entry
         css = f"button.pad-btn {{ background:{bg}; border-color:{border}; color:{fg}; }}\n"
         prov = Gtk.CssProvider(); prov.load_from_data(css.encode())
         btn.get_style_context().add_provider(prov, Gtk.STYLE_PROVIDER_PRIORITY_USER)
-        self._pad_css[k] = prov
+        self._pad_css[k] = (color_key, prov)
 
     def _refresh_grid(self):
         pg = self.cfg["pages"][self._page]
@@ -1125,19 +1162,6 @@ class PadfireApp:
                 time.sleep(3)
         threading.Thread(target=probe, daemon=True, name="rac-probe").start()
 
-    def _update_rac(self, data):
-        if self._rac_lbl:
-            ctx = self._rac_lbl.get_style_context()
-            ctx.remove_class("stat-ok"); ctx.remove_class("stat-dim")
-            if self._rac_online: self._rac_lbl.set_text("● Hearth"); ctx.add_class("stat-ok")
-            else:                self._rac_lbl.set_text("○ Hearth"); ctx.add_class("stat-dim")
-        if data:
-            for sink, lbl in self._rac_vols.items():
-                info = data.get(sink, {})
-                mute = info.get("mute",False); vol = info.get("vol","?")
-                lbl.set_text(f"{'M ' if mute else ''}{vol}%")
-        return False
-
     # VU monitor
 
     def _start_vu(self):
@@ -1218,6 +1242,7 @@ class PadfireApp:
         win = Gtk.Window(title=f"Padfire {VER}")
         win.set_resizable(True); win.set_default_size(-1, -1)
         win.connect("delete-event", lambda *_: win.hide() or True)
+        win.connect("key-press-event", self._on_key)
         self._win = win
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         win.add(root)
@@ -1307,9 +1332,15 @@ class PadfireApp:
             def _src(w, ev, ro=ro):
                 if ev.button == 3: self._ctx_menu(w, ev, ro, 8); return True
             sbtn.connect("button-press-event", _src)
-            sbtn.drag_dest_set(Gtk.DestDefaults.ALL, [], Gdk.DragAction.COPY)
-            sbtn.drag_dest_add_uri_targets()
+            sbtn.drag_dest_set(Gtk.DestDefaults.ALL, [], Gdk.DragAction.COPY | Gdk.DragAction.MOVE)
+            sbtn.drag_dest_add_uri_targets(); sbtn.drag_dest_add_text_targets()
             sbtn.connect("drag-data-received", lambda w,ctx,x,y,d,i,t,ro=ro: self._on_drop(w,ctx,x,y,d,i,t,ro,8))
+            sbtn.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, [], Gdk.DragAction.MOVE)
+            sbtn.drag_source_add_text_targets()
+            sbtn.connect("drag-begin",     lambda w,ctx,ro=ro: w.get_style_context().add_class("pad-flash"))
+            sbtn.connect("drag-data-get",  lambda w,ctx,d,i,t,ro=ro: d.set_text(f"{ro},8",-1))
+            sbtn.connect("drag-motion",    lambda w,ctx,x,y,t,ro=ro: (w.get_style_context().add_class("pad-dragover"), Gdk.drag_status(ctx, Gdk.DragAction.MOVE, t), True)[2])
+            sbtn.connect("drag-leave",     lambda w,ctx,t: w.get_style_context().remove_class("pad-dragover"))
             grid.attach(sbtn, NUM_COLS, row+1, 1, 1)
             self._pad_btns[(row, 8)] = sbtn
 
@@ -1377,14 +1408,14 @@ class PadfireApp:
             it.set_sensitive(on); menu.append(it)
         item("Edit...",        lambda: self._edit(row, col))
         item("Trigger",        lambda: self._trigger_pad(row, col), on=bool(pad))
-        item("Stop this pad",  lambda: threading.Thread(target=lambda: self.audio.stop(key), daemon=True).start(),
-             on=self.audio.is_playing(key))
+        item("Stop this pad",  lambda: threading.Thread(target=lambda: self._stop_key(key), daemon=True).start(),
+             on=self.audio.is_playing(key) or (pad and pad.get("action") == "script" and self._script_on(key, pad)))
         menu.append(Gtk.SeparatorMenuItem())
         item("Clear pad",      lambda: self._clear(row, col), on=bool(pad))
         menu.show_all(); menu.popup_at_pointer(event)
 
     def _clear(self, row, col):
-        threading.Thread(target=lambda: self.audio.stop(self._pad_key(row, col)), daemon=True).start()
+        threading.Thread(target=lambda: self._stop_key(self._pad_key(row, col)), daemon=True).start()
         self._set_pad(row, col, None)
 
     def _on_drop(self, widget, ctx, x, y, data, info, timestamp, row, col):
@@ -1405,9 +1436,11 @@ class PadfireApp:
                 Gtk.drag_finish(ctx, True, False, timestamp); return
         from urllib.parse import unquote, urlparse
         uris = data.get_uris()
-        if not uris: return
+        if not uris:
+            Gtk.drag_finish(ctx, False, False, timestamp); return
         path = unquote(urlparse(uris[0]).path)
-        if not Path(path).exists(): return
+        if not Path(path).exists():
+            Gtk.drag_finish(ctx, False, False, timestamp); return
         pad = dict(self._get_pad(row, col) or {})
         pad["file"] = path
         if not pad.get("label"): pad["label"] = Path(path).stem
@@ -1472,6 +1505,17 @@ class PadfireApp:
             it = Gtk.MenuItem(label=lbl); it.connect("activate", lambda _, f=fn: f()); menu.append(it)
         menu.show_all(); ind.set_menu(menu)
 
+    def _on_key(self, _w, ev):
+        # Esc hides to tray; Ctrl+Q quits. Pads are mouse/Launchpad-driven,
+        # so these don't interfere with pad activation.
+        ctrl = bool(ev.state & Gdk.ModifierType.CONTROL_MASK)
+        if ev.keyval == Gdk.KEY_Escape:
+            if self._win: self._win.hide()
+            return True
+        if ctrl and ev.keyval in (Gdk.KEY_q, Gdk.KEY_Q):
+            self._quit(); return True
+        return False
+
     def _show(self, *_):
         if self._win: self._win.present()
         return False
@@ -1519,6 +1563,7 @@ WantedBy=graphical-session.target
 def main():
     GLib.set_prgname("padfire")
     ap = argparse.ArgumentParser(description=f"Padfire {VER}")
+    ap.add_argument("--version", action="version", version=f"Padfire {VER}")
     ap.add_argument("--quit",    action="store_true")
     ap.add_argument("--show",    action="store_true")
     ap.add_argument("--reload",  action="store_true")

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Padfire
+Comment=Launchpad Mini soundboard
+Exec=padfire-launch
+Icon=audio-x-generic
+Type=Application
+Terminal=false
+StartupWMClass=padfire
+Categories=AudioVideo;Audio;
