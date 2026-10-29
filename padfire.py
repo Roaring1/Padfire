@@ -7,7 +7,7 @@
 # - LED: velocity=(green&3)<<4|(red&3)|0x0C  (0x0C = double-buffer, no CC 0 reset)
 # - audio: paplay subprocess -> PipeWire, no PortAudio/JACK
 
-import os, sys, json, time, math, struct, select, signal, socket, threading, argparse, subprocess
+import os, sys, json, time, math, shutil, struct, select, signal, socket, threading, argparse, subprocess
 sys.stdout.reconfigure(line_buffering=True)
 
 import mido
@@ -16,7 +16,7 @@ from pathlib import Path
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gtk, Gdk, GLib
+from gi.repository import Gtk, Gdk, GLib, Pango
 
 HAVE_IND = False
 try:
@@ -26,7 +26,7 @@ try:
 except Exception:
     AI = None
 
-VER      = "2.2"
+VER      = "2.3"
 HOME     = Path.home()
 CFGDIR   = HOME / ".config" / "padfire"
 SOCK     = str(CFGDIR / "padfire.sock")
@@ -41,11 +41,24 @@ for _old, _new in [
     (_OLD_CFGDIR / "padfire.json", CFGDIR / "padfire.json"),
 ]:
     if _old.exists() and not _new.exists():
-        import shutil as _shutil
         CFGDIR.mkdir(parents=True, exist_ok=True)
-        _shutil.copy2(str(_old), str(_new))
+        shutil.copy2(str(_old), str(_new))
+        print(f"[config] migrated {_old} -> {_new}")
+
+# The old dir also held a socket + pid file nothing reads any more; leaving
+# them behind made it look like another instance was live.
+if (CFGDIR / "padfire.json").exists():
+    for _stale in ("padfire.sock", "padfire.pid"):
+        try:
+            _sp = _OLD_CFGDIR / _stale
+            if _sp.exists(): _sp.unlink()
+        except Exception: pass
 
 DEVICE_SUBSTR = "Launchpad Mini"
+# The Mini MK3 also reports as "Launchpad Mini" but uses a different
+# protocol (notes 11-88, programmer mode), so matching it would send it
+# garbage notes and LED bytes. Skip it until real MK3 support exists.
+DEVICE_EXCLUDE = ("MK3", "mk3", "Mk3")
 NUM_PAGES = 8
 NUM_ROWS  = 8
 NUM_COLS  = 8
@@ -82,7 +95,9 @@ TARGET_LUFS = -18.0
 CSS = """
 * { font-family: "Cantarell","Noto Sans",sans-serif; }
 window { background: #1a1a1c; }
-button, togglebutton { transition: background 120ms ease, border-color 120ms ease; }
+/* `togglebutton` is not a valid GTK 3.20+ node, so this rule was dropped
+   entirely. ToggleButton renders as a `button` node. */
+button { transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease; }
 
 .topbar {
     background: #232325;
@@ -103,7 +118,7 @@ button, togglebutton { transition: background 120ms ease, border-color 120ms eas
     border: 1px solid rgba(255,255,255,0.07);
     background: rgba(34,34,38,0.95);
     min-width: 44px; min-height: 44px;
-    font-size: 7px; font-weight: 600; letter-spacing: 0.2px;
+    font-size: 8px; font-weight: 600; letter-spacing: 0px;
     color: rgba(255,255,255,0.22);
     padding: 2px; margin: 0;
 }
@@ -111,14 +126,24 @@ button, togglebutton { transition: background 120ms ease, border-color 120ms eas
 .pad-btn:active { background: rgba(70,70,80,1.0); }
 
 .pad-has     { border-color: rgba(48,209,88,0.30); color: rgba(255,255,255,0.78); }
-.pad-playing { border-color: #30d158; border-width: 2px; color: white; }
+/* State rings are an inset box-shadow, not border-color: the per-pad colour
+   provider sets border-color at USER priority and used to completely hide
+   "playing" on any pad that had a colour assigned. */
+.pad-playing { box-shadow: inset 0 0 0 2px #30d158; color: #ffffff; }
+/* Dashed edge = broken/missing, which does not collide with the solid
+   red of .pad-stop. Paired with the leading warning glyph in the label. */
+.pad-missing { border-style: dashed; border-width: 2px;
+               border-color: rgba(255,69,58,0.90);
+               color: rgba(255,170,160,0.95); }
 .pad-stop    { border-color: rgba(255,69,58,0.40); color: rgba(255,130,120,0.85); }
 .pad-script  { border-color: rgba(255,160,30,0.40); color: rgba(255,200,80,0.80); }
-.pad-script-on { border-color: rgba(255,200,50,0.75); border-width: 2px; color: rgba(255,230,100,0.95); }
+.pad-script-on { box-shadow: inset 0 0 0 2px rgba(255,200,50,0.85); color: rgba(255,230,100,0.95); }
 .pad-flash   { background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.55); }
 .pad-dragover { border-color: rgba(10,132,255,0.75); border-width: 2px; }
 
-.side-pad { min-width: 30px; min-height: 44px; border-radius: 15px; }
+/* Side column is narrower than the grid, but it is still a pad:
+   match the grid's 6px radius instead of rounding into a lozenge. */
+.side-pad { min-width: 34px; min-height: 44px; border-radius: 6px; }
 
 .page-btn {
     border-radius: 12px;
@@ -140,6 +165,8 @@ button, togglebutton { transition: background 120ms ease, border-color 120ms eas
 .stat-ok  { color: #30d158; font-size: 8px; }
 .stat-dim { color: rgba(255,255,255,0.24); font-size: 8px; }
 .stat-val { color: rgba(255,255,255,0.55); font-size: 8px; }
+.stat-warn { color: #ff9f0a; font-size: 8px; font-weight: 700; }
+.stat-play { color: #30d158; font-size: 8px; font-weight: 700; }
 
 .lbl { color: rgba(255,255,255,0.32); font-size: 9px; }
 
@@ -150,6 +177,16 @@ button.act {
     color: rgba(255,255,255,0.65); font-size: 9px;
 }
 button.act:hover { background: rgba(255,255,255,0.11); }
+/* A real "engaged toggle" style. v2.2 put .stat-ok on the monitor
+   ToggleButton, but .stat-ok only sets colour + font-size, so the button kept
+   the theme's default toggle background -- bright pink on Adwaita dark. */
+button.act-on {
+    background: rgba(48,209,88,0.18);
+    border: 1px solid rgba(48,209,88,0.55);
+    border-radius: 6px; padding: 3px 9px;
+    color: #30d158; font-size: 9px; font-weight: 700;
+}
+button.act-on:hover { background: rgba(48,209,88,0.28); }
 .btn-stop {
     background: rgba(255,69,58,0.15); border: 1px solid rgba(255,69,58,0.30);
     border-radius: 6px; padding: 3px 9px;
@@ -189,8 +226,16 @@ def _migrate(c):
         for page in c.get("pages", []):
             for pad in page.values():
                 pad.setdefault("action", "play")
-    if c.get("retrigger") == "toggle" and v < 5:
+    # v2.2 rewrote a global "toggle" back to "restart" on every upgrade from
+    # v<5, silently discarding a setting the dialog itself offers.
+    if c.get("retrigger") not in ("restart", "toggle"):
         c["retrigger"] = "restart"
+    # Drop keys old builds wrote but nothing ever read, so the config stops
+    # carrying dead entries that look meaningful when you open the file.
+    c.pop("device", None)
+    for page in c.get("pages", []):
+        for pad in page.values():
+            if isinstance(pad, dict): pad.pop("mode", None)
     c["version"] = CONFIG_VERSION
     return c
 
@@ -207,11 +252,20 @@ def save_config(cfg):
     CFGDIR.mkdir(parents=True, exist_ok=True)
     dst = Path(CONF)
     tmp = Path(str(dst) + ".tmp")
-    tmp.write_text(json.dumps(cfg, indent=2))
+    # flush + fsync before the rename: without it, power loss between write()
+    # and rename() can leave a 0-byte config, losing every pad assignment
+    with open(tmp, "w") as fh:
+        fh.write(json.dumps(cfg, indent=2))
+        fh.flush(); os.fsync(fh.fileno())
+    # copy (not move) the old file to .bak so CONF never stops existing --
+    # between the two os.replace calls there was a window with no config
     if dst.exists():
-        try: os.replace(str(dst), str(dst) + ".bak")
-        except Exception: pass
+        try: shutil.copy2(str(dst), str(dst) + ".bak")
+        except Exception as e: print(f"[config] backup failed: {e}")
     os.replace(str(tmp), str(dst))
+    try:
+        _dfd = os.open(str(CFGDIR), os.O_RDONLY); os.fsync(_dfd); os.close(_dfd)
+    except Exception: pass
 
 
 # audio engine -- paplay subprocess, no PortAudio
@@ -245,7 +299,9 @@ class AudioEngine:
     def play(self, key, filepath, sink_name, vol, loop, monitor_sink=None):
         self.stop(key)
         resolved = self._find_sink(sink_name)
-        pa_vol   = int(min(65536 * vol / 100.0, 131072))
+        # the dialog allows 0-150%, so cap there. The old 131072 (200%)
+        # ceiling was unreachable from the UI.
+        pa_vol   = int(min(65536 * vol / 100.0, int(65536 * 1.5)))
         print(f"[audio] {key} -> {resolved} vol={vol}%")
 
         def _run(tkey, sink):
@@ -309,7 +365,11 @@ class MidiEngine:
 
     def _find(self, names):
         for n in names:
-            if DEVICE_SUBSTR in n: return n
+            if DEVICE_SUBSTR not in n: continue
+            if any(x in n for x in DEVICE_EXCLUDE):
+                print(f"[midi] ignoring {n!r}: Mini MK3 uses a different protocol")
+                continue
+            return n
 
     def try_connect(self):
         with self._conn_lock:
@@ -405,8 +465,15 @@ def ipc_send(cmd, sock_path=None, timeout=1.0):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(timeout); s.connect(path)
         s.sendall((cmd + "\n").encode())
-        r = s.recv(16384); s.close()
-        return r.decode().strip()
+        # one recv() can return a partial line once the status payload grows,
+        # which truncated the JSON that Hearth parses
+        buf = b""
+        while b"\n" not in buf:
+            chunk = s.recv(4096)
+            if not chunk: break
+            buf += chunk
+        s.close()
+        return buf.decode(errors="replace").strip()
     except Exception: return None
 
 def rac_send(cmd): return ipc_send(cmd, RAC_SOCK)
@@ -447,8 +514,11 @@ def ipc_serve(handler, srv_ref):
 
 def analyze_lufs(filepath):
     try:
+        # -t 120 caps analysis: a long file blew the 30s timeout and was
+        # reported to the user as "Could not read file"
         result = subprocess.run(
-            ["ffmpeg", "-i", filepath, "-filter:a", "loudnorm=print_format=json", "-f", "null", "-"],
+            ["ffmpeg", "-hide_banner", "-t", "120", "-i", filepath,
+             "-filter:a", "loudnorm=print_format=json", "-f", "null", "-"],
             capture_output=True, text=True, timeout=30)
         raw = result.stderr
         start = raw.rfind("{"); end = raw.rfind("}") + 1
@@ -456,9 +526,15 @@ def analyze_lufs(filepath):
         data     = json.loads(raw[start:end])
         measured = float(data["input_i"])
         tp       = float(data["input_tp"])
+        # a silent file reports "-inf", which raised OverflowError below and
+        # surfaced as the same misleading "could not read" message
+        if not (math.isfinite(measured) and math.isfinite(tp)):
+            return {"silent": True}
         gain_lin = 10 ** ((TARGET_LUFS - measured) / 20.0)
         suggested = max(1, min(150, int(round(100.0 * gain_lin))))
         return {"input_i": measured, "input_tp": tp, "suggested_vol": suggested}
+    except subprocess.TimeoutExpired:
+        print("[lufs] ffmpeg timed out"); return None
     except Exception as e:
         print(f"[lufs] {e}"); return None
 
@@ -517,7 +593,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
         if fg:
             solid = fg.replace("rgba","rgb").rsplit(",",1)[0] + ")"
             try: swatch.set_markup(f'<span foreground="{solid}"> ● </span>')
-            except: swatch.set_text(" ● ")
+            except Exception: swatch.set_text(" ● ")
         else: swatch.set_text(" ● ")
     col_c.connect("changed", _swatch); _swatch()
     cbox = Gtk.Box(spacing=4)
@@ -586,7 +662,10 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     lufs_row = Gtk.Box(spacing=6)
     la_btn = Gtk.Button(label="Check loudness"); la_btn.get_style_context().add_class("act")
     la_lbl = Gtk.Label(label=""); la_lbl.get_style_context().add_class("lbl"); la_lbl.set_xalign(0)
-    ap_btn = Gtk.Button(label="Use"); ap_btn.get_style_context().add_class("act btn-sm"); ap_btn.set_visible(False)
+    ap_btn = Gtk.Button(label="Use"); ap_btn.get_style_context().add_class("act btn-sm")
+    # set_visible(False) is undone by dlg.show_all(); without no_show_all the
+    # "Use" button showed before any analysis and clicking it did nothing
+    ap_btn.set_no_show_all(True); ap_btn.set_visible(False)
     _lufs  = [None]
 
     def _analyze(*_):
@@ -598,6 +677,8 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
         def _done(r):
             la_btn.set_sensitive(True); la_btn.set_label("Check loudness")
             if not r: la_lbl.set_text("Could not read file"); return False
+            if r.get("silent"):
+                la_lbl.set_text("File is silent -- nothing to measure"); return False
             _lufs[0] = r
             la_lbl.set_markup(f"<b>{r['input_i']:.1f} LUFS</b>  peak {r['input_tp']:.1f} dBFS  -> suggested <b>{r['suggested_vol']}%</b>")
             ap_btn.set_visible(True); return False
@@ -675,11 +756,26 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     stop_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     box.pack_start(stop_box, False, False, 0)
     sk_c = Gtk.ComboBoxText()
+    # Store the raw "page:note" key, never the display string. v2.2 saved
+    # "0:17  (Airhorn)" and matched on it, so renaming the target pad raised
+    # ValueError -> bare `except` -> set_active(0), silently repointing this
+    # pad at whatever happened to be first in the list.
+    sk_raw = [k.split("  (")[0] if "  (" in k else k for k in all_pad_keys]
     for k in all_pad_keys: sk_c.append_text(k)
-    cur_sk = (pad_cfg.get("stop_key","") if pad_cfg else "")
-    try: sk_c.set_active(all_pad_keys.index(cur_sk))
-    except: sk_c.set_active(0)
+    have_targets = all_pad_keys != ["(none)"]
+    cur_sk  = (pad_cfg.get("stop_key","") if pad_cfg else "")
+    cur_raw = cur_sk.split("  (")[0] if "  (" in cur_sk else cur_sk
+    if cur_raw and cur_raw in sk_raw:
+        sk_c.set_active(sk_raw.index(cur_raw))
+    else:
+        sk_c.set_active(0)
+        if cur_raw: print(f"[pad] stop_key target {cur_raw!r} no longer exists")
+    sk_c.set_sensitive(have_targets)
     row("Target pad", sk_c, stop_box)
+    if not have_targets:
+        _nt = Gtk.Label(label="Assign a sound or script pad first.")
+        _nt.set_xalign(0); _nt.get_style_context().add_class("lbl")
+        stop_box.pack_start(_nt, False, False, 0)
 
     def _show_hide(_=None):
         idx = act_c.get_active()
@@ -717,8 +813,11 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
         elif idx == 3:
             result = {"action":"stop_all","label":label or "Stop All","color":color,"notes":notes}
         elif idx == 4:
-            result = {"action":"stop_key","stop_key":sk_c.get_active_text() or "",
-                      "label":label or "Stop","color":color,"notes":notes}
+            _ai  = sk_c.get_active()
+            _tgt = sk_raw[_ai] if (have_targets and 0 <= _ai < len(sk_raw)) else ""
+            if _tgt:
+                result = {"action":"stop_key","stop_key":_tgt,
+                          "label":label or "Stop","color":color,"notes":notes}
 
     dlg.destroy()
     return result
@@ -833,7 +932,15 @@ class PadfireApp:
         self._led_dirty   = True
         self._prev_leds   = {}
         self._vu_level    = 0.0
+        self._vu_ok       = True
         self._script_procs: dict = {}
+        self._proc_lock   = threading.Lock()
+        self._pad_labels: dict = {}
+        self._pad_state:  dict = {}
+        self._file_ok:    dict = {}
+        self._file_ok_t   = 0.0
+        self._indicator   = None
+        self._status_msg_id = 0
 
         self._build_ui()
         self._start_midi()
@@ -862,6 +969,41 @@ class PadfireApp:
         GLib.idle_add(self._refresh_all)
 
     def _page_has(self, p): return bool(self.cfg["pages"][p])
+
+    def _file_exists(self, path):
+        # 72 pads x 5 refreshes/sec would be 360 stat() calls a second, so
+        # results are cached and the cache is dropped at most every 2s
+        if not path: return False
+        now = time.monotonic()
+        if now - self._file_ok_t > 2.0:
+            self._file_ok.clear(); self._file_ok_t = now
+        ok = self._file_ok.get(path)
+        if ok is None:
+            try: ok = Path(path).is_file()
+            except Exception: ok = False
+            self._file_ok[path] = ok
+        return ok
+
+    def _flash_status(self, text, warn=True):
+        # v2.2 only printed failures to stdout, so from inside the app a broken
+        # pad simply did nothing with no explanation
+        lbl = getattr(self, "_msg_lbl", None)
+        if lbl is None:
+            print(f"[padfire] {text}"); return False
+        lbl.set_text(text)
+        ctx = lbl.get_style_context()
+        ctx.remove_class("stat-dim"); ctx.remove_class("stat-warn")
+        ctx.add_class("stat-warn" if warn else "stat-dim")
+        lbl.show()
+        self._status_msg_id += 1
+        mine = self._status_msg_id
+        def _clear():
+            if mine == self._status_msg_id:
+                cur = getattr(self, "_msg_lbl", None)
+                if cur is not None: cur.set_text(""); cur.hide()
+            return False
+        GLib.timeout_add(6000, _clear)
+        return False
 
     def _all_pad_keys(self):
         keys = []
@@ -898,10 +1040,10 @@ class PadfireApp:
     # script state
 
     def _script_on(self, key, pad):
-        proc = self._script_procs.get(key)
+        with self._proc_lock: proc = self._script_procs.get(key)
         if proc is not None:
             if proc.poll() is None: return True
-            self._script_procs.pop(key, None)
+            with self._proc_lock: self._script_procs.pop(key, None)
         pid_file = pad.get("pid_file","").strip()
         if not pid_file: return False
         try:
@@ -916,7 +1058,7 @@ class PadfireApp:
 
     def _stop_key(self, key):
         self.audio.stop(key)
-        proc = self._script_procs.pop(key, None)
+        with self._proc_lock: proc = self._script_procs.pop(key, None)
         if proc is not None and proc.poll() is None:
             try: proc.terminate(); proc.wait(timeout=2)
             except Exception:
@@ -942,12 +1084,14 @@ class PadfireApp:
         if action == "stop_all":
             def _all():
                 self.audio.stop_all()
-                for k, proc in list(self._script_procs.items()):
+                with self._proc_lock: _items = list(self._script_procs.items())
+                for k, proc in _items:
                     try: proc.terminate(); proc.wait(timeout=2)
                     except Exception:
                         try: proc.kill()
                         except Exception: pass
-                self._script_procs.clear(); self._led_dirty = True
+                with self._proc_lock: self._script_procs.clear()
+                self._led_dirty = True
             threading.Thread(target=_all, daemon=True).start()
             self._led_dirty = True; return False
 
@@ -964,7 +1108,8 @@ class PadfireApp:
                 try:
                     proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
                                             stderr=subprocess.STDOUT, text=True, bufsize=1)
-                    self._script_procs[key] = proc; self._led_dirty = True
+                    with self._proc_lock: self._script_procs[key] = proc
+                    self._led_dirty = True
                     out, _ = proc.communicate(timeout=600)
                     if out:
                         for line in out.strip().splitlines()[:10]:
@@ -975,12 +1120,20 @@ class PadfireApp:
                     except Exception: pass
                 except Exception as e: print(f"[script] {key}: {e}")
                 finally:
-                    self._script_procs.pop(key, None); self._led_dirty = True
+                    with self._proc_lock: self._script_procs.pop(key, None)
+                    self._led_dirty = True
             threading.Thread(target=_run, daemon=True).start()
             return False
 
         # play
         if not pad.get("file"): return False
+        if not self._file_exists(pad["file"]):
+            # a moved or deleted file used to look identical to a working pad,
+            # and pressing it only printed to stdout
+            print(f"[pad] {key}: file not found: {pad['file']}")
+            self._flash_status(f"Missing file: {Path(pad['file']).name}")
+            self._led_dirty = True
+            return False
         rt = pad.get("retrigger","global")
         if rt == "global": rt = self.cfg.get("retrigger","restart")
         if self.audio.is_playing(key) and rt == "toggle":
@@ -1016,7 +1169,7 @@ class PadfireApp:
             threading.Thread(target=self.audio.stop_all, daemon=True).start()
         self._page = max(0, min(NUM_PAGES-1, idx))
         self._prev_leds = {}
-        self._led_dirty = True; self._refresh_all()
+        self._led_dirty = True; self._refresh_all(); self._update_tray()
         return False
 
     # LED
@@ -1071,57 +1224,111 @@ class PadfireApp:
         btn.get_style_context().add_provider(prov, Gtk.STYLE_PROVIDER_PRIORITY_USER)
         self._pad_css[k] = (color_key, prov)
 
+    def _pad_text(self, row, col, text):
+        lab = self._pad_labels.get((row, col))
+        if lab is not None:
+            lab.set_text(text)
+        else:
+            btn = self._pad_btns.get((row, col))
+            if btn is not None: btn.set_label(text)
+
+    def _pad_state_for(self, pg, note, key):
+        """Everything that affects how a pad looks, as a comparable tuple.
+        The page number is included so switching pages invalidates every
+        cached entry."""
+        pad = pg.get(str(note))
+        if not pad: return (self._page, "empty")
+        action = pad.get("action", "play")
+        if action in ("stop_sfx", "stop_all"):
+            return (self._page, "stop", action, pad.get("label",""), pad.get("color"))
+        if action == "script":
+            return (self._page, "script", pad.get("label",""), pad.get("cmd",""),
+                    pad.get("color"), self._script_on(key, pad), pad.get("notes",""))
+        if action == "stop_key":
+            return (self._page, "stopkey", pad.get("label",""),
+                    pad.get("stop_key",""), pad.get("color"))
+        return (self._page, "play", pad.get("label",""), pad.get("file",""),
+                pad.get("color"), self.audio.is_playing(key),
+                self._file_exists(pad.get("file")), pad.get("vol",80),
+                pad.get("notes",""), bool(pad.get("loop")))
+
     def _refresh_grid(self):
         pg = self.cfg["pages"][self._page]
         for (row, col), btn in self._pad_btns.items():
             note = self._note_for(row, col)
             key  = f"{self._page}:{note}"
             pad  = pg.get(str(note))
+
+            # Skip pads whose appearance cannot have changed. v2.2 rewrote the
+            # label, tooltip and style classes of all 72 pads 5x a second
+            # (~360 widget updates/sec), which made tooltips flicker away while
+            # you were still reading them.
+            state = self._pad_state_for(pg, note, key)
+            if self._pad_state.get((row, col)) == state: continue
+            self._pad_state[(row, col)] = state
+
             ctx  = btn.get_style_context()
-            for cls in ("pad-has","pad-playing","pad-stop","pad-script","pad-script-on"):
+            for cls in ("pad-has","pad-playing","pad-stop","pad-script",
+                        "pad-script-on","pad-missing"):
                 ctx.remove_class(cls)
             self._apply_color(row, col, btn, pad.get("color") if pad else None)
 
             if not pad:
-                btn.set_label(""); btn.set_tooltip_text(None); continue
+                self._pad_text(row, col, ""); btn.set_tooltip_text(None); continue
 
             action = pad.get("action","play")
             lbl    = pad.get("label","")
+            plain  = not pad.get("color") or pad.get("color") == "default"
 
             if action in ("stop_sfx","stop_all"):
-                txt = lbl or ("Stop All" if action=="stop_all" else "Stop SFX")
-                btn.set_label(txt[:9])
-                if not pad.get("color") or pad.get("color") == "default": ctx.add_class("pad-stop")
-                btn.set_tooltip_text("Stop all sounds" if action=="stop_all" else "Stop audio only")
+                self._pad_text(row, col, lbl or ("Stop All" if action=="stop_all"
+                                                 else "Stop SFX"))
+                if plain: ctx.add_class("pad-stop")
+                btn.set_tooltip_text(
+                    "Stop all sounds and scripts" if action=="stop_all"
+                    else "Stop audio only (scripts keep running)")
 
             elif action == "script":
                 on = self._script_on(key, pad)
-                txt = lbl or Path(pad.get("cmd","?")).stem
-                btn.set_label(txt[:9])
-                if not pad.get("color") or pad.get("color") == "default":
-                    ctx.add_class("pad-script-on" if on else "pad-script")
-                elif on: ctx.add_class("pad-playing")
+                self._pad_text(row, col, lbl or Path(pad.get("cmd","?")).stem)
+                if on:      ctx.add_class("pad-script-on")
+                elif plain: ctx.add_class("pad-script")
                 notes = pad.get("notes","")
-                tip = f"{'Running' if on else 'Idle'}: {pad.get('cmd','')[:50]}"
-                if notes: tip += f"\n{notes[:120]}"
+                tip = f"{'Running' if on else 'Idle'}: {pad.get('cmd','')[:80]}"
+                if notes: tip += f"\n{notes[:160]}"
+                tip += "\n\nRight-click to edit"
                 btn.set_tooltip_text(tip)
 
             elif action == "stop_key":
-                btn.set_label((lbl or "Stop")[:9])
-                if not pad.get("color") or pad.get("color") == "default": ctx.add_class("pad-stop")
-                btn.set_tooltip_text(f"Stops: {pad.get('stop_key','?')}")
+                self._pad_text(row, col, lbl or "Stop")
+                if plain: ctx.add_class("pad-stop")
+                _tgt = pad.get("stop_key","")
+                btn.set_tooltip_text(
+                    f"Stops pad {_tgt}" if _tgt
+                    else "No target pad set -- right-click to edit")
 
             else:  # play
-                stem = lbl or (Path(pad["file"]).stem if pad.get("file") else "")
-                btn.set_label(stem[:9] + ("…" if len(stem)>9 else ""))
-                if not pad.get("color") or pad.get("color") == "default":
-                    ctx.add_class("pad-playing" if self.audio.is_playing(key) else "pad-has")
-                elif self.audio.is_playing(key): ctx.add_class("pad-playing")
-                notes = pad.get("notes","")
-                tip   = f"{Path(pad['file']).name if pad.get('file') else '?'}  {pad.get('vol',80)}%"
-                if notes: tip += f"\n{notes[:120]}"
-                tip += "\n\nRight-click to edit"
-                btn.set_tooltip_text(tip)
+                fpath   = pad.get("file","")
+                stem    = lbl or (Path(fpath).stem if fpath else "")
+                missing = bool(fpath) and not self._file_exists(fpath)
+                playing = self.audio.is_playing(key)
+                # full name in a wrapping 2-line label instead of a hard 9-char
+                # chop, which made "clicker settings" and "clicker toggle"
+                # render as the near-identical "clicker s" / "clicker t"
+                self._pad_text(row, col, ("⚠ " + stem) if missing else stem)
+                if missing:   ctx.add_class("pad-missing")
+                elif playing: ctx.add_class("pad-playing")
+                elif plain:   ctx.add_class("pad-has")
+                if missing:
+                    btn.set_tooltip_text(
+                        f"FILE NOT FOUND\n{fpath}\n\nRight-click to pick it again")
+                else:
+                    notes = pad.get("notes","")
+                    tip = f"{Path(fpath).name if fpath else '?'}  {pad.get('vol',80)}%"
+                    if pad.get("loop"): tip += "  (loops)"
+                    if notes: tip += f"\n{notes[:160]}"
+                    tip += "\n\nRight-click to edit"
+                    btn.set_tooltip_text(tip)
 
     def _refresh_pages(self):
         for i, btn in enumerate(self._page_btns):
@@ -1146,8 +1353,33 @@ class PadfireApp:
     def _tick(self):
         if self._led_dirty: self._refresh_leds()
         self._refresh_grid()
-        if hasattr(self, "_vu_bar"): self._vu_bar.set_fraction(self._vu_level)
+        if getattr(self, "_vu_bar", None) is not None:
+            self._vu_bar.set_fraction(self._vu_level)
+        self._update_playing_lbl()
         return True
+
+    def _update_playing_lbl(self):
+        # "what is making noise right now" was only ever visible on the
+        # Launchpad LEDs; the window itself never said
+        lbl = getattr(self, "_play_lbl", None)
+        if lbl is None: return
+        with self.audio._lock:
+            keys = [k for k in self.audio._procs if not k.startswith("__mon__")]
+        if not keys:
+            if lbl.get_text(): lbl.set_text("")
+            return
+        names = []
+        for k in keys[:2]:
+            try:
+                p_s, n_s = k.split(":", 1)
+                pad = self.cfg["pages"][int(p_s)].get(n_s, {})
+                names.append(pad.get("label")
+                             or (Path(pad["file"]).stem if pad.get("file") else k))
+            except Exception:
+                names.append(k)
+        txt = "▶ " + ", ".join(names)
+        if len(keys) > 2: txt += f"  +{len(keys)-2}"
+        if lbl.get_text() != txt: lbl.set_text(txt)
 
     # RAC probe
 
@@ -1155,8 +1387,13 @@ class PadfireApp:
         def probe():
             while True:
                 raw = rac_send("get_sinks")
-                try: data = json.loads(raw) if raw else None
-                except: data = None
+                try:
+                    data = json.loads(raw) if raw else None
+                except Exception as e:
+                    # a malformed reply used to be indistinguishable from
+                    # "Hearth is not running"
+                    print(f"[rac] bad reply: {e}")
+                    data = None
                 self._rac_online = data is not None
                 GLib.idle_add(self._update_rac, data)
                 time.sleep(3)
@@ -1164,35 +1401,81 @@ class PadfireApp:
 
     # VU monitor
 
+    def _vu_source(self):
+        """Monitor source for the level meter, from config.
+
+        v2.2 hardcoded "vm_game.monitor", so the meter was permanently dead
+        for anyone whose sinks are named anything else.
+        """
+        sink = (self.cfg.get("monitor_sink") if self.cfg.get("monitor_enabled")
+                else None) or self.cfg.get("default_sink") or ""
+        sink = str(sink).strip()
+        if not sink: return None
+        return sink if sink.endswith(".monitor") else sink + ".monitor"
+
+    def _hide_vu(self):
+        if getattr(self, "_vu_bar", None) is not None: self._vu_bar.hide()
+        return False
+
     def _start_vu(self):
+        if not shutil.which("parec"):
+            # without this guard Popen raised every 50ms while anything played
+            self._vu_ok = False
+            print("[vu] parec not found -- level meter disabled")
+            GLib.idle_add(self._hide_vu)
+            return
+
         def _mon():
-            RATE=8000; proc=None
+            RATE = 8000; proc = None; src = None; backoff = 0.0
             while True:
                 playing = bool(self.audio._procs)
-                if playing and proc is None:
+                want = self._vu_source()
+                # tear down when idle, or when the configured sink changed
+                if proc is not None and (not playing or want != src):
+                    try: proc.terminate(); proc.wait(timeout=1)
+                    except Exception:
+                        try: proc.kill()
+                        except Exception: pass
+                    proc = None; src = None; self._vu_level = 0.0
+                if (playing and proc is None and want
+                        and time.monotonic() >= backoff):
                     try:
                         proc = subprocess.Popen(
-                            ["parec","--device=vm_game.monitor","--channels=1",
-                             f"--rate={RATE}","--format=s16le","--raw","--latency-msec=33"],
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
-                    except Exception: proc = None
-                elif not playing and proc is not None:
-                    try: proc.terminate(); proc.wait(timeout=1)
-                    except Exception: pass
-                    proc = None; self._vu_level = 0.0
-                if proc and proc.poll() is None:
+                            ["parec", f"--device={want}", "--channels=1",
+                             f"--rate={RATE}", "--format=s16le", "--raw",
+                             "--latency-msec=33"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            bufsize=0)
+                        src = want
+                    except Exception as e:
+                        proc = None; src = None
+                        backoff = time.monotonic() + 5.0
+                        print(f"[vu] parec failed ({e}) -- retrying in 5s")
+                if proc is not None and proc.poll() is not None:
+                    # parec exited (usually a sink name that does not exist).
+                    # v2.2 left proc non-None and the bar frozen at its last
+                    # value forever; reap it and zero the level instead.
+                    proc = None; src = None; self._vu_level = 0.0
+                    backoff = time.monotonic() + 5.0
+                if proc is not None:
                     try:
-                        rdy,_,_ = select.select([proc.stdout],[],[],0.05)
+                        rdy, _, _ = select.select([proc.stdout], [], [], 0.05)
                         if rdy:
                             raw = proc.stdout.read(2048)
-                            n = len(raw)//2
+                            if not raw:
+                                proc = None; src = None; self._vu_level = 0.0
+                                backoff = time.monotonic() + 5.0
+                                continue
+                            n = len(raw) // 2
                             if n:
                                 samples = struct.unpack(f"<{n}h", raw[:n*2])
                                 rms = math.sqrt(sum(s*s for s in samples)/n)/32768.0
-                                db  = 20*math.log10(rms) if rms>1e-7 else -96
-                                self._vu_level = max(0.0, min(1.0,(db+60)/60))
+                                db  = 20*math.log10(rms) if rms > 1e-7 else -96
+                                self._vu_level = max(0.0, min(1.0, (db+60)/60))
                     except Exception: pass
-                else: time.sleep(0.05)
+                else:
+                    self._vu_level = 0.0
+                    time.sleep(0.05)
         threading.Thread(target=_mon, daemon=True, name="padfire-vu").start()
 
     # IPC
@@ -1234,14 +1517,31 @@ class PadfireApp:
     # UI build
 
     def _build_ui(self):
+        screen = Gdk.Screen.get_default()
+        if screen is None:
+            # v2.2 died here with the unhelpful GObject error
+            # "Argument 0 does not allow None as a value"
+            print("[padfire] cannot open a display.\n"
+                  "  Set DISPLAY or WAYLAND_DISPLAY, or start Padfire from "
+                  "inside your desktop session.", file=sys.stderr)
+            raise SystemExit(1)
         prov = Gtk.CssProvider(); prov.load_from_data(CSS.encode())
-        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), prov,
+        Gtk.StyleContext.add_provider_for_screen(screen, prov,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", True)
 
         win = Gtk.Window(title=f"Padfire {VER}")
         win.set_resizable(True); win.set_default_size(-1, -1)
-        win.connect("delete-event", lambda *_: win.hide() or True)
+        # without an icon name the taskbar/alt-tab entry was a generic square
+        try:
+            _theme = Gtk.IconTheme.get_default()
+            for _nm in ("padfire", "audio-x-generic"):
+                if _theme.has_icon(_nm):
+                    win.set_icon_name(_nm)
+                    Gtk.Window.set_default_icon_name(_nm)
+                    break
+        except Exception: pass
+        win.connect("delete-event", self._on_close)
         win.connect("key-press-event", self._on_key)
         self._win = win
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -1301,10 +1601,22 @@ class PadfireApp:
         # pads + side column
         for row in range(NUM_ROWS):
             for col in range(NUM_COLS):
-                btn = Gtk.Button(label="")
+                btn = Gtk.Button()
                 btn.get_style_context().add_class("pad-btn")
                 btn.set_size_request(PAD_PX, PAD_PX)
                 btn.set_hexpand(False); btn.set_vexpand(False)
+                # A wrapping child label instead of plain button text, so names
+                # use two lines and ellipsize properly rather than being cut to
+                # 9 characters.
+                _lab = Gtk.Label(label="")
+                _lab.set_line_wrap(True)
+                _lab.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+                _lab.set_lines(2)
+                _lab.set_ellipsize(Pango.EllipsizeMode.END)
+                _lab.set_justify(Gtk.Justification.CENTER)
+                _lab.set_max_width_chars(1)
+                btn.add(_lab)
+                self._pad_labels[(row, col)] = _lab
                 r, c = row, col
                 btn.connect("clicked", lambda _, ro=r, co=c: self._on_click(ro, co))
                 def _rc(w, ev, ro=r, co=c):
@@ -1324,9 +1636,18 @@ class PadfireApp:
                 grid.attach(btn, col, row+1, 1, 1)
                 self._pad_btns[(row, col)] = btn
 
-            sbtn = Gtk.Button(label="")
+            sbtn = Gtk.Button()
             sbtn.get_style_context().add_class("pad-btn"); sbtn.get_style_context().add_class("side-pad")
             sbtn.set_size_request(30, PAD_PX); sbtn.set_hexpand(False); sbtn.set_vexpand(False)
+            _slab = Gtk.Label(label="")
+            _slab.set_line_wrap(True)
+            _slab.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            _slab.set_lines(2)
+            _slab.set_ellipsize(Pango.EllipsizeMode.END)
+            _slab.set_justify(Gtk.Justification.CENTER)
+            _slab.set_max_width_chars(1)
+            sbtn.add(_slab)
+            self._pad_labels[(row, 8)] = _slab
             ro = row
             sbtn.connect("clicked", lambda _, ro=ro: self._on_click(ro, 8))
             def _src(w, ev, ro=ro):
@@ -1366,13 +1687,36 @@ class PadfireApp:
             vl = Gtk.Label(label=""); vl.get_style_context().add_class("stat-val")
             self._rac_vol_box.pack_start(vl, False, False, 0)
             self._rac_vols[sink] = vl
+        # set_visible(False) alone is undone by win.show_all(), so "G C M"
+        # used to show with no values whenever Hearth was offline
+        self._rac_vol_box.set_no_show_all(True)
         self._rac_vol_box.set_visible(False)
         status.pack_start(self._rac_vol_box, False, False, 0)
 
-        hrth_btn = Gtk.Button(label="Hearth")
-        hrth_btn.get_style_context().add_class("act"); hrth_btn.get_style_context().add_class("btn-sm")
-        hrth_btn.connect("clicked", lambda *_: rac_send("show"))
-        status.pack_end(hrth_btn, False, False, 0)
+        # what is playing right now
+        self._play_lbl = Gtk.Label(label=""); self._play_lbl.set_xalign(0)
+        self._play_lbl.get_style_context().add_class("stat-play")
+        self._play_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        status.pack_start(self._play_lbl, True, True, 6)
+
+        # transient errors (missing file, etc) instead of stdout-only
+        self._msg_lbl = Gtk.Label(label=""); self._msg_lbl.set_xalign(1)
+        self._msg_lbl.get_style_context().add_class("stat-warn")
+        self._msg_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        self._msg_lbl.set_no_show_all(True); self._msg_lbl.set_visible(False)
+        status.pack_start(self._msg_lbl, False, False, 4)
+
+        # The Hearth button only exists when Hearth does, and rac_send runs off
+        # the main thread: it has a 1s socket timeout, which was enough to
+        # visibly freeze the window when Hearth was not installed.
+        self._hrth_btn = Gtk.Button(label="Hearth")
+        self._hrth_btn.get_style_context().add_class("act")
+        self._hrth_btn.get_style_context().add_class("btn-sm")
+        self._hrth_btn.set_tooltip_text("Bring the Hearth window to the front")
+        self._hrth_btn.connect("clicked", lambda *_: threading.Thread(
+            target=lambda: rac_send("show"), daemon=True).start())
+        self._hrth_btn.set_no_show_all(True); self._hrth_btn.set_visible(False)
+        status.pack_end(self._hrth_btn, False, False, 0)
         root.pack_start(status, False, False, 0)
 
         self._setup_tray()
@@ -1469,8 +1813,13 @@ class PadfireApp:
         on  = self.cfg.get("monitor_enabled", False)
         ctx = self._mon_btn.get_style_context()
         self._mon_btn.set_label("Mon" + (" ●" if on else ""))
-        if on: ctx.remove_class("act"); ctx.add_class("stat-ok")
-        else:  ctx.remove_class("stat-ok"); ctx.add_class("act")
+        # .stat-ok is a *label* class (colour + font-size only). Applied to a
+        # ToggleButton it left the theme's default toggle background showing,
+        # which renders bright pink on Adwaita dark. .act-on is a real button
+        # style that matches the rest of the top bar.
+        ctx.remove_class("stat-ok")
+        if on: ctx.remove_class("act");    ctx.add_class("act-on")
+        else:  ctx.remove_class("act-on"); ctx.add_class("act")
         sink = self.cfg.get("monitor_sink","?")
         self._mon_btn.set_tooltip_text(
             f"Monitor ON -> {sink}\nRight-click for settings" if on
@@ -1482,10 +1831,12 @@ class PadfireApp:
             ctx.remove_class("stat-ok"); ctx.remove_class("stat-dim")
             if self._rac_online:
                 self._rac_lbl.set_text("● Hearth"); ctx.add_class("stat-ok")
-                self._rac_vol_box.set_visible(True)
+                self._rac_vol_box.show_all()
+                if getattr(self, "_hrth_btn", None) is not None: self._hrth_btn.show()
             else:
                 self._rac_lbl.set_text("○ Hearth"); ctx.add_class("stat-dim")
-                self._rac_vol_box.set_visible(False)
+                self._rac_vol_box.hide()
+                if getattr(self, "_hrth_btn", None) is not None: self._hrth_btn.hide()
         if data:
             for sink, lbl in self._rac_vols.items():
                 info = data.get(sink,{}); mute=info.get("mute",False); vol=info.get("vol","?")
@@ -1493,7 +1844,10 @@ class PadfireApp:
         return False
 
     def _setup_tray(self):
-        if not (HAVE_IND and AI): return
+        if not (HAVE_IND and AI):
+            print("[tray] libappindicator3 unavailable -- closing the window "
+                  "will quit instead of hiding")
+            return
         icon = str(HOME/".local/share/icons/hicolor/48x48/apps/padfire.png")
         if not Path(icon).exists(): icon = "audio-x-generic"
         ind = AI.Indicator.new("padfire", icon, AI.IndicatorCategory.APPLICATION_STATUS)
@@ -1504,16 +1858,50 @@ class PadfireApp:
                          ("Settings", self._open_settings), ("Quit", self._quit)]:
             it = Gtk.MenuItem(label=lbl); it.connect("activate", lambda _, f=fn: f()); menu.append(it)
         menu.show_all(); ind.set_menu(menu)
+        self._update_tray()
+
+    def _update_tray(self):
+        # The README promised a "tray icon with page indicator"; v2.2 only ever
+        # called set_title("Padfire") and never showed the page anywhere.
+        ind = getattr(self, "_indicator", None)
+        if ind is None: return False
+        try:
+            ind.set_label(f"P{self._page+1}", "P8")
+            ind.set_title(f"Padfire -- page {self._page+1}")
+        except Exception: pass
+        return False
+
+    def _on_close(self, *_):
+        # With no tray icon, hiding made the window unrecoverable except via
+        # `padfire-launch --show` from a terminal.
+        if getattr(self, "_indicator", None) is not None:
+            if self._win: self._win.hide()
+            return True
+        self._quit()
+        return True
 
     def _on_key(self, _w, ev):
-        # Esc hides to tray; Ctrl+Q quits. Pads are mouse/Launchpad-driven,
-        # so these don't interfere with pad activation.
+        # Esc hides to tray (or minimises when there is no tray), Ctrl+Q
+        # quits, 1-8 switch pages like the Launchpad's top row, Space stops
+        # everything. Pads are mouse/Launchpad-driven, so none of these
+        # interfere with pad activation.
         ctrl = bool(ev.state & Gdk.ModifierType.CONTROL_MASK)
         if ev.keyval == Gdk.KEY_Escape:
-            if self._win: self._win.hide()
+            if getattr(self, "_indicator", None) is not None:
+                if self._win: self._win.hide()
+            elif self._win:
+                self._win.iconify()
             return True
         if ctrl and ev.keyval in (Gdk.KEY_q, Gdk.KEY_Q):
             self._quit(); return True
+        if not ctrl:
+            for _i in range(NUM_PAGES):
+                if ev.keyval in (getattr(Gdk, f"KEY_{_i+1}"),
+                                 getattr(Gdk, f"KEY_KP_{_i+1}")):
+                    self._switch_page(_i); return True
+            if ev.keyval == Gdk.KEY_space:
+                threading.Thread(target=self.audio.stop_all, daemon=True).start()
+                return True
         return False
 
     def _show(self, *_):
@@ -1539,10 +1927,20 @@ class PadfireApp:
 
 def install_service():
     svc = Path.home()/".config/systemd/user/padfire.service"
-    launcher = Path.home()/"bin/padfire-launch"
+    # prefer the launcher shipped next to this file, then fall back to ~/bin
+    _here = Path(__file__).resolve().parent/"padfire-launch"
+    launcher = _here if _here.exists() else Path.home()/"bin/padfire-launch"
+    if not launcher.exists():
+        print(f"error: no padfire-launch found "
+              f"(looked in {_here.parent} and {Path.home()/'bin'})")
+        return 1
     svc.parent.mkdir(parents=True, exist_ok=True)
+    # No hardcoded WAYLAND_DISPLAY: it broke X11 sessions and any Wayland
+    # socket not named wayland-0. graphical-session.target already carries the
+    # session environment. This now matches packaging/padfire.service.
     svc.write_text(f"""[Unit]
 Description=Padfire Soundboard
+PartOf=graphical-session.target
 After=graphical-session.target pipewire.service wireplumber.service
 
 [Service]
@@ -1550,33 +1948,61 @@ Type=simple
 ExecStart={launcher}
 Restart=on-failure
 RestartSec=4
-Environment=WAYLAND_DISPLAY=wayland-0
 
 [Install]
 WantedBy=graphical-session.target
 """)
     print(f"wrote {svc}")
-    os.system("systemctl --user daemon-reload")
-    os.system("systemctl --user enable padfire.service")
+    rc = 0
+    # v2.2 used os.system and ignored both exit codes, so a failed enable
+    # still printed nothing and looked like success
+    for cmd in (["systemctl", "--user", "daemon-reload"],
+                ["systemctl", "--user", "enable", "padfire.service"]):
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            rc = r.returncode
+            print(f"error: {' '.join(cmd)} failed: {r.stderr.strip()}")
+    if rc == 0:
+        print("enabled. start it now with: systemctl --user start padfire")
+    return rc
 
 
 def main():
     GLib.set_prgname("padfire")
     ap = argparse.ArgumentParser(description=f"Padfire {VER}")
     ap.add_argument("--version", action="version", version=f"Padfire {VER}")
-    ap.add_argument("--quit",    action="store_true")
-    ap.add_argument("--show",    action="store_true")
-    ap.add_argument("--reload",  action="store_true")
-    ap.add_argument("--stop",    action="store_true")
-    ap.add_argument("--status",  action="store_true")
-    ap.add_argument("--install", action="store_true")
+    ap.add_argument("--quit",    action="store_true",
+                    help="quit the running instance")
+    ap.add_argument("--show",    action="store_true",
+                    help="bring the window to the front")
+    ap.add_argument("--reload",  action="store_true",
+                    help="re-read padfire.json without restarting")
+    ap.add_argument("--stop",    action="store_true",
+                    help="stop all audio")
+    ap.add_argument("--status",  action="store_true",
+                    help="print JSON status (for Hearth and scripts)")
+    ap.add_argument("--install", action="store_true",
+                    help="write and enable the systemd --user service")
     args = ap.parse_args()
-    if args.install: install_service(); return
-    if args.quit:    print(ipc_send("quit")     or "not running"); return
-    if args.show:    print(ipc_send("show")     or "not running"); return
-    if args.reload:  print(ipc_send("reload")   or "not running"); return
-    if args.stop:    print(ipc_send("stop_all") or "not running"); return
-    if args.status:  print(ipc_send("status")   or "not running"); return
+    if args.install: raise SystemExit(install_service() or 0)
+    # Order preserved from the original: action flags win over --status.
+    for _flag, _cmd in (("quit", "quit"), ("show", "show"),
+                        ("reload", "reload"), ("stop", "stop_all")):
+        if getattr(args, _flag):
+            _resp = ipc_send(_cmd)
+            print(_resp or "not running")
+            # Exit non-zero when nothing was listening, so a script or a
+            # systemd unit can tell "done" from "no instance answered".
+            sys.exit(0 if _resp else 1)
+    if args.status:
+        # --status is a machine contract ("JSON status for Hearth/tools"),
+        # so it must stay parseable with no instance running. The old code
+        # printed the bare text "not running" and still exited 0, which
+        # made every JSON consumer raise on the first character.
+        _resp = ipc_send("status")
+        print(_resp if _resp else json.dumps({"running": False,
+                                              "version": VER}))
+        return
     if ipc_send("status"):
         print("[padfire] already running -- use --show"); return
     PadfireApp().run()
