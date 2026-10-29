@@ -2,7 +2,8 @@
 # padfire-launch — silences JACK before python starts, then runs padfire
 export JACK_NO_AUDIO_RESERVATION=1
 export DISABLE_JACK=1
-export PULSE_SERVER="unix:/run/user/$(id -u)/pulse/native"
+PULSE_SERVER="unix:/run/user/$(id -u)/pulse/native"
+export PULSE_SERVER
 
 # Resolve padfire.py next to this launcher so it works from the repo or any
 # install location (override with $PADFIRE_PY). Fixes the old hardcoded
