@@ -1,0 +1,49 @@
+name: Padfire tests
+
+on:
+  push:
+    branches: [main, "release/padfire-v2.3-20261028"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK and smoke-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            gir1.2-gtk-3.0 python3-gi python3-mido python3-pil \
+            shellcheck xvfb xauth
+      - name: Run hardware-free regression tests
+        run: |
+          python3 tests/test_padfire_core.py
+          python3 -m py_compile padfire.py tools/padfire-shot tests/test_padfire_core.py
+          bash -n padfire-launch
+          shellcheck padfire-launch
+      - name: Render the real GTK UI in a virtual display
+        run: |
+          xvfb-run -a tools/padfire-shot --demo \
+            -o /tmp/padfire-shot.png --crop 60 --scale 200 --settle 500
+          python3 - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+
+          for path in (
+              Path('/tmp/padfire-shot.png'),
+              Path('/tmp/padfire-shot-crop60.png'),
+              Path('/tmp/padfire-shot-200pct.png'),
+          ):
+              assert path.is_file() and path.stat().st_size > 1000, path
+              with Image.open(path) as image:
+                  image.verify()
+              with Image.open(path) as image:
+                  rgb = image.convert('RGB')
+                  assert rgb.width >= 100 and rgb.height >= 100, (path, rgb.size)
+                  assert any(lo != hi for lo, hi in rgb.getextrema()), path
+              print(f'PASS nonblank GTK screenshot: {path.name}')
+          PY
