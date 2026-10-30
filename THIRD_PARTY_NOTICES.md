@@ -56,9 +56,11 @@ are independent of Padfire's MIT license:
 | PyInstaller bootloader | GPLv2 with the PyInstaller bootloader exception; inspect bundled notice |
 
 The Windows build runs `tools/collect_third_party_licenses.py` after
-installing its runtime requirements. It also includes the CPython PSF 2.0
-license and PyInstaller bootloader license/exception notice. It copies license/notice files exposed by
-the resolved wheels into `ThirdPartyLicenses/` in both GUI and CLI one-folder
+installing its runtime requirements. It also inventories PyInstaller and the
+CPython runtime, and explicitly includes the PSF 2.0 license. The collection is
+strict in the release build: a distribution without a discoverable license
+file fails the build. It copies license/notice files exposed by the resolved
+wheels into `ThirdPartyLicenses/` in both GUI and CLI one-folder
 outputs, and generates `ThirdPartyLicenses/COMPONENTS.md` with exact installed
 versions and license metadata. If a wheel does not expose a matching license
 file, the inventory creates a `LICENSE_FILE_NOT_INCLUDED.txt` review marker
