@@ -74,9 +74,9 @@ def get_paths(*, windows: bool | None = None) -> PadfirePaths:
     """Resolve config/runtime paths without assuming HOME or a shell wrapper.
 
     Linux keeps the established ~/.config/padfire layout (respecting
-    XDG_CONFIG_HOME). Windows stores settings in %APPDATA% and puts the short
-    AF_UNIX socket pathname in the temp directory to stay below Winsock's
-    pathname limit.
+    XDG_CONFIG_HOME). Windows stores settings in %APPDATA%, uses a short
+    per-user logical name for the native named-pipe IPC endpoint, and puts
+    the PID file under %LOCALAPPDATA%.
     """
     is_windows = os.name == "nt" if windows is None else windows
     home = Path.home()
