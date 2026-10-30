@@ -102,6 +102,13 @@ class MidiContractTests(unittest.TestCase):
 
 
 class LocalIpcTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        if os.name == "nt":
+            from PySide6.QtCore import QCoreApplication
+
+            cls.qt_app = QCoreApplication.instance() or QCoreApplication(["padfire-ipc-test"])
+
     def test_single_instance_control_socket_round_trip(self) -> None:
         base = Path(tempfile.gettempdir()) / f"padfire-ipc-{os.getpid()}"
         paths = PadfirePaths(

@@ -86,6 +86,7 @@ jobs:
         shell: pwsh
         run: |
           python -m PyInstaller --clean --noconfirm packaging/windows/Padfire.spec
+          python -m PyInstaller --clean --noconfirm packaging/windows/PadfireCLI.spec
           if (-not (Test-Path "dist\Padfire\Padfire.exe")) { throw "Padfire.exe was not produced" }
           if (-not (Test-Path "dist\PadfireCLI\PadfireCLI.exe")) { throw "PadfireCLI.exe was not produced" }
           & "dist\PadfireCLI\PadfireCLI.exe" --version
