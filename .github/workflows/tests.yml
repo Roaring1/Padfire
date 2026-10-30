@@ -95,6 +95,8 @@ jobs:
         run: python -m compileall -q padfire_core.py padfire_win padfire_windows.py
       - name: Run shared config, MIDI and IPC tests
         run: python -m unittest discover -s tests -p "test_padfire_platform.py" -v
+      - name: Test Windows package normalization
+        run: python -m unittest discover -s tests -p "test_windows_bundle_normalizer.py" -v
       - name: Build and exercise the Qt UI without hardware
         run: |
           python -m unittest discover -s tests -p "test_padfire_windows_ui.py" -v
@@ -108,7 +110,7 @@ jobs:
           if (-not (Test-Path "dist\Padfire\Padfire.exe")) { throw "Padfire.exe was not produced" }
           if (-not (Test-Path "dist\PadfireCLI\PadfireCLI.exe")) { throw "PadfireCLI.exe was not produced" }
           foreach ($folder in @("dist\Padfire", "dist\PadfireCLI")) {
-            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "ThirdPartyLicenses\COMPONENTS.md", "ThirdPartyLicenses\LGPL-3.0-only.txt", "ThirdPartyLicenses\GPL-3.0-only.txt", "ThirdPartyLicenses\PSF-2.0.txt")) {
+            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "ThirdPartyLicenses\COMPONENTS.md", "ThirdPartyLicenses\LGPL-3.0-only.txt", "ThirdPartyLicenses\GPL-3.0-only.txt", "ThirdPartyLicenses\PSF-2.0.txt", "ThirdPartyLicenses\OpenSSL-3.0-Apache-2.0.txt")) {
               if (-not (Test-Path (Join-Path $folder $file))) {
                 throw "$folder is missing $file"
               }
@@ -116,6 +118,16 @@ jobs:
             $componentFiles = Get-ChildItem (Join-Path $folder "ThirdPartyLicenses") -File -Recurse |
               Where-Object { $_.Name -ne "COMPONENTS.md" }
             if (-not $componentFiles) { throw "$folder has no third-party license files or review markers" }
+            foreach ($ambient in @("libcrypto-3-x64.dll", "libssl-3-x64.dll")) {
+              if (Get-ChildItem $folder -Filter $ambient -File -Recurse) {
+                throw "$folder must not ship ambient runner DLL $ambient"
+              }
+            }
+            foreach ($cpythonSsl in @("libcrypto-3.dll", "libssl-3.dll")) {
+              if (-not (Get-ChildItem $folder -Filter $cpythonSsl -File -Recurse)) {
+                throw "$folder is missing the CPython 3.12 OpenSSL runtime $cpythonSsl"
+              }
+            }
           }
           & "dist\PadfireCLI\PadfireCLI.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "Packaged CLI --version smoke test failed" }
@@ -152,7 +164,7 @@ jobs:
             throw "Installer did not lay down the expected GUI, CLI and uninstaller"
           }
           foreach ($folder in @($installDir, (Join-Path $installDir "CLI"))) {
-            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "ThirdPartyLicenses\COMPONENTS.md")) {
+            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "ThirdPartyLicenses\COMPONENTS.md", "ThirdPartyLicenses\OpenSSL-3.0-Apache-2.0.txt")) {
               if (-not (Test-Path (Join-Path $folder $file))) {
                 throw "Installed folder $folder is missing $file"
               }
