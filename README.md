@@ -131,6 +131,9 @@ licensing option; the PyPI distribution offers LGPL, GPL and commercial terms.
 - .cmd and .bat commands run through the Windows command processor. Direct
   .ps1 files are started with PowerShell and respect the user's execution
   policy; Padfire does not silently bypass it.
+- Direct .py script pads use the active interpreter in a source checkout. In a
+  packaged build they require a separate python.exe or py.exe on PATH; Padfire
+  does not treat its GUI executable as a Python interpreter.
 - Hardware-free CI does not prove a physical Launchpad, speaker, USB hub or
   audio driver works. Test those on the target Windows PC before relying on it.
 
