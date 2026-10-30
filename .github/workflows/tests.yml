@@ -99,7 +99,7 @@ jobs:
           if (-not (Test-Path "dist\Padfire\Padfire.exe")) { throw "Padfire.exe was not produced" }
           if (-not (Test-Path "dist\PadfireCLI\PadfireCLI.exe")) { throw "PadfireCLI.exe was not produced" }
           foreach ($folder in @("dist\Padfire", "dist\PadfireCLI")) {
-            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "ThirdPartyLicenses\COMPONENTS.md", "ThirdPartyLicenses\LGPL-3.0-and-GPL-3.0.txt", "ThirdPartyLicenses\PSF-2.0.txt")) {
+            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "ThirdPartyLicenses\COMPONENTS.md", "ThirdPartyLicenses\LGPL-3.0-only.txt", "ThirdPartyLicenses\GPL-3.0-only.txt", "ThirdPartyLicenses\PSF-2.0.txt")) {
               if (-not (Test-Path (Join-Path $folder $file))) {
                 throw "$folder is missing $file"
               }
