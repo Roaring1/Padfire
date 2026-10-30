@@ -24,20 +24,41 @@ choice, not by itself proof of LGPL compliance. Review the official terms:
 
 ## Other bundled/runtime dependencies
 
-The Windows environment installs the following projects. Consult the
-distribution metadata shipped with each package for the exact license and
-copyright notices for the version you redistribute:
+The Windows build directly depends on these projects. Their component licenses
+are independent of Padfire's MIT license:
 
-- mido
-- python-rtmidi / RtMidi
-- NumPy
-- sounddevice / PortAudio
-- SoundFile / libsndfile
-- pyloudnorm
-- PySide6 / Shiboken6 / Qt 6
+| Component | License information |
+|---|---|
+| mido | MIT |
+| python-rtmidi / RtMidi | MIT |
+| NumPy | BSD-3-Clause plus licenses for bundled third-party components |
+| sounddevice | MIT |
+| PortAudio | MIT |
+| SoundFile | BSD-3-Clause |
+| libsndfile | LGPL-2.1-or-later |
+| pyloudnorm | MIT |
+| PySide6-Essentials / Shiboken6 / Qt 6 | LGPLv3, GPL options, or commercial terms; exact Qt module terms vary |
 
-The Windows installer includes this notice file. The PyInstaller build folder
-also retains the dynamically loaded Qt and native audio/MIDI binaries.
+These are project-level license identifiers, not a substitute for preserving
+the exact copyright and license text shipped by each resolved wheel and native
+library. The Windows build includes the root MIT license and this notice in
+both GUI and CLI one-folder outputs. Before a public redistribution, attach
+the exact component license files and Qt source/relinking information required
+for the versions and modules actually present in the artifact.
+
+Official component references:
+
+- [mido](https://pypi.org/project/mido/)
+- [python-rtmidi](https://pypi.org/project/python-rtmidi/)
+- [NumPy](https://pypi.org/project/numpy/)
+- [sounddevice](https://pypi.org/project/sounddevice/)
+- [SoundFile](https://pypi.org/project/soundfile/)
+- [pyloudnorm](https://pypi.org/project/pyloudnorm/)
+- [Qt for Python licensing](https://doc.qt.io/qtforpython-6/licenses.html)
+- [Qt LGPL obligations](https://www.qt.io/development/open-source-lgpl-obligations)
+
+The PyInstaller outputs retain dynamically loaded Qt and native audio/MIDI
+binaries. The full notices are included with both the GUI and CLI packages.
 
 ## Padfire project license
 
