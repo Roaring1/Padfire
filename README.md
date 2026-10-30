@@ -233,3 +233,12 @@ Windows contract tests and offscreen UI smoke test:
 
 The automated suites do not open MIDI hardware or play to real output devices.
 Do a physical Launchpad/audio playtest on each platform before making a release.
+---
+
+## License
+
+Padfire's own source code and documentation are licensed under the MIT License;
+see [LICENSE](LICENSE). This license does not replace or change the separate
+licenses of third-party libraries and native components bundled with a build.
+Review [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before redistributing
+Windows binaries.
