@@ -34,6 +34,15 @@ if (-not (Test-Path $Executable)) {
 if (-not (Test-Path $CliExecutable)) {
     throw "PyInstaller did not produce dist\PadfireCLI\PadfireCLI.exe"
 }
+# Exercise the actual windowed binary too, with no MIDI/audio hardware required.
+$GuiSmoke = Start-Process -FilePath $Executable -ArgumentList "--smoke-ui" -PassThru
+if (-not $GuiSmoke.WaitForExit(30000)) {
+    $GuiSmoke.Kill()
+    throw "Packaged Padfire GUI smoke test timed out."
+}
+if ($GuiSmoke.ExitCode -ne 0) {
+    throw "Packaged Padfire GUI smoke test failed with exit code $($GuiSmoke.ExitCode)."
+}
 & $CliExecutable --version
 if ($LASTEXITCODE -ne 0) {
     throw "Packaged PadfireCLI --version smoke test failed."
