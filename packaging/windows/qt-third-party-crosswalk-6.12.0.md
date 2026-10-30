@@ -135,6 +135,32 @@ compiled into `Qt6Core.dll` and `Qt6Gui.dll` without separate DLLs. A
 build-specific SBOM is required to determine exact inclusion and versions,
 including the actual FreeType license choice.
 
+## Dynamic-link evidence and the remaining replacement test
+
+Static PE import-table inspection of the packaged Windows bundle shows that
+the PySide extension modules import separate Qt DLLs:
+
+- `QtCore.pyd` imports `Qt6Core.dll`.
+- `QtGui.pyd` imports `Qt6Gui.dll` and `Qt6Core.dll`.
+- `QtWidgets.pyd` imports `Qt6Widgets.dll`, `Qt6Gui.dll` and
+  `Qt6Core.dll`.
+- The Windows platform plugin imports `Qt6Gui.dll` and `Qt6Core.dll`; the
+  Schannel TLS plugin imports `Qt6Network.dll` and `Qt6Core.dll`.
+
+This confirms that those runtime libraries are separate files with PE
+dependencies, rather than statically merged into Padfire.exe. It is useful
+evidence for a replaceable one-folder layout, but it is **not** a replacement
+test: no modified Qt DLL has yet been built, substituted, and run with
+Padfire on a clean Windows machine.
+
+## Microsoft Visual C++ runtime files
+
+The inspected bundle includes `MSVCP140.dll`, `MSVCP140_1.dll`,
+`MSVCP140_2.dll`, `VCRUNTIME140.dll`, and `VCRUNTIME140_1.dll` under the
+PySide/Shiboken runtime folders. Their exact file versions, source provenance,
+and redistribution basis still need to be checked against the applicable
+Visual Studio REDIST list and Microsoft Software License Terms. See the
+official [Visual C++ redistribution guidance](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files).
 ## OpenSSL runtime distinction
 
 The Padfire PyInstaller bundle contained CPython 3.12.10's `_ssl.pyd` and
@@ -159,11 +185,15 @@ backend is shipped for native Windows TLS.
 2. Map each of the third-party candidate components above to the actual DLL
    contents and selected license variant. FreeType's FTL-vs-GPL2 choice is a
    particularly important unresolved item.
-3. Add the exact required component license texts and acknowledgements to
-   both GUI and CLI bundles. The current Python-wheel license collector does
-   not discover statically linked Qt third-party components.
-4. Review the Microsoft Visual C++ runtime DLLs against Microsoft's current
-   redistributable terms and include any required notices.
+3. Use the Qt/PySide build-specific SBOM and source revisions to identify
+   which mapped Qt third-party components are actually compiled into the
+   distributed module/plugin DLLs, then confirm their selected license
+   variants and any additional notices required in both bundles. The Python
+   wheel inventory does not establish the contents of statically linked Qt
+   third-party code.
+4. Verify the exact versions and redistribution basis of the bundled
+   Microsoft Visual C++ runtime DLLs against Microsoft's current REDIST list
+   and Software License Terms.
 5. Repeat the audit for each new Qt/PySide wheel or plugin set.
 
 Until these are complete, this crosswalk is evidence for review, not a

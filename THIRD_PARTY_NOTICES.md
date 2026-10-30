@@ -91,6 +91,7 @@ are independent of Padfire's MIT license:
 | SoundFile | BSD-3-Clause |
 | libsndfile | LGPL-2.1-or-later |
 | pyloudnorm | MIT |
+| SciPy 1.18.1 | BSD-3-Clause; its bundled OpenBLAS DLL notice also records OpenBLAS BSD-3-Clause, LAPACK BSD-3-Clause-Open-MPI, and GCC Runtime Library Exception terms (see generated component inventory) |
 | PySide6-Essentials / Shiboken6 / Qt 6 | LGPLv3 selected for this build; exact Qt module terms vary |
 | CPython 3.12 runtime | Python Software Foundation License 2.0 |
 | OpenSSL 3.0.16 used by CPython `_ssl.pyd` | Apache-2.0 |
@@ -100,12 +101,16 @@ The Windows build runs `tools/collect_third_party_licenses.py` after
 installing its runtime requirements. It also inventories PyInstaller and the
 CPython runtime, and explicitly includes the PSF 2.0 license. The collection is
 strict in the release build: a distribution without a discoverable license
-file fails the build. It copies license/notice files exposed by the resolved
-wheels into `ThirdPartyLicenses/` in both GUI and CLI one-folder
-outputs, and generates `ThirdPartyLicenses/COMPONENTS.md` with exact installed
-versions and license metadata. If a wheel does not expose a matching license
-file, the inventory creates a `LICENSE_FILE_NOT_INCLUDED.txt` review marker
-for that component instead of silently pretending the license was copied.
+file fails the build. It copies wheel-reported files from any `LICENSES/`
+directory, `.dist-info/licenses/` directory, and conventional license/notice
+filenames into `ThirdPartyLicenses/` in both GUI and CLI one-folder outputs.
+It generates `ThirdPartyLicenses/COMPONENTS.md` with exact installed versions,
+license metadata, and the PySide/Shiboken distinction between their
+multi-option license expression and the commercial-reference notice. If a
+wheel does not expose a matching license file, the inventory creates a
+`LICENSE_FILE_NOT_INCLUDED.txt` review marker for that component instead of
+silently pretending the license was copied. The latest tested GUI and CLI
+inventories contain no missing-wheel-license markers.
 
 This automated inventory is evidence collection, not a legal certification.
 Review each marker, every bundled native library, and the Qt third-party
