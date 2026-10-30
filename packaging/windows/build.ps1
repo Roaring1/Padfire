@@ -28,6 +28,8 @@ $env:QT_QPA_PLATFORM = "offscreen"
 
 & $Python -m PyInstaller --clean --noconfirm "packaging/windows/Padfire.spec"
 & $Python -m PyInstaller --clean --noconfirm "packaging/windows/PadfireCLI.spec"
+& $Python "tools/normalize_windows_licenses.py" --bundles "dist/Padfire" "dist/PadfireCLI"
+if ($LASTEXITCODE -ne 0) { throw "Could not stage license documents in the Windows bundles." }
 $Executable = Join-Path $RepoRoot "dist\Padfire\Padfire.exe"
 $CliExecutable = Join-Path $RepoRoot "dist\PadfireCLI\PadfireCLI.exe"
 if (-not (Test-Path $Executable)) {
