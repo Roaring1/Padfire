@@ -1,49 +1,43 @@
-Packaging extras (not part of the git repo)
-============================================
+Padfire packaging
+=================
 
-padfire.desktop     - Desktop launcher entry. Uses Exec=padfire-launch so it
-                       works when padfire-launch is installed in PATH (for
-                       example ~/bin). Uses the theme icon audio-x-generic so
-                       it does not depend on a missing local icon file.
-padfire.service     - systemd --user unit (autostart). ExecStart uses
-                       %h/bin/padfire-launch, avoiding a hardcoded username.
-                       It depends on PipeWire / pipewire-pulse / WirePlumber
-                       and otherwise leaves display/session variables to the
-                       user service environment.
+Linux
+-----
+padfire.desktop
+    Desktop launcher entry. Uses Exec=padfire-launch and the theme icon
+    audio-x-generic.
+
+padfire.service
+    Optional systemd --user unit; depends on the logged-in graphical session
+    and PipeWire / WirePlumber.
+
 extra-scripts/padfire_test.py
-                    - Standalone MIDI smoke-test script (not wired into the
-                      app) for confirming the Launchpad Mini talks the
-                      expected note/CC layout before debugging padfire.py
-                      itself. Needs `mido`.
+    Standalone Launchpad Mini MIDI protocol smoke test. It sends LED messages
+    to hardware and is intentionally not run in automated CI.
+
 extra-scripts/padfire-restart.sh
-                    - Dev helper: syntax-checks padfire.py, kills any
-                      running instance, and relaunches it with logs tailed.
-                      It resolves the repo root from its own location and can
-                      be overridden with PADFIRE_PY, PADFIRE_LAUNCH,
-                      PADFIRE_LOG, and PADFIRE_SOCK.
+    Linux developer helper for syntax-checking and restarting the GTK app.
 
-Deliberately NOT included: ~/.config/padfire/padfire.json (the live pad
-config). It's full of this-machine's personal file paths (sound files under
-~/Downloads, scripts under a specific mounted drive) and isn't relevant to
-debugging Padfire's own code. Config schema, for reference, is a "pages"
-list of dicts keyed by Launchpad note (grid row*16+col, side pads row*16+8),
-each either:
-  {"action": "play", "file": ..., "sink": ..., "vol": 0-150, "loop": bool,
-   "label": ..., "retrigger": "global"|"restart"|"toggle", "color": ...,
-   "notes": ...}
-  {"action": "script", "cmd": ..., "pid_file": ..., "label": ...,
-   "color": ..., "notes": ...}
-  {"action": "stop_sfx"} / {"action": "stop_all"} /
-  {"action": "stop_key", "stop_key": "<page>:<note>"}
-Top-level keys also include "version", "default_sink",
-"stop_on_page_change", "retrigger", "monitor_enabled", "monitor_sink".
+Windows
+-------
+windows/requirements.txt
+    Runtime and build dependencies for the native PySide6 / PortAudio front end.
 
-Install on the second PC:
-  git clone git@github.com:Roaring1/Padfire.git
-  # or: git clone https://github.com/Roaring1/Padfire.git
-  cd Padfire
-  ./padfire-launch            # sets JACK env suppression, then runs padfire.py
-  # optionally: ln -s "$(pwd)/padfire-launch" ~/bin/padfire-launch
-  # then install packaging/padfire.desktop into ~/.local/share/applications/,
-  # and packaging/padfire.service into ~/.config/systemd/user/ if you want
-  # autostart.
+windows/build.ps1
+    PowerShell build/test entry point. Creates dist/Padfire.exe with PyInstaller.
+
+windows/Padfire.spec
+    PyInstaller one-file application definition.
+
+windows/Padfire.iss
+    Optional Inno Setup installer definition. It is per-user and does not
+    require administrator privileges.
+
+The live configuration file is never stored in the repository. It contains
+user-specific audio paths and script commands. The portable data contract is
+the version-5 padfire.json schema documented in the root README.
+
+    windows/PadfireCLI.spec
+        Separate console executable for --status / --show / --stop / --reload /
+        --quit / startup management. The GUI exe stays windowed and has no
+        attached console.

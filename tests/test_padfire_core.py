@@ -4,11 +4,14 @@ import importlib.util
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 TEST_HOME = Path(tempfile.mkdtemp(prefix="padfire-core-test-home-"))
 os.environ["HOME"] = str(TEST_HOME)
 

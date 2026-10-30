@@ -12,6 +12,11 @@ sys.stdout.reconfigure(line_buffering=True)
 
 import mido
 from pathlib import Path
+from padfire_core import (
+    CONFIG_VERSION, DEFAULT_CONFIG, LINUX_VERSION, get_paths,
+    load_config_file, migrate_config as _migrate,
+    migrate_legacy_config, save_config_file,
+)
 
 import gi
 gi.require_version("Gtk", "3.0")
@@ -26,33 +31,16 @@ try:
 except Exception:
     AI = None
 
-VER      = "2.3"
-HOME     = Path.home()
-CFGDIR   = HOME / ".config" / "padfire"
-SOCK     = str(CFGDIR / "padfire.sock")
-PIDF     = str(CFGDIR / "padfire.pid")
-CONF     = str(CFGDIR / "padfire.json")
-HEARTH_SOCK = str(HOME / ".config" / "hearth" / "rac.sock")
-RAC_SOCK = HEARTH_SOCK  # alias -- where hearth's IPC socket lives
-
-# One-time migration: move config from old ~/.config/roaring/ location
-_OLD_CFGDIR = HOME / ".config" / "roaring"
-for _old, _new in [
-    (_OLD_CFGDIR / "padfire.json", CFGDIR / "padfire.json"),
-]:
-    if _old.exists() and not _new.exists():
-        CFGDIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(_old), str(_new))
-        print(f"[config] migrated {_old} -> {_new}")
-
-# The old dir also held a socket + pid file nothing reads any more; leaving
-# them behind made it look like another instance was live.
-if (CFGDIR / "padfire.json").exists():
-    for _stale in ("padfire.sock", "padfire.pid"):
-        try:
-            _sp = _OLD_CFGDIR / _stale
-            if _sp.exists(): _sp.unlink()
-        except Exception: pass
+VER = LINUX_VERSION
+HOME = Path.home()
+_PATHS = get_paths()
+CFGDIR = _PATHS.config_dir
+SOCK = str(_PATHS.socket_file)
+PIDF = str(_PATHS.pid_file)
+CONF = str(_PATHS.config_file)
+HEARTH_SOCK = str(_PATHS.hearth_socket) if _PATHS.hearth_socket else ""
+RAC_SOCK = HEARTH_SOCK
+migrate_legacy_config(CONF)
 
 DEVICE_SUBSTR = "Launchpad Mini"
 # The Mini MK3 also reports as "Launchpad Mini" but uses a different
@@ -204,68 +192,14 @@ button.act-on:hover { background: rgba(48,209,88,0.28); }
 #vu progress { background: linear-gradient(to right,#30d158,#ff9f0a 65%,#ff453a); border-radius: 2px; }
 """
 
-CONFIG_VERSION = 5
-
-DEFAULT_CONFIG = {
-    "version":             CONFIG_VERSION,
-    "default_sink":        "vm_game",
-    "stop_on_page_change": False,
-    "retrigger":           "restart",
-    "monitor_enabled":     False,
-    "monitor_sink":        "alsa_output.usb-Astro_Gaming_Astro_A50-00.stereo-game",
-    "pages":               [{} for _ in range(NUM_PAGES)],
-}
-
-def _migrate(c):
-    v = c.get("version", 1)
-    while len(c.get("pages", [])) < NUM_PAGES:
-        c.setdefault("pages", []).append({})
-    if v < 4:
-        c.setdefault("monitor_enabled", False)
-        c.setdefault("monitor_sink", "")
-        for page in c.get("pages", []):
-            for pad in page.values():
-                pad.setdefault("action", "play")
-    # v2.2 rewrote a global "toggle" back to "restart" on every upgrade from
-    # v<5, silently discarding a setting the dialog itself offers.
-    if c.get("retrigger") not in ("restart", "toggle"):
-        c["retrigger"] = "restart"
-    # Drop keys old builds wrote but nothing ever read, so the config stops
-    # carrying dead entries that look meaningful when you open the file.
-    c.pop("device", None)
-    for page in c.get("pages", []):
-        for pad in page.values():
-            if isinstance(pad, dict): pad.pop("mode", None)
-    c["version"] = CONFIG_VERSION
-    return c
-
 def load_config():
-    try:
-        c = json.loads(Path(CONF).read_text())
-        return _migrate(c)
-    except Exception:
-        return json.loads(json.dumps(DEFAULT_CONFIG))
+    return load_config_file(CONF)
+
 
 def save_config(cfg):
-    # atomic write + single rolling backup so a crash mid-save can't corrupt
-    # the file that holds every pad assignment
+    # Keep CFGDIR patchable for the hardware-free regression tests.
     CFGDIR.mkdir(parents=True, exist_ok=True)
-    dst = Path(CONF)
-    tmp = Path(str(dst) + ".tmp")
-    # flush + fsync before the rename: without it, power loss between write()
-    # and rename() can leave a 0-byte config, losing every pad assignment
-    with open(tmp, "w") as fh:
-        fh.write(json.dumps(cfg, indent=2))
-        fh.flush(); os.fsync(fh.fileno())
-    # copy (not move) the old file to .bak so CONF never stops existing --
-    # between the two os.replace calls there was a window with no config
-    if dst.exists():
-        try: shutil.copy2(str(dst), str(dst) + ".bak")
-        except Exception as e: print(f"[config] backup failed: {e}")
-    os.replace(str(tmp), str(dst))
-    try:
-        _dfd = os.open(str(CFGDIR), os.O_RDONLY); os.fsync(_dfd); os.close(_dfd)
-    except Exception: pass
+    return save_config_file(cfg, CONF)
 
 
 # audio engine -- paplay subprocess, no PortAudio
