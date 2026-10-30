@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+import subprocess
 from unittest.mock import patch
 from unittest.mock import patch
 
@@ -98,8 +99,9 @@ class PythonPadCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             script = Path(temp) / "sample pad.py"
             script.write_text("print('ok')", encoding="utf-8")
+            command = subprocess.list2cmdline([str(script)]) + " --flag"
             with patch.object(sys, "frozen", False, create=True):
-                launch, use_shell = command_for_platform(f'"{script}" --flag')
+                launch, use_shell = command_for_platform(command)
         self.assertEqual(launch, [sys.executable, str(script), "--flag"])
         self.assertFalse(use_shell)
 
