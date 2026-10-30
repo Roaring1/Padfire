@@ -81,7 +81,7 @@ jobs:
         run: python -m pip install --upgrade pip; python -m pip install -r packaging/windows/requirements.txt
         shell: pwsh
       - name: Collect runtime third-party license files
-        run: python tools/collect_third_party_licenses.py --output packaging/windows/generated_licenses
+        run: python tools/collect_third_party_licenses.py --output packaging/windows/generated_licenses --fail-on-missing
       - name: Compile all Windows modules
         run: python -m compileall -q padfire_core.py padfire_win padfire_windows.py
       - name: Run shared config, MIDI and IPC tests
