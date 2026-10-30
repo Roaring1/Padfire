@@ -1374,9 +1374,21 @@ def install_startup(enable: bool) -> int:
         command = f'"{Path(sys.executable).resolve()}" "{script}"'
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
-        ) as key:
+        if enable:
+            # Fresh Windows profiles/runners may not have created this key yet.
+            # CreateKeyEx opens it when present and creates it when absent.
+            key_handle = winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
+            )
+        else:
+            try:
+                key_handle = winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE
+                )
+            except FileNotFoundError:
+                print("Padfire startup entry removed.")
+                return 0
+        with key_handle as key:
             if enable:
                 winreg.SetValueEx(key, "Padfire", 0, winreg.REG_SZ, command)
                 print("Padfire will start when this Windows user signs in.")
