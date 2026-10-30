@@ -3,23 +3,37 @@
 The Windows front end uses third-party libraries. Their licenses apply to those
 components independently of Padfire's own source/license status.
 
-## Qt for Python (PySide6) and Qt 6
+## Qt for Python (PySide6), Shiboken6 and Qt 6
 
-PySide6 is available under LGPLv3, GPLv2/GPLv3, or a commercial license. Qt
-components also have component-specific licensing; some modules are GPL-only.
-The Windows build is configured as a PyInstaller **one-folder** distribution so
-the Qt shared libraries remain separate from Padfire's Python executable and
-can be inspected and replaced by a user with compatible builds.
+For the Windows community build, Padfire selects the **LGPL v3** licensing
+option for the PySide6/Shiboken6 bindings and the Qt libraries. This is not a
+commercial Qt build. The PySide6 upstream project confirms that its PyPI
+community wheels are available under LGPLv3, GPLv2/GPLv3, or commercial terms:
+https://github.com/pyside/pyside-setup/blob/v6.12.0/README.pyside6_essentials.md
 
-Before redistributing a Windows binary, the distributor must select and comply
-with an applicable PySide6/Qt licensing option, include the applicable license
-texts and notices, preserve required copyright attributions, and meet any
-corresponding source/relinking requirements. A one-folder build is a packaging
-choice, not by itself proof of LGPL compliance. Review the official terms:
+The complete GNU LGPL v3 and GNU GPL v3 license texts are included in
+`ThirdPartyLicenses/LGPL-3.0-and-GPL-3.0.txt` in both Windows distributions.
+Qt/PySide use is also identified in the application's **About** dialog. Qt
+modules may have differing terms; the bundled Qt module/plugin inventory must
+be checked against the official Qt 6.12 licensing matrix before each release:
+https://doc.qt.io/qt-6.12/licensing.html
 
-- PySide6 package licensing: https://pypi.org/project/PySide6/
-- Qt licensing: https://doc.qt.io/qt-6/licensing.html
-- Qt for Python deployment: https://doc.qt.io/qtforpython-6/deployment/index.html
+**This notice and the license copies alone do not complete LGPL compliance.**
+Before redistributing the Windows binaries, the release must also provide the
+complete corresponding source for the exact Qt and PySide/Shiboken libraries
+used (or a legally valid written offer controlled by the distributor), preserve
+the user's ability to replace/relink compatible LGPL libraries and run the
+result, and provide any required installation information. A one-folder layout
+is helpful but is not, by itself, proof that those requirements are met.
+The current CI artifact is an engineering build, not a declaration that the
+Qt source/relinking obligations have been completed. See the official
+requirements:
+
+- Qt's LGPL obligations:
+  https://www.qt.io/development/open-source-lgpl-obligations
+- Qt's open-source licensing FAQ:
+  https://www.qt.io/faq/qt-open-source-licensing
+- PySide6 licensing: https://doc.qt.io/qtforpython-6/licenses.html
 - GNU LGPL v3: https://www.gnu.org/licenses/lgpl-3.0.html
 
 ## Other bundled/runtime dependencies
@@ -37,10 +51,13 @@ are independent of Padfire's MIT license:
 | SoundFile | BSD-3-Clause |
 | libsndfile | LGPL-2.1-or-later |
 | pyloudnorm | MIT |
-| PySide6-Essentials / Shiboken6 / Qt 6 | LGPLv3, GPL options, or commercial terms; exact Qt module terms vary |
+| PySide6-Essentials / Shiboken6 / Qt 6 | LGPLv3 selected for this build; exact Qt module terms vary |
+| CPython 3.12 runtime | Python Software Foundation License 2.0 |
+| PyInstaller bootloader | GPLv2 with the PyInstaller bootloader exception; inspect bundled notice |
 
 The Windows build runs `tools/collect_third_party_licenses.py` after
-installing its runtime requirements. It copies license/notice files exposed by
+installing its runtime requirements. It also includes the CPython PSF 2.0
+license and PyInstaller bootloader license/exception notice. It copies license/notice files exposed by
 the resolved wheels into `ThirdPartyLicenses/` in both GUI and CLI one-folder
 outputs, and generates `ThirdPartyLicenses/COMPONENTS.md` with exact installed
 versions and license metadata. If a wheel does not expose a matching license
