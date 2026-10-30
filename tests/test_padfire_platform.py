@@ -109,11 +109,11 @@ class PythonPadCommandTests(unittest.TestCase):
             script.write_text("print('ok')", encoding="utf-8")
             with (
                 patch.object(sys, "frozen", True, create=True),
-                patch("padfire_win.app.shutil.which", return_value=r"C:\\Python312\\python.exe") as which,
+                patch("padfire_win.app.shutil.which", return_value=r"C:\Python312\python.exe") as which,
             ):
                 launch, use_shell = command_for_platform(str(script))
         which.assert_called_once_with("python.exe")
-        self.assertEqual(launch, [r"C:\\Python312\\python.exe", str(script)])
+        self.assertEqual(launch, [r"C:\Python312\python.exe", str(script)])
         self.assertFalse(use_shell)
 
     def test_frozen_build_reports_missing_python_interpreter(self) -> None:
