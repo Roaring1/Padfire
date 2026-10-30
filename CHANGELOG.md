@@ -19,6 +19,7 @@
 - Separate cross-platform contract tests and an offscreen Qt smoke test.
 - A Windows GitHub Actions job that validates the UI and packages the executable.
 - The Inno Setup uninstaller removes the optional per-user sign-in entry before deleting the CLI.
+- Packaged Python script pads now resolve an external Python interpreter instead of accidentally relaunching the Padfire GUI.
 
 ### Preserved
 - The existing Linux GTK/PipeWire application, launcher, tray behavior,
