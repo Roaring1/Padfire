@@ -115,11 +115,10 @@ def component_license_notes(name: str, license_expression: str) -> list[str]:
 
     expected = "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
     if license_expression != expected:
-        return [
-            "- **REVIEW REQUIRED:** the PySide/Shiboken license expression changed "
-            "from the audited multi-option value; do not rely on the recorded "
-            "LGPL selection until the new wheel metadata and notices are reviewed."
-        ]
+        raise RuntimeError(
+            f"Unreviewed {name} license expression: {license_expression!r}. "
+            "Re-audit the wheel license options and notice files before packaging."
+        )
 
     return [
         "- **Build-selected option:** Padfire's Windows community build selects "

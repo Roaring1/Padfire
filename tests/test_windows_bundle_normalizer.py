@@ -51,10 +51,9 @@ class PySideLicenseInventoryTests(unittest.TestCase):
                 self.assertIn("not evidence", notes)
                 self.assertIn("LGPL-3.0-only.txt", notes)
 
-    def test_unexpected_qt_license_expression_requires_review(self) -> None:
-        notes = component_license_notes("PySide6_Essentials", "LicenseRef-Qt-Commercial")
-        self.assertEqual(len(notes), 1)
-        self.assertIn("REVIEW REQUIRED", notes[0])
+    def test_unexpected_qt_license_expression_fails_closed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "Unreviewed PySide6_Essentials license expression"):
+            component_license_notes("PySide6_Essentials", "LicenseRef-Qt-Commercial")
 
 
 
