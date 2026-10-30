@@ -27,6 +27,21 @@ configuration needed to determine which conditional third-party source paths
 were selected. Therefore the rows below are candidates for these binaries,
 not final binary attributions.
 
+Inspection of the exact `v6.12.0` PySide source tag shows that
+`create_wheels.py` stages `LicenseRef-Qt-Commercial.txt`, LGPL-3.0, GPL-2.0,
+GPL-3.0 and the Qt GPL exception as base files during wheel creation. The
+same tag's wheel metadata declares the LGPL/GPL alternatives, and its
+PySide6-Essentials README says the PyPI wheel contents are valid for either
+community open-source or commercial licensing. The short commercial file is
+therefore a reference notice, not a complete declaration of the chosen path.
+
+The Padfire inventory collector previously looked only inside `.dist-info`
+`licenses/` folders and for conventional filenames, which could overlook
+wheel files stored under a top-level `LICENSES/` directory. It now scans any
+`LICENSES/` directory reported by wheel metadata and fails the build if the
+PySide/Shiboken license expression changes unexpectedly. The bundle still
+carries complete LGPL/GPL texts independently of this wheel-file collection.
+
 ## PySide/Shiboken wheel notice versus selected license
 
 The PySide6-Essentials and Shiboken6 6.12.0 wheel metadata both declare

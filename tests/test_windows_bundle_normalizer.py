@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from tools.normalize_windows_licenses import normalize
-from tools.collect_third_party_licenses import component_license_notes
+from tools.collect_third_party_licenses import component_license_notes, is_license_path
 
 
 class NormalizeWindowsLicensesTests(unittest.TestCase):
@@ -39,6 +39,13 @@ class NormalizeWindowsLicensesTests(unittest.TestCase):
             self.assertTrue((bundle / "LICENSE").is_file())
             self.assertTrue((bundle / "THIRD_PARTY_NOTICES.md").is_file())
 
+
+class LicensePathDiscoveryTests(unittest.TestCase):
+    def test_license_directory_files_are_discovered(self) -> None:
+        self.assertTrue(is_license_path(Path("LICENSES/LGPL-3.0-only.txt")))
+        self.assertTrue(is_license_path(Path("pkg.dist-info/licenses/LicenseRef-Qt-Commercial.txt")))
+        self.assertTrue(is_license_path(Path("LICENSE")))
+        self.assertFalse(is_license_path(Path("PySide6/Qt6Core.dll")))
 
 class PySideLicenseInventoryTests(unittest.TestCase):
     def test_commercial_reference_notice_is_not_mistaken_for_selected_license(self) -> None:

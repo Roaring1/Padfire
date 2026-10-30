@@ -83,19 +83,18 @@ def runtime_distributions() -> list[metadata.Distribution]:
     )
 
 
+def is_license_path(relative: PurePosixPath) -> bool:
+    """Recognize license directories as well as conventional root filenames."""
+    parts = [part.casefold() for part in relative.parts]
+    filename = relative.name.casefold()
+    return "licenses" in parts or filename.startswith(LICENSE_PREFIXES)
+
 def license_files(distribution: metadata.Distribution) -> list[tuple[object, Path]]:
     """Find wheel-provided license/notice files without guessing their contents."""
     candidates: dict[str, tuple[object, Path]] = {}
     for package_path in distribution.files or ():
         relative = PurePosixPath(str(package_path))
-        parts = [part.casefold() for part in relative.parts]
-        filename = relative.name.casefold()
-        in_dist_info_licenses = (
-            "licenses" in parts
-            and any(part.endswith(".dist-info") for part in parts)
-        )
-        conventional_name = filename.startswith(LICENSE_PREFIXES)
-        if not (in_dist_info_licenses or conventional_name):
+        if not is_license_path(relative):
             continue
         source = Path(distribution.locate_file(package_path))
         try:
