@@ -123,9 +123,18 @@ def collect(output: Path) -> tuple[int, int]:
         "and must be resolved before public redistribution.",
         "",
     ]
-    copied_count = 0
+    copied_count = 1
     missing_count = 0
-    collect_python_license(output)
+    python_license = collect_python_license(output)
+    manifest_lines.extend(
+        [
+            f"## CPython {platform.python_version()}",
+            "",
+            "- License metadata: Python Software Foundation License 2.0",
+            f"- Included: `{python_license.relative_to(output).as_posix()}`",
+            "",
+        ]
+    )
 
     for distribution in distributions:
         name = distribution.metadata.get("Name") or "Unknown"
@@ -188,7 +197,7 @@ def collect(output: Path) -> tuple[int, int]:
 
 
 
-def collect_python_license(output: Path) -> None:
+def collect_python_license(output: Path) -> Path:
     """Include the license for the CPython runtime embedded by PyInstaller."""
     candidates = (
         Path(sys.base_prefix) / "LICENSE.txt",
@@ -204,7 +213,9 @@ def collect_python_license(output: Path) -> None:
         )
     destination = output / f"Python-{safe_name(platform.python_version())}"
     destination.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination / "PSF-2.0.txt")
+    target = destination / "PSF-2.0.txt"
+    shutil.copy2(source, target)
+    return target
 
 
 def main() -> int:
@@ -215,10 +226,17 @@ def main() -> int:
         default=Path("packaging/windows/generated_licenses"),
         help="output directory for third-party license files",
     )
+    parser.add_argument(
+        "--fail-on-missing",
+        action="store_true",
+        help="return a failure when any runtime distribution has no bundled license file",
+    )
     args = parser.parse_args()
     copied, missing = collect(args.output)
     print(f"Collected {copied} license/notice files; {missing} distributions need review.")
     print(f"Manifest: {args.output.resolve() / 'COMPONENTS.md'}")
+    if args.fail_on_missing and missing:
+        return 1
     return 0
 
 
