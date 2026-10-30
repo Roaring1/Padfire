@@ -80,6 +80,8 @@ jobs:
       - name: Install Windows runtime and build dependencies
         run: python -m pip install --upgrade pip; python -m pip install -r packaging/windows/requirements.txt
         shell: pwsh
+      - name: Collect runtime third-party license files
+        run: python tools/collect_third_party_licenses.py --output packaging/windows/generated_licenses
       - name: Compile all Windows modules
         run: python -m compileall -q padfire_core.py padfire_win padfire_windows.py
       - name: Run shared config, MIDI and IPC tests
@@ -96,11 +98,14 @@ jobs:
           if (-not (Test-Path "dist\Padfire\Padfire.exe")) { throw "Padfire.exe was not produced" }
           if (-not (Test-Path "dist\PadfireCLI\PadfireCLI.exe")) { throw "PadfireCLI.exe was not produced" }
           foreach ($folder in @("dist\Padfire", "dist\PadfireCLI")) {
-            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md")) {
+            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "ThirdPartyLicenses\COMPONENTS.md")) {
               if (-not (Test-Path (Join-Path $folder $file))) {
                 throw "$folder is missing $file"
               }
             }
+            $componentFiles = Get-ChildItem (Join-Path $folder "ThirdPartyLicenses") -File -Recurse |
+              Where-Object { $_.Name -ne "COMPONENTS.md" }
+            if (-not $componentFiles) { throw "$folder has no third-party license files or review markers" }
           }
           & "dist\PadfireCLI\PadfireCLI.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "Packaged CLI --version smoke test failed" }
@@ -137,11 +142,14 @@ jobs:
             throw "Installer did not lay down the expected GUI, CLI and uninstaller"
           }
           foreach ($folder in @($installDir, (Join-Path $installDir "CLI"))) {
-            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md")) {
+            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "ThirdPartyLicenses\COMPONENTS.md")) {
               if (-not (Test-Path (Join-Path $folder $file))) {
                 throw "Installed folder $folder is missing $file"
               }
             }
+            $componentFiles = Get-ChildItem (Join-Path $folder "ThirdPartyLicenses") -File -Recurse |
+              Where-Object { $_.Name -ne "COMPONENTS.md" }
+            if (-not $componentFiles) { throw "Installed folder $folder has no third-party license files or review markers" }
           }
 
           & $cli --install
