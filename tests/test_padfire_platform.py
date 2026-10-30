@@ -17,7 +17,8 @@ from padfire_core import (
 )
 from padfire_win.ipc import IPCServer, ipc_send
 from padfire_win.midi import MidiEngine, note_side, note_xy
-from padfire_win.app import command_for_platform
+import padfire_win.app as windows_app
+from padfire_win.app import command_for_platform, install_startup
 
 
 class ConfigPortTests(unittest.TestCase):
@@ -128,6 +129,81 @@ class PythonPadCommandTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(FileNotFoundError, "requires python.exe or py.exe"):
                     command_for_platform(str(script))
+
+
+class StartupRegistrationTests(unittest.TestCase):
+    def test_install_creates_run_key_and_registers_gui_from_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            cli_dir = root / "CLI"
+            cli_dir.mkdir()
+            cli_exe = cli_dir / "PadfireCLI.exe"
+            gui_exe = root / "Padfire.exe"
+            cli_exe.touch()
+            gui_exe.touch()
+
+            key = unittest.mock.MagicMock()
+            registry = type("FakeWinreg", (), {
+                "HKEY_CURRENT_USER": object(),
+                "KEY_SET_VALUE": 2,
+                "REG_SZ": 1,
+                "CreateKeyEx": unittest.mock.MagicMock(return_value=key),
+                "OpenKey": unittest.mock.MagicMock(),
+                "SetValueEx": unittest.mock.MagicMock(),
+                "DeleteValue": unittest.mock.MagicMock(),
+            })()
+            fake_sys = type("FakeSys", (), {
+                "frozen": True,
+                "executable": str(cli_exe),
+                "stderr": sys.stderr,
+            })()
+
+            with (
+                patch.object(windows_app, "os", type("FakeOS", (), {"name": "nt"})()),
+                patch.object(windows_app, "sys", fake_sys),
+                patch.dict(sys.modules, {"winreg": registry}),
+            ):
+                result = install_startup(True)
+
+            self.assertEqual(result, 0)
+            registry.CreateKeyEx.assert_called_once_with(
+                registry.HKEY_CURRENT_USER,
+                r"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                0,
+                registry.KEY_SET_VALUE,
+            )
+            registry.OpenKey.assert_not_called()
+            registry.SetValueEx.assert_called_once_with(
+                key, "Padfire", 0, registry.REG_SZ, f'"{gui_exe.resolve()}"'
+            )
+
+    def test_uninstall_succeeds_when_run_key_does_not_exist(self) -> None:
+        registry = type("FakeWinreg", (), {
+            "HKEY_CURRENT_USER": object(),
+            "KEY_SET_VALUE": 2,
+            "REG_SZ": 1,
+            "CreateKeyEx": unittest.mock.MagicMock(),
+            "OpenKey": unittest.mock.MagicMock(side_effect=FileNotFoundError),
+            "SetValueEx": unittest.mock.MagicMock(),
+            "DeleteValue": unittest.mock.MagicMock(),
+        })()
+        fake_sys = type("FakeSys", (), {
+            "frozen": True,
+            "executable": "PadfireCLI.exe",
+            "stderr": sys.stderr,
+        })()
+
+        with (
+            patch.object(windows_app, "os", type("FakeOS", (), {"name": "nt"})()),
+            patch.object(windows_app, "sys", fake_sys),
+            patch.dict(sys.modules, {"winreg": registry}),
+        ):
+            result = install_startup(False)
+
+        self.assertEqual(result, 0)
+        registry.OpenKey.assert_called_once()
+        registry.CreateKeyEx.assert_not_called()
+        registry.DeleteValue.assert_not_called()
 
 
 class MidiContractTests(unittest.TestCase):
