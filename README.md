@@ -87,8 +87,9 @@ Windows, and choose Windows output devices in Settings.
 The install command adds a per-user Windows sign-in entry under
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run; it does not request
 administrator access. The console companion removes the entry with
---uninstall. Run that command before uninstalling Padfire from Windows; the
-Inno Setup uninstaller does not manage a separately-created Run entry.
+`--uninstall`. For a manually deployed one-folder build, run that command
+before deleting the folder. The Inno Setup uninstaller runs this cleanup
+automatically before removing the installed files.
 
 In the installed build, use the console companion for commands and scripting:
 
