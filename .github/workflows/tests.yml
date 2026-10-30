@@ -99,6 +99,49 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Packaged CLI --version smoke test failed" }
           $status = & "dist\PadfireCLI\PadfireCLI.exe" --status | ConvertFrom-Json
           if ($status.running -ne $false) { throw "Expected --status to report no running instance" }
+      - name: Install Inno Setup compiler
+        shell: pwsh
+        run: |
+          choco install innosetup --version=6.7.1 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compiler installation failed" }
+      - name: Build and verify per-user installer lifecycle
+        shell: pwsh
+        run: |
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          if (-not $compiler) {
+            $compilerPath = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\\ISCC.exe"
+            if (-not (Test-Path $compilerPath)) { throw "ISCC.exe was not installed" }
+          } else {
+            $compilerPath = $compiler.Source
+          }
+          & $compilerPath "packaging/windows/Padfire.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
+          $installer = Join-Path $PWD "dist\\installer\\Padfire-Setup-2.4-dev.exe"
+          if (-not (Test-Path $installer)) { throw "Installer output was not created" }
+
+          $installDir = Join-Path $env:RUNNER_TEMP "Padfire Installer E2E"
+          $installArgs = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$installDir`""
+          $installed = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru
+          if ($installed.ExitCode -ne 0) { throw "Silent installer failed: $($installed.ExitCode)" }
+          $gui = Join-Path $installDir "Padfire.exe"
+          $cli = Join-Path $installDir "CLI\\PadfireCLI.exe"
+          $uninstaller = Join-Path $installDir "unins000.exe"
+          if (-not (Test-Path $gui) -or -not (Test-Path $cli) -or -not (Test-Path $uninstaller)) {
+            throw "Installer did not lay down the expected GUI, CLI and uninstaller"
+          }
+
+          & $cli --install
+          if ($LASTEXITCODE -ne 0) { throw "Installed CLI could not register startup" }
+          $runKey = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+          $startup = (Get-ItemProperty -Path $runKey -Name Padfire -ErrorAction Stop).Padfire
+          if ($startup -ne "`"$gui`"") { throw "Startup value does not point at the installed GUI: $startup" }
+
+          $removed = Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru
+          if ($removed.ExitCode -ne 0) { throw "Silent uninstall failed: $($removed.ExitCode)" }
+          $remaining = Get-ItemProperty -Path $runKey -Name Padfire -ErrorAction SilentlyContinue
+          if ($null -ne $remaining) { throw "Uninstaller left the Padfire sign-in entry behind" }
+          if ((Test-Path $gui) -or (Test-Path $cli)) { throw "Uninstaller left application executables behind" }
+          Write-Host "PASS: installer installs GUI+CLI, CLI startup registration works, and uninstall removes the Run entry."
       - name: Upload Windows executable
         uses: actions/upload-artifact@v4
         with:
