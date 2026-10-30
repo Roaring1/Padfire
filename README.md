@@ -106,10 +106,13 @@ In the installed build, use the console companion for commands and scripting:
     .\packaging\windows\build.ps1 -Clean
 
 This runs syntax checks, the cross-platform contract tests, an offscreen Qt UI
-smoke test and a PyInstaller build. It creates two one-folder builds: the windowed UI at dist\Padfire\Padfire.exe
-and the console control utility at dist\PadfireCLI\PadfireCLI.exe. Qt shared
-libraries remain separate beside each executable rather than being hidden in
-one opaque file.
+smoke test, collects license files from the installed runtime wheels, and
+builds two one-folder distributions: the windowed UI at dist\Padfire\Padfire.exe
+and the console utility at dist\PadfireCLI\PadfireCLI.exe. Each package contains
+the MIT project license, the third-party notice, and a generated
+ThirdPartyLicenses\COMPONENTS.md inventory with the license files found in
+the resolved build environment. Qt shared libraries remain separate beside
+each executable rather than being hidden in one opaque file.
 
 To also produce a per-user installer, install Inno Setup and run:
 
