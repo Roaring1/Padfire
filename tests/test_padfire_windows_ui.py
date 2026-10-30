@@ -4,9 +4,10 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from padfire_win.app import PadfireWindow
 
@@ -37,6 +38,39 @@ class WindowsUiSmokeTests(unittest.TestCase):
                 self.assertTrue(window._status()["running"])
                 window.show()
                 self.app.processEvents()
+            finally:
+                window._quitting = True
+                window.audio.stop_all()
+                window.close()
+                if old_appdata is None:
+                    os.environ.pop("APPDATA", None)
+                else:
+                    os.environ["APPDATA"] = old_appdata
+                if old_local is None:
+                    os.environ.pop("LOCALAPPDATA", None)
+                else:
+                    os.environ["LOCALAPPDATA"] = old_local
+
+    def test_about_button_and_qt_lgpl_notice_are_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            appdata = Path(temp) / "Roaming"
+            local = Path(temp) / "Local"
+            old_appdata = os.environ.get("APPDATA")
+            old_local = os.environ.get("LOCALAPPDATA")
+            os.environ["APPDATA"] = str(appdata)
+            os.environ["LOCALAPPDATA"] = str(local)
+            window = PadfireWindow(enable_hardware=False, start_ipc=False)
+            try:
+                about = window.findChild(QPushButton, "aboutButton")
+                self.assertIsNotNone(about)
+                self.assertEqual(about.text(), "About")
+                with patch("padfire_win.app.QMessageBox.about") as show_about:
+                    window._show_about()
+                self.assertTrue(show_about.called)
+                message = show_about.call_args.args[2]
+                self.assertIn("LGPLv3", message)
+                self.assertIn("LGPL-3.0-and-GPL-3.0.txt", message)
+                self.assertIn("COMPONENTS.md", message)
             finally:
                 window._quitting = True
                 window.audio.stop_all()
