@@ -115,7 +115,18 @@ def command_for_platform(command: str) -> tuple[str | list[str], bool]:
         if interpreter:
             return [interpreter, "-NoProfile", "-File", first, *parts[1:]], False
     if suffix == ".py" and Path(first).is_file():
-        return [sys.executable, first, *parts[1:]], False
+        if getattr(sys, "frozen", False):
+            # The frozen executable is Padfire.exe, not a Python interpreter.
+            # A packaged install may still run user-authored Python pads when
+            # a separate Python installation is available on PATH.
+            interpreter = shutil.which("python.exe") or shutil.which("py.exe")
+            if not interpreter:
+                raise FileNotFoundError(
+                    "Running .py pads from the packaged app requires python.exe or py.exe on PATH."
+                )
+        else:
+            interpreter = sys.executable
+        return [interpreter, first, *parts[1:]], False
     return command, True
 
 
