@@ -18,7 +18,7 @@ $Python = (Get-Command python -ErrorAction Stop).Source
 & $Python --version
 & $Python -m pip install --upgrade pip
 & $Python -m pip install -r "packaging/windows/requirements.txt"
-& $Python "tools/collect_third_party_licenses.py" --output "packaging/windows/generated_licenses"
+& $Python "tools/collect_third_party_licenses.py" --output "packaging/windows/generated_licenses" --fail-on-missing
 if ($LASTEXITCODE -ne 0) { throw "Third-party license collection failed." }
 & $Python -m compileall -q "padfire_core.py" "padfire_win" "padfire_windows.py"
 & $Python -m unittest discover -s tests -p "test_padfire_platform.py"
