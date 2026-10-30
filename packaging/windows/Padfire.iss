@@ -34,3 +34,6 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch Padfire"; Flags: postinstall nowait skipifsilent
+
+[UninstallRun]
+Filename: "{sys}\\reg.exe"; Parameters: "delete \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\" /v \"Padfire\" /f"; Flags: runhidden
