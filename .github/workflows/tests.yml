@@ -136,6 +136,13 @@ jobs:
           if (-not (Test-Path $gui) -or -not (Test-Path $cli) -or -not (Test-Path $uninstaller)) {
             throw "Installer did not lay down the expected GUI, CLI and uninstaller"
           }
+          foreach ($folder in @($installDir, (Join-Path $installDir "CLI"))) {
+            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md")) {
+              if (-not (Test-Path (Join-Path $folder $file))) {
+                throw "Installed folder $folder is missing $file"
+              }
+            }
+          }
 
           & $cli --install
           if ($LASTEXITCODE -ne 0) { throw "Installed CLI could not register startup" }
