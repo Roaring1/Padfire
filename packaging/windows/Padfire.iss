@@ -23,7 +23,7 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 [Files]
 Source: "..\..\dist\Padfire\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\dist\PadfireCLI\*"; DestDir: "{app}\CLI"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+; LICENSE and THIRD_PARTY_NOTICES.md are shipped from the GUI one-folder payload.
 
 [Icons]
 Name: "{autoprograms}\Padfire"; Filename: "{app}\{#MyAppExeName}"
