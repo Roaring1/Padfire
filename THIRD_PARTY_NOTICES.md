@@ -27,10 +27,13 @@ the user's ability to replace/relink compatible LGPL libraries and run the
 result, and provide any required installation information. A one-folder layout
 is helpful but is not, by itself, proof that those requirements are met.
 The current CI artifact is an engineering build, not a declaration that the
-Qt source/relinking obligations have been completed. See
+Qt source/relinking obligations have been completed. The repository provides
+a separate CI source-package workflow that verifies and assembles the official
+Qt and PySide 6.12.0 archives (90-day Actions artifact); this is not a permanent
+written source offer. See
 [WINDOWS_QT_SOURCE_COMPLIANCE.md](WINDOWS_QT_SOURCE_COMPLIANCE.md) for the exact
-6.12.0 source references and outstanding release checklist. See the official
-requirements:
+checksums, source workflow, binary component inventory and remaining release
+checklist. See the official requirements:
 
 - Qt's LGPL obligations:
   https://www.qt.io/development/open-source-lgpl-obligations
