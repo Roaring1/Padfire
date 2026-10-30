@@ -109,14 +109,14 @@ jobs:
         run: |
           $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
           if (-not $compiler) {
-            $compilerPath = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\\ISCC.exe"
+            $compilerPath = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
             if (-not (Test-Path $compilerPath)) { throw "ISCC.exe was not installed" }
           } else {
             $compilerPath = $compiler.Source
           }
           & $compilerPath "packaging/windows/Padfire.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
-          $installer = Join-Path $PWD "dist\\installer\\Padfire-Setup-2.4-dev.exe"
+          $installer = Join-Path $PWD "dist\installer\Padfire-Setup-2.4-dev.exe"
           if (-not (Test-Path $installer)) { throw "Installer output was not created" }
 
           $installDir = Join-Path $env:RUNNER_TEMP "Padfire Installer E2E"
@@ -124,7 +124,7 @@ jobs:
           $installed = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru
           if ($installed.ExitCode -ne 0) { throw "Silent installer failed: $($installed.ExitCode)" }
           $gui = Join-Path $installDir "Padfire.exe"
-          $cli = Join-Path $installDir "CLI\\PadfireCLI.exe"
+          $cli = Join-Path $installDir "CLI\PadfireCLI.exe"
           $uninstaller = Join-Path $installDir "unins000.exe"
           if (-not (Test-Path $gui) -or -not (Test-Path $cli) -or -not (Test-Path $uninstaller)) {
             throw "Installer did not lay down the expected GUI, CLI and uninstaller"
@@ -132,7 +132,7 @@ jobs:
 
           & $cli --install
           if ($LASTEXITCODE -ne 0) { throw "Installed CLI could not register startup" }
-          $runKey = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+          $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
           $startup = (Get-ItemProperty -Path $runKey -Name Padfire -ErrorAction Stop).Padfire
           if ($startup -ne "`"$gui`"") { throw "Startup value does not point at the installed GUI: $startup" }
 
