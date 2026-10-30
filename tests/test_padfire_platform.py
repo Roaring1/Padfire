@@ -142,12 +142,13 @@ class StartupRegistrationTests(unittest.TestCase):
             cli_exe.touch()
             gui_exe.touch()
 
-            key = unittest.mock.MagicMock()
+            key_handle = unittest.mock.MagicMock()
+            opened_key = key_handle.__enter__.return_value
             registry = type("FakeWinreg", (), {
                 "HKEY_CURRENT_USER": object(),
                 "KEY_SET_VALUE": 2,
                 "REG_SZ": 1,
-                "CreateKeyEx": unittest.mock.MagicMock(return_value=key),
+                "CreateKeyEx": unittest.mock.MagicMock(return_value=key_handle),
                 "OpenKey": unittest.mock.MagicMock(),
                 "SetValueEx": unittest.mock.MagicMock(),
                 "DeleteValue": unittest.mock.MagicMock(),
@@ -168,13 +169,13 @@ class StartupRegistrationTests(unittest.TestCase):
             self.assertEqual(result, 0)
             registry.CreateKeyEx.assert_called_once_with(
                 registry.HKEY_CURRENT_USER,
-                r"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
                 0,
                 registry.KEY_SET_VALUE,
             )
             registry.OpenKey.assert_not_called()
             registry.SetValueEx.assert_called_once_with(
-                key, "Padfire", 0, registry.REG_SZ, f'"{gui_exe.resolve()}"'
+                opened_key, "Padfire", 0, registry.REG_SZ, f'"{gui_exe.resolve()}"'
             )
 
     def test_uninstall_succeeds_when_run_key_does_not_exist(self) -> None:
