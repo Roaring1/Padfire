@@ -18,6 +18,7 @@
   startup registration, PyInstaller build metadata and an Inno Setup installer.
 - Separate cross-platform contract tests and an offscreen Qt smoke test.
 - A Windows GitHub Actions job that validates the UI and packages the executable.
+- The Inno Setup uninstaller removes the optional per-user sign-in entry before deleting the CLI.
 
 ### Preserved
 - The existing Linux GTK/PipeWire application, launcher, tray behavior,
