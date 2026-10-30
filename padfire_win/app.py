@@ -717,6 +717,11 @@ class PadfireWindow(QMainWindow):
         settings.setToolTip("Settings")
         settings.clicked.connect(self._open_settings)
         header.addWidget(settings)
+        about = QPushButton("About")
+        about.setObjectName("aboutButton")
+        about.setToolTip("About Padfire and third-party licenses")
+        about.clicked.connect(self._show_about)
+        header.addWidget(about)
         root.addLayout(header)
 
         grid_wrap = QWidget()
@@ -807,6 +812,9 @@ class PadfireWindow(QMainWindow):
         settings_action = QAction("Settings", self)
         settings_action.triggered.connect(self._open_settings)
         menu.addAction(settings_action)
+        about_action = QAction("About / licenses", self)
+        about_action.triggered.connect(self._show_about)
+        menu.addAction(about_action)
         menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self._quit)
@@ -819,6 +827,32 @@ class PadfireWindow(QMainWindow):
         )
         self._indicator.show()
         self._update_tray()
+
+    def _show_about(self) -> None:
+        """Display a prominent notice for Qt/PySide6 LGPL licensing."""
+        if getattr(sys, "frozen", False):
+            license_dir = Path(sys.executable).resolve().parent / "ThirdPartyLicenses"
+        else:
+            license_dir = Path(__file__).resolve().parents[1] / "licenses"
+        qt_license = license_dir / "LGPL-3.0-and-GPL-3.0.txt"
+        python_license = license_dir / "PSF-2.0.txt"
+        QMessageBox.about(
+            self,
+            "About Padfire",
+            "<h3>Padfire</h3>"
+            f"<p>Version {VERSION}</p>"
+            "<p>This application uses Qt 6, PySide6 and Shiboken6 under the "
+            "<b>GNU Lesser General Public License version 3 (LGPLv3)</b>.</p>"
+            "<p>The Qt/PySide license text and the GNU GPLv3 text incorporated "
+            "by LGPLv3 are included in "
+            "<code>ThirdPartyLicenses/LGPL-3.0-and-GPL-3.0.txt</code>.</p>"
+            "<p>Other bundled component licenses and exact package versions "
+            "are listed in <code>ThirdPartyLicenses/COMPONENTS.md</code>. "
+            "The Python runtime license is also included.</p>"
+            f"<p>License folder: <code>{license_dir}</code></p>"
+            f"<p>Qt license file present: {qt_license.is_file()}<br>"
+            f"Python license file present: {python_license.is_file()}</p>"
+        )
 
     def _persist(self) -> None:
         self.cfg["version"] = CONFIG_VERSION
