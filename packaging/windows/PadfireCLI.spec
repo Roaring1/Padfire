@@ -8,7 +8,7 @@ binaries = collect_dynamic_libs("_sounddevice_data") + collect_dynamic_libs("_so
 datas = collect_data_files("_sounddevice_data", excludes=["**/*.dll"])
 datas += collect_data_files("_soundfile_data", excludes=["**/*.dll"])
 a = Analysis(
-    ["padfire_windows_cli.py"],
+    [str(root / "padfire_windows_cli.py")],
     pathex=[str(root)],
     binaries=binaries,
     datas=datas,
