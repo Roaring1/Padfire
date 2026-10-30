@@ -34,7 +34,7 @@ jobs:
           shellcheck padfire-launch
       - name: Render the real GTK UI in a virtual display
         run: |
-          xvfb-run -a tools/padfire-shot --demo \
+          xvfb-run -a python3 tools/padfire-shot --demo \
             -o /tmp/padfire-shot.png --crop 60 --scale 200 --settle 500
           python3 - <<'PY'
           from pathlib import Path
