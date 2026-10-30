@@ -10,6 +10,7 @@ root = Path.cwd()
 binaries = collect_dynamic_libs("_sounddevice_data") + collect_dynamic_libs("_soundfile_data")
 datas = collect_data_files("_sounddevice_data", excludes=["**/*.dll"])
 datas += collect_data_files("_soundfile_data", excludes=["**/*.dll"])
+datas += [(str(root / "LICENSE"), "."), (str(root / "THIRD_PARTY_NOTICES.md"), ".")]
 a = Analysis(
     [str(root / "padfire_windows.py")],
     pathex=[str(root)],
