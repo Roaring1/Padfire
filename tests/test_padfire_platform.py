@@ -6,6 +6,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+import sys
+from unittest.mock import patch
 from unittest.mock import patch
 
 from padfire_core import (
@@ -14,6 +16,7 @@ from padfire_core import (
 )
 from padfire_win.ipc import IPCServer, ipc_send
 from padfire_win.midi import MidiEngine, note_side, note_xy
+from padfire_win.app import command_for_platform
 
 
 class ConfigPortTests(unittest.TestCase):
@@ -88,6 +91,41 @@ class ConfigPortTests(unittest.TestCase):
         config = default_config(windows=True)
         config["pages"][0] = "not-a-page"
         self.assertTrue(validate_pad_config(config))
+
+
+class PythonPadCommandTests(unittest.TestCase):
+    def test_source_checkout_uses_its_active_python_interpreter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            script = Path(temp) / "sample pad.py"
+            script.write_text("print('ok')", encoding="utf-8")
+            with patch.object(sys, "frozen", False, create=True):
+                launch, use_shell = command_for_platform(f'"{script}" --flag')
+        self.assertEqual(launch, [sys.executable, str(script), "--flag"])
+        self.assertFalse(use_shell)
+
+    def test_frozen_build_uses_an_external_python_interpreter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            script = Path(temp) / "sample.py"
+            script.write_text("print('ok')", encoding="utf-8")
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch("padfire_win.app.shutil.which", return_value=r"C:\\Python312\\python.exe") as which,
+            ):
+                launch, use_shell = command_for_platform(str(script))
+        which.assert_called_once_with("python.exe")
+        self.assertEqual(launch, [r"C:\\Python312\\python.exe", str(script)])
+        self.assertFalse(use_shell)
+
+    def test_frozen_build_reports_missing_python_interpreter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            script = Path(temp) / "sample.py"
+            script.write_text("print('ok')", encoding="utf-8")
+            with (
+                patch.object(sys, "frozen", True, create=True),
+                patch("padfire_win.app.shutil.which", return_value=None),
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "requires python.exe or py.exe"):
+                    command_for_platform(str(script))
 
 
 class MidiContractTests(unittest.TestCase):
