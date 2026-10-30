@@ -10,6 +10,8 @@ import argparse
 import importlib.metadata as metadata
 import re
 import shutil
+import sys
+import platform
 from pathlib import Path, PurePosixPath
 
 from packaging.markers import default_environment
@@ -24,6 +26,7 @@ RUNTIME_ROOTS = (
     "sounddevice",
     "soundfile",
     "pyloudnorm",
+    "PyInstaller",
 )
 LICENSE_PREFIXES = (
     "license",
@@ -122,6 +125,7 @@ def collect(output: Path) -> tuple[int, int]:
     ]
     copied_count = 0
     missing_count = 0
+    collect_python_license(output)
 
     for distribution in distributions:
         name = distribution.metadata.get("Name") or "Unknown"
@@ -181,6 +185,26 @@ def collect(output: Path) -> tuple[int, int]:
     manifest = output / "COMPONENTS.md"
     manifest.write_text("\n".join(manifest_lines).rstrip() + "\n", encoding="utf-8")
     return copied_count, missing_count
+
+
+
+def collect_python_license(output: Path) -> None:
+    """Include the license for the CPython runtime embedded by PyInstaller."""
+    candidates = (
+        Path(sys.base_prefix) / "LICENSE.txt",
+        Path(sys.base_prefix) / "LICENSE",
+        Path(sys.prefix) / "LICENSE.txt",
+        Path(sys.prefix) / "LICENSE",
+    )
+    source = next((path for path in candidates if path.is_file()), None)
+    if source is None:
+        raise RuntimeError(
+            "Could not find the Python Software Foundation license beside the "
+            f"build interpreter (sys.base_prefix={sys.base_prefix!r})."
+        )
+    destination = output / f"Python-{safe_name(platform.python_version())}"
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination / "PSF-2.0.txt")
 
 
 def main() -> int:
