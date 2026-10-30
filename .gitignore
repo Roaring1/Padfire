@@ -11,3 +11,4 @@ __pycache__/
 *.spec.bak
 *.manifest
 *.egg-info/
+packaging/windows/generated_licenses/
