@@ -82,6 +82,15 @@ jobs:
         shell: pwsh
       - name: Collect runtime third-party license files
         run: python tools/collect_third_party_licenses.py --output packaging/windows/generated_licenses --fail-on-missing
+      - name: Validate corresponding-source package recipe without downloading
+        shell: pwsh
+        run: |
+          $preview = Join-Path $env:RUNNER_TEMP "Qt Source Manifest Preview"
+          python tools/package_qt_corresponding_source.py --manifest-only --output $preview --binary-inventory packaging/windows/qt-binary-components-6.12.0.md
+          if ($LASTEXITCODE -ne 0) { throw "Qt source package manifest validation failed." }
+          if (-not (Select-String -Path (Join-Path $preview "SOURCE_MANIFEST.md") -Pattern "a72e89c33726d742e67edf494abf7b625eaffc756673221c9823322ecd1a32d1")) {
+            throw "Qt source SHA-256 is missing from source manifest."
+          }
       - name: Compile all Windows modules
         run: python -m compileall -q padfire_core.py padfire_win padfire_windows.py
       - name: Run shared config, MIDI and IPC tests
