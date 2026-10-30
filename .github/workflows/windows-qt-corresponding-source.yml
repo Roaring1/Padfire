@@ -1,0 +1,43 @@
+name: Qt corresponding source package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: padfire-qt-source-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qt-source:
+    name: Verify Qt 6.12.0 and PySide6 6.12.0 corresponding source
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Fetch and verify upstream source archives
+        shell: pwsh
+        run: |
+          python tools/package_qt_corresponding_source.py --output dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0
+          if ($LASTEXITCODE -ne 0) { throw "Qt/PySide source archive verification failed." }
+          if (-not (Test-Path "dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/Qt/qt-everywhere-src-6.12.0.zip")) {
+            throw "Verified Qt source archive missing."
+          }
+          if (-not (Test-Path "dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/PySide/pyside-setup-everywhere-src-6.12.0.tar.xz")) {
+            throw "Verified PySide/Shiboken source archive missing."
+          }
+          Get-Content "dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/SOURCE_MANIFEST.md"
+      - name: Upload corresponding source package
+        uses: actions/upload-artifact@v7
+        with:
+          name: Padfire-Windows-Qt-Corresponding-Source-6.12.0
+          path: dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
