@@ -95,6 +95,13 @@ jobs:
           python -m PyInstaller --clean --noconfirm packaging/windows/PadfireCLI.spec
           if (-not (Test-Path "dist\Padfire\Padfire.exe")) { throw "Padfire.exe was not produced" }
           if (-not (Test-Path "dist\PadfireCLI\PadfireCLI.exe")) { throw "PadfireCLI.exe was not produced" }
+          foreach ($folder in @("dist\Padfire", "dist\PadfireCLI")) {
+            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md")) {
+              if (-not (Test-Path (Join-Path $folder $file))) {
+                throw "$folder is missing $file"
+              }
+            }
+          }
           & "dist\PadfireCLI\PadfireCLI.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "Packaged CLI --version smoke test failed" }
           $status = & "dist\PadfireCLI\PadfireCLI.exe" --status | ConvertFrom-Json
