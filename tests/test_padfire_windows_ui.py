@@ -69,8 +69,9 @@ class WindowsUiSmokeTests(unittest.TestCase):
                 self.assertTrue(show_about.called)
                 message = show_about.call_args.args[2]
                 self.assertIn("LGPLv3", message)
-                self.assertIn("LGPL-3.0-and-GPL-3.0.txt", message)
-                self.assertIn("COMPONENTS.md", message)
+                self.assertIn("LGPL-3.0-only.txt", message)
+                self.assertIn("GPL-3.0-only.txt", message)
+                self.assertIn("THIRD_PARTY_NOTICES.md", message)
             finally:
                 window._quitting = True
                 window.audio.stop_all()
