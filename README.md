@@ -47,7 +47,8 @@ excluded until its different MIDI/LED protocol is implemented and tested.
 - Novation Launchpad Mini MK1 or MK2
 - A Windows playback device (WASAPI/shared mode through PortAudio)
 
-The Windows app uses PySide6 for its desktop UI, python-rtmidi for MIDI,
+The Windows app uses the lighter PySide6-Essentials distribution for its
+Qt desktop UI, python-rtmidi for MIDI,
 and sounddevice / soundfile for audio playback and decoding. The selected
 output is a Windows audio endpoint; an old Linux sink name found in an imported
 config safely falls back to the Windows system default until changed in
@@ -85,7 +86,8 @@ Windows, and choose Windows output devices in Settings.
 
 The install command adds a per-user Windows sign-in entry under
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run; it does not request
-administrator access. Uninstall removes only that Padfire entry.
+administrator access. Uninstall removes only that Padfire entry. The Inno
+Setup uninstaller also removes the entry when the installed app is removed.
 
 In the installed build, use the console companion for commands and scripting:
 
