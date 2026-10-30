@@ -41,6 +41,9 @@ also retains the dynamically loaded Qt and native audio/MIDI binaries.
 
 ## Padfire project license
 
-This repository currently has no root LICENSE file. This notice does not grant
-or select a license for Padfire's own code. The repository owner should choose
-and add an explicit project license before publishing a redistributable build.
+Padfire's own source code and documentation are licensed under the MIT License;
+the complete license text is in the repository's root `LICENSE` file. The MIT
+license applies only to Padfire-authored material. It does not relicense Qt,
+PySide6, Shiboken6, audio/MIDI libraries, codecs, or other third-party files
+included in a binary distribution. Each bundled component retains its own
+license and attribution requirements.
