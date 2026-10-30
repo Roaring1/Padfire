@@ -39,12 +39,20 @@ are independent of Padfire's MIT license:
 | pyloudnorm | MIT |
 | PySide6-Essentials / Shiboken6 / Qt 6 | LGPLv3, GPL options, or commercial terms; exact Qt module terms vary |
 
-These are project-level license identifiers, not a substitute for preserving
-the exact copyright and license text shipped by each resolved wheel and native
-library. The Windows build includes the root MIT license and this notice in
-both GUI and CLI one-folder outputs. Before a public redistribution, attach
-the exact component license files and Qt source/relinking information required
-for the versions and modules actually present in the artifact.
+The Windows build runs `tools/collect_third_party_licenses.py` after
+installing its runtime requirements. It copies license/notice files exposed by
+the resolved wheels into `ThirdPartyLicenses/` in both GUI and CLI one-folder
+outputs, and generates `ThirdPartyLicenses/COMPONENTS.md` with exact installed
+versions and license metadata. If a wheel does not expose a matching license
+file, the inventory creates a `LICENSE_FILE_NOT_INCLUDED.txt` review marker
+for that component instead of silently pretending the license was copied.
+
+This automated inventory is evidence collection, not a legal certification.
+Review each marker and every bundled native library before redistribution.
+Qt/PySide6 still requires a deliberate license path and, where LGPL is used,
+the applicable license texts, Qt source offer/corresponding source, relinking
+mechanism, and installation information. See the official Qt obligations
+linked below.
 
 Official component references:
 
