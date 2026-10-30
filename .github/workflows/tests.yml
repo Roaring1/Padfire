@@ -151,3 +151,11 @@ jobs:
             dist/PadfireCLI/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Padfire-Windows-Installer
+          path: dist/installer/Padfire-Setup-2.4-dev.exe
+          if-no-files-found: error
+          retention-days: 14
