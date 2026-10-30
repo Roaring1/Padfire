@@ -107,6 +107,33 @@ def license_files(distribution: metadata.Distribution) -> list[tuple[object, Pat
     return [candidates[key] for key in sorted(candidates)]
 
 
+def component_license_notes(name: str, license_expression: str) -> list[str]:
+    """Explain PySide/Shiboken's multi-option metadata and wheel notice accurately."""
+    key = re.sub(r"[-_.]+", "-", name).casefold()
+    if key not in {"pyside6-essentials", "shiboken6"}:
+        return []
+
+    expected = "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+    if license_expression != expected:
+        return [
+            "- **REVIEW REQUIRED:** the PySide/Shiboken license expression changed "
+            "from the audited multi-option value; do not rely on the recorded "
+            "LGPL selection until the new wheel metadata and notices are reviewed."
+        ]
+
+    return [
+        "- **Build-selected option:** Padfire's Windows community build selects "
+        "`LGPL-3.0-only` from the alternatives in the wheel metadata; see "
+        "`THIRD_PARTY_NOTICES.md`.",
+        "- **Wheel notice clarification:** the included "
+        "`LicenseRef-Qt-Commercial.txt` is a short reference for licensees with "
+        "separate commercial agreements. It is not the LGPL text and is not "
+        "evidence that this build selected the commercial option.",
+        "- The complete `LGPL-3.0-only.txt` text is included beside this inventory. "
+        "The selected license path does not by itself establish corresponding-"
+        "source, relinking/replacement, or installation-information compliance."
+    ]
+
 def collect(output: Path) -> tuple[int, int]:
     output = output.resolve()
     if output.exists():
@@ -154,6 +181,7 @@ def collect(output: Path) -> tuple[int, int]:
                 f"- License metadata: {license_expression}",
             ]
         )
+        manifest_lines.extend(component_license_notes(name, license_expression))
         project_urls = distribution.metadata.get_all("Project-URL") or []
         home_page = distribution.metadata.get("Home-page")
         if home_page:

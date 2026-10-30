@@ -139,6 +139,11 @@ No written source offer is made by this repository document.
 
 ## Current status
 
+- [x] Latest PR validation run [41038773415](https://github.com/Roaring1/Padfire/actions/runs/41038773415) passed both Linux and Windows jobs on commit `02a491d`. The Windows job passed the clean-profile startup registration test, silent installer lifecycle, and both artifact uploads. The portable bundle and installer are 14-day CI artifacts, not permanent releases:
+  - [Windows x64 portable GUI + CLI](https://github.com/Roaring1/Padfire/actions/runs/41038773415/artifacts/12968902897)
+  - [Windows installer](https://github.com/Roaring1/Padfire/actions/runs/41038773415/artifacts/12969835969)
+- [x] The tested portable artifact was inspected locally: both GUI and CLI folders contain their Qt modules/plugins, component inventories, LGPL/GPL texts, PSF notice and OpenSSL 3.0.16 Apache notice. CPython's `libssl-3.dll`/`libcrypto-3.dll` are present; the unrelated ambient `*-x64.dll` pair is absent.
+- [ ] Physical Launchpad Mini MK1/MK2 MIDI, LED feedback/reconnect, actual audio playback/quality, and visible Windows tray behavior remain untested.
 - [x] Padfire-authored code and documentation have an explicit MIT license.
 - [x] LGPLv3 and GPLv3 license texts are included in the Windows bundles.
 - [x] The About dialog identifies Qt/PySide6 use and points to the license files.

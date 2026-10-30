@@ -27,6 +27,22 @@ configuration needed to determine which conditional third-party source paths
 were selected. Therefore the rows below are candidates for these binaries,
 not final binary attributions.
 
+## PySide/Shiboken wheel notice versus selected license
+
+The PySide6-Essentials and Shiboken6 6.12.0 wheel metadata both declare
+`LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only`. Each wheel also includes a
+short `LicenseRef-Qt-Commercial.txt` file that points licensees with separate
+commercial agreements to those agreements. That file is not the LGPL text and
+does not show that commercial terms were selected for this build.
+
+Padfire records the LGPL-3.0-only option as the selected basis for its Windows
+community build; complete LGPLv3 and GPLv3 texts are distributed separately.
+The generated component inventory calls out this distinction. The project
+selection is a documented packaging decision, not an upstream build-specific
+SBOM or a legal determination that all LGPL conditions have been met. The
+corresponding-source, user replacement/relink, installation-information and
+module/plugin audit gates remain separate.
+
 ## Qt module and plugin implementation licensing
 
 The following sample implementation headers in the exact v6.12.0 source

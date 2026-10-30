@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from tools.normalize_windows_licenses import normalize
+from tools.collect_third_party_licenses import component_license_notes
 
 
 class NormalizeWindowsLicensesTests(unittest.TestCase):
@@ -37,6 +38,24 @@ class NormalizeWindowsLicensesTests(unittest.TestCase):
             self.assertTrue((bundle / "ThirdPartyLicenses" / "COMPONENTS.md").is_file())
             self.assertTrue((bundle / "LICENSE").is_file())
             self.assertTrue((bundle / "THIRD_PARTY_NOTICES.md").is_file())
+
+
+class PySideLicenseInventoryTests(unittest.TestCase):
+    def test_commercial_reference_notice_is_not_mistaken_for_selected_license(self) -> None:
+        expression = "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"
+        for component in ("PySide6_Essentials", "shiboken6"):
+            with self.subTest(component=component):
+                notes = "\\n".join(component_license_notes(component, expression))
+                self.assertIn("selects `LGPL-3.0-only`", notes)
+                self.assertIn("not the LGPL text", notes)
+                self.assertIn("not evidence", notes)
+                self.assertIn("LGPL-3.0-only.txt", notes)
+
+    def test_unexpected_qt_license_expression_requires_review(self) -> None:
+        notes = component_license_notes("PySide6_Essentials", "LicenseRef-Qt-Commercial")
+        self.assertEqual(len(notes), 1)
+        self.assertIn("REVIEW REQUIRED", notes[0])
+
 
 
 if __name__ == "__main__":
