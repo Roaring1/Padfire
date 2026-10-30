@@ -8,6 +8,11 @@ from pathlib import Path
 
 
 ROOT_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
+# PySide6 wheels do not ship OpenSSL for Windows. PyInstaller can nevertheless
+# pick up this unrelated versioned pair from the build runner PATH. Keep the
+# CPython 3.12.10 libssl-3.dll/libcrypto-3.dll pair, but do not redistribute the
+# ambient -x64 DLLs; Qt can use Windows Schannel or a user-supplied OpenSSL.
+AMBIENT_OPENSSL_DLLS = {"libcrypto-3-x64.dll", "libssl-3-x64.dll"}
 
 
 def normalize(bundle: Path, source_root: Path) -> None:
@@ -20,6 +25,17 @@ def normalize(bundle: Path, source_root: Path) -> None:
         if not source.is_file():
             raise FileNotFoundError(f"Repository legal file is missing: {source}")
         shutil.copy2(source, bundle / name)
+
+    removed = []
+    for candidate in bundle.rglob("*.dll"):
+        if candidate.name.casefold() in AMBIENT_OPENSSL_DLLS:
+            candidate.unlink()
+            removed.append(candidate.relative_to(bundle).as_posix())
+    if removed:
+        print(
+            "Removed non-wheel ambient OpenSSL DLLs: " + ", ".join(removed),
+            flush=True,
+        )
 
     destination = bundle / "ThirdPartyLicenses"
     candidates = (
