@@ -63,8 +63,12 @@ The repository now has a source-packaging workflow:
 - Script: `tools/package_qt_corresponding_source.py`
 - Output: unchanged Qt and PySide source archives, `SOURCE_MANIFEST.md`,
   `SHA256SUMS.txt`, and the audited binary component inventory.
-- Artifact: `Padfire-Windows-Qt-Corresponding-Source-6.12.0`, with 90-day
-  Actions retention.
+- Download artifacts (each with 90-day Actions retention):
+  - `Padfire-Windows-Qt-Source-6.12.0-Part-1-of-3`
+  - `Padfire-Windows-Qt-Source-6.12.0-Part-2-of-3`
+  - `Padfire-Windows-Qt-Source-6.12.0-Part-3-of-3`
+  - `Padfire-Windows-Qt-PySide-And-Source-Manifest-6.12.0`
+
 
 The workflow can be run manually from GitHub Actions. It is also triggered
 when its source recipe or the Qt binary component inventory changes on
@@ -72,15 +76,18 @@ when its source recipe or the Qt binary component inventory changes on
 retain either archive unless its exact size and SHA-256 match the official
 Qt mirror records above.
 
-The source archives are stored unchanged: the full Qt Windows source ZIP and
-the PySide/Shiboken source TAR.XZ. This provides a reproducible corresponding-
-source package for review and possible release attachment. It is not a
-permanent public source offer; the Actions artifact expires after 90 days.
+The source archives are stored unchanged. The Qt Windows source ZIP is split
+into three 250 MiB-or-smaller pieces, with per-piece SHA-256 values and a
+binary reassembly check. The PySide/Shiboken TAR.XZ and manifests are in a
+separate small artifact. Together these are a reproducible corresponding-source
+package for review and possible release attachment. They are not a permanent
+public source offer; each Actions artifact expires after 90 days.
 
 ### Binary module/plugin inventory
 
 The exact Qt libraries and plugins observed in the tested Windows artifact are
-listed in `packaging/windows/qt-binary-components-6.12.0.md`. The five module
+listed in `packaging/windows/qt-binary-components-6.12.0.md`. The source-based
+third-party license map is in `packaging/windows/qt-third-party-crosswalk-6.12.0.md`. The five module
 DLLs are Qt Core, GUI, Network, SVG and Widgets. The bundle also includes
 the Windows platform plugin, TLS backends, image format plugins, a style
 plugin, an icon engine, and a network information plugin.
@@ -110,9 +117,12 @@ path, the release owner must complete and verify all of the following:
    compatible modified versions and run the resulting application. The
    one-folder PyInstaller layout keeps DLLs visible, but visibility alone does
    not prove replaceability or successful relinking.
-4. Supply the required build/relink and installation information for the
+4. Obtain the Qt SPDX 2.3 SBOM that corresponds to the actual wheel binaries,
+   or get an authoritative source/build/third-party manifest from Qt for Python.
+   The source archive does not identify the exact wheel build configuration.
+5. Supply the required build/relink and installation information for the
    supported Windows target. Test replacement on a clean Windows machine.
-5. Audit the license of every Qt module and plugin actually bundled. If a
+6. Audit the license of every Qt module and plugin actually bundled. If a
    GPL-only component is present, re-evaluate the licensing of the combined
    application before release.
 
@@ -138,11 +148,15 @@ No written source offer is made by this repository document.
       SHA-256 values, and a CI workflow assembles them into a separate 90-day
       source artifact. The source artifact still needs a successful run and
       permanent release attachment; it is not embedded in the installer.
+- [ ] No build-specific Qt SPDX SBOM or exact PySide wheel source/build provenance has been obtained.
 - [ ] No controlled written source offer has been issued.
 - [ ] DLL replacement/relinking has not yet been demonstrated on Windows.
-- [ ] The first-pass DLL inventory contains no module DLL named on Qt's
-      published GPL-only module list, but per-plugin and third-party-code
-      license review remains incomplete.
+- [x] A first-pass Qt source/plugin map is recorded in
+      `packaging/windows/qt-third-party-crosswalk-6.12.0.md`.
+- [ ] Exact third-party dependencies/selected license variants remain unconfirmed
+      until the Qt/PySide build-specific SBOM is available. FreeType's FTL vs
+      GPL-2.0-only selection needs particular attention.
+- [ ] Review Microsoft Visual C++ runtime redistribution terms.
 
 Until the remaining items are complete, CI outputs should be treated as
 engineering/test artifacts, not as a declaration of release-ready LGPL
