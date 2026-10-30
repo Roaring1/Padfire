@@ -66,7 +66,9 @@ Official component references:
 - [Qt LGPL obligations](https://www.qt.io/development/open-source-lgpl-obligations)
 
 The PyInstaller outputs retain dynamically loaded Qt and native audio/MIDI
-binaries. The full notices are included with both the GUI and CLI packages.
+binaries. Both GUI and CLI packages include the root MIT license, this summary,
+the generated component inventory, and every license file found in the
+resolved wheels; missing wheel-provided files are explicitly marked for review.
 
 ## Padfire project license
 
