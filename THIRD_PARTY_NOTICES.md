@@ -42,6 +42,26 @@ checklist. See the official requirements:
 - PySide6 licensing: https://doc.qt.io/qtforpython-6/licenses.html
 - GNU LGPL v3: https://www.gnu.org/licenses/lgpl-3.0.html
 
+## CPython TLS runtime (OpenSSL)
+
+The Windows package contains CPython 3.12.10's `_ssl.pyd` extension and its
+OpenSSL 3.0.16 dependencies `libssl-3.dll` and `libcrypto-3.dll`. OpenSSL 3.x
+is licensed under Apache License 2.0; the exact OpenSSL 3.0.16 license text
+is included in `ThirdPartyLicenses/OpenSSL-3.0-Apache-2.0.txt` in both bundles.
+
+The Qt OpenSSL TLS backend plugin is also present, but it does not statically
+import OpenSSL. The official Qt for Python Windows-wheel documentation states
+that official Windows wheels do not ship OpenSSL libraries; Qt can use
+Windows Schannel or a separately supplied OpenSSL installation:
+https://github.com/pyside/pyside-setup/blob/v6.12.0/README.pyside6_essentials.md
+
+A previous PyInstaller artifact also captured an unrelated OpenSSL 3.5.5
+`libssl-3-x64.dll`/`libcrypto-3-x64.dll` pair from the Windows build host.
+The post-build normalizer now removes that ambient pair; the Python 3.0.16
+pair required by CPython remains. CI asserts this distinction in both
+portable bundles. Padfire itself uses local Qt IPC and does not make TLS
+requests; the native Schannel plugin remains available for Qt's Windows TLS
+support.
 ## Other bundled/runtime dependencies
 
 The Windows build directly depends on these projects. Their component licenses
@@ -59,6 +79,7 @@ are independent of Padfire's MIT license:
 | pyloudnorm | MIT |
 | PySide6-Essentials / Shiboken6 / Qt 6 | LGPLv3 selected for this build; exact Qt module terms vary |
 | CPython 3.12 runtime | Python Software Foundation License 2.0 |
+| OpenSSL 3.0.16 used by CPython `_ssl.pyd` | Apache-2.0 |
 | PyInstaller bootloader | GPLv2 with the PyInstaller bootloader exception; inspect bundled notice |
 
 The Windows build runs `tools/collect_third_party_licenses.py` after
