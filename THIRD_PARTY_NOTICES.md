@@ -29,11 +29,14 @@ is helpful but is not, by itself, proof that those requirements are met.
 The current CI artifact is an engineering build, not a declaration that the
 Qt source/relinking obligations have been completed. The repository provides
 a separate CI source-package workflow that verifies and assembles the official
-Qt and PySide 6.12.0 archives (90-day Actions artifact); this is not a permanent
-written source offer. See
-[WINDOWS_QT_SOURCE_COMPLIANCE.md](WINDOWS_QT_SOURCE_COMPLIANCE.md) for the exact
-checksums, source workflow, binary component inventory and remaining release
-checklist. See the official requirements:
+Qt and PySide 6.12.0 archives into three Qt chunk artifacts plus a PySide/
+manifest artifact (each with 90-day retention); this is not a permanent written
+source offer. See [WINDOWS_QT_SOURCE_COMPLIANCE.md](WINDOWS_QT_SOURCE_COMPLIANCE.md)
+for the exact checksums, source workflow, binary component inventory and
+remaining release checklist. The separate
+[Qt third-party crosswalk](packaging/windows/qt-third-party-crosswalk-6.12.0.md)
+records the outstanding binary-specific SBOM and FreeType license questions.
+See the official requirements:
 
 - Qt's LGPL obligations:
   https://www.qt.io/development/open-source-lgpl-obligations
@@ -94,7 +97,8 @@ file, the inventory creates a `LICENSE_FILE_NOT_INCLUDED.txt` review marker
 for that component instead of silently pretending the license was copied.
 
 This automated inventory is evidence collection, not a legal certification.
-Review each marker and every bundled native library before redistribution.
+Review each marker, every bundled native library, and the Qt third-party
+crosswalk before redistribution.
 Qt/PySide6 still requires a deliberate license path and, where LGPL is used,
 the applicable license texts, Qt source offer/corresponding source, relinking
 mechanism, and installation information. See the official Qt obligations
