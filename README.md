@@ -120,9 +120,12 @@ To also produce a per-user installer, install Inno Setup and run:
 
 The installer definition is packaging/windows/Padfire.iss. It installs
 under the current user's LocalAppData, so no administrator account is needed.
-The one-folder layout keeps Qt DLLs separate and replaceable. Before publishing
-a binary, review THIRD_PARTY_NOTICES.md and satisfy the selected PySide6/Qt
-licensing option; the PyPI distribution offers LGPL, GPL and commercial terms.
+The one-folder layout keeps Qt DLLs separate and replaceable. The Windows
+community build selects LGPLv3 for Qt/PySide6. Before publishing or otherwise
+redistributing a Windows binary, complete the corresponding Qt/PySide source,
+relinking and installation-information obligations documented in
+THIRD_PARTY_NOTICES.md. The CI artifact is not yet a release-ready source-
+compliance package.
 
 ### Windows-specific notes
 
