@@ -24,10 +24,11 @@ windows/requirements.txt
     Runtime and build dependencies for the native PySide6 / PortAudio front end.
 
 windows/build.ps1
-    PowerShell build/test entry point. Creates dist/Padfire.exe with PyInstaller.
+    PowerShell build/test entry point. Creates a one-folder GUI distribution at
+    dist/Padfire/Padfire.exe and a separate console CLI at dist/PadfireCLI/.
 
 windows/Padfire.spec
-    PyInstaller one-file application definition.
+    PyInstaller one-folder GUI application definition.
 
 windows/Padfire.iss
     Optional Inno Setup installer definition. It is per-user and does not
