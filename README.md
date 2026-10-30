@@ -86,8 +86,9 @@ Windows, and choose Windows output devices in Settings.
 
 The install command adds a per-user Windows sign-in entry under
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run; it does not request
-administrator access. Uninstall removes only that Padfire entry. The Inno
-Setup uninstaller also removes the entry when the installed app is removed.
+administrator access. The console companion removes the entry with
+--uninstall. Run that command before uninstalling Padfire from Windows; the
+Inno Setup uninstaller does not manage a separately-created Run entry.
 
 In the installed build, use the console companion for commands and scripting:
 
