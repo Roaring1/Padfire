@@ -612,6 +612,9 @@ class PadfireWindow(QMainWindow):
         self.paths = get_paths()
         migrate_legacy_config(self.paths.config_file)
         self.cfg = load_config_file(self.paths.config_file, windows=os.name == "nt")
+        # Create defaults on first launch, but preserve an unreadable existing file.
+        if not self.paths.config_file.exists():
+            save_config_file(self.cfg, self.paths.config_file)
         self._page = 0
         self._quitting = False
         self._signals = _Signals()

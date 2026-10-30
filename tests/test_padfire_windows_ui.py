@@ -26,6 +26,8 @@ class WindowsUiSmokeTests(unittest.TestCase):
             os.environ["LOCALAPPDATA"] = str(local)
             window = PadfireWindow(enable_hardware=False, start_ipc=False)
             try:
+                # The config exists immediately after first-run construction.
+                self.assertTrue((appdata / "Padfire" / "padfire.json").is_file())
                 self.assertEqual(len(window._pad_buttons), 72)
                 self.assertEqual(len(window._page_buttons), 8)
                 self.assertEqual(window.cfg["version"], 5)
