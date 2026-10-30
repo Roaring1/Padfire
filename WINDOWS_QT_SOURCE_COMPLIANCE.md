@@ -71,8 +71,8 @@ The repository now has a source-packaging workflow:
 
 
 The workflow can be run manually from GitHub Actions. It is also triggered
-when its source recipe or the Qt binary component inventory changes on
-`port/windows-native`. The script retries official mirrors and refuses to
+when its source recipe, chunk splitter, Qt runtime pins/specifications, or
+binary component inventory changes on `port/windows-native`. The script retries official mirrors and refuses to
 retain either archive unless its exact size and SHA-256 match the official
 Qt mirror records above.
 
@@ -144,10 +144,15 @@ No written source offer is made by this repository document.
 - [x] The About dialog identifies Qt/PySide6 use and points to the license files.
 - [x] The build records exact Python dependency versions and copies available
       license/notice files; strict CI rejects missing wheel-provided notices.
-- [x] Exact Qt 6.12.0 and PySide/Shiboken 6.12.0 archives have official
-      SHA-256 values, and a CI workflow assembles them into a separate 90-day
-      source artifact. The source artifact still needs a successful run and
-      permanent release attachment; it is not embedded in the installer.
+- [x] Source workflow run `41035903558` completed successfully on
+      2026-10-30 and published three Qt 6.12.0 chunks plus the
+      PySide/Shiboken source and manifest artifact (90-day retention). Local
+      verification confirmed every chunk hash, the reassembled 604,643,023-byte
+      Qt ZIP hash, and the PySide TAR.XZ hash against the upstream values.
+- [ ] Attach the verified source to a permanent release or provide a legally
+      valid distributor-controlled written offer before distributing the
+      Windows binaries. Actions artifacts expire and are not included in the
+      installer.
 - [ ] No build-specific Qt SPDX SBOM or exact PySide wheel source/build provenance has been obtained.
 - [ ] No controlled written source offer has been issued.
 - [ ] DLL replacement/relinking has not yet been demonstrated on Windows.
