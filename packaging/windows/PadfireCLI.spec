@@ -17,6 +17,7 @@ datas += [
     (str(root / "licenses" / "LGPL-3.0-only.txt"), "ThirdPartyLicenses"),
     (str(root / "licenses" / "GPL-3.0-only.txt"), "ThirdPartyLicenses"),
     (str(root / "licenses" / "PSF-2.0.txt"), "ThirdPartyLicenses"),
+    (str(root / "licenses" / "OpenSSL-3.0-Apache-2.0.txt"), "ThirdPartyLicenses"),
 ]
 for license_file in sorted(license_root.rglob("*")):
     if license_file.is_file():
