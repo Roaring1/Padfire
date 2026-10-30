@@ -11,8 +11,9 @@ commercial Qt build. The PySide6 upstream project confirms that its PyPI
 community wheels are available under LGPLv3, GPLv2/GPLv3, or commercial terms:
 https://github.com/pyside/pyside-setup/blob/v6.12.0/README.pyside6_essentials.md
 
-The complete GNU LGPL v3 and GNU GPL v3 license texts are included in
-`ThirdPartyLicenses/LGPL-3.0-and-GPL-3.0.txt` in both Windows distributions.
+The complete The complete GNU LGPL v3 and GNU GPL v3 license texts are included separately
+in `ThirdPartyLicenses/LGPL-3.0-only.txt` and
+`ThirdPartyLicenses/GPL-3.0-only.txt` in both Windows distributions.
 Qt/PySide use is also identified in the application's **About** dialog. Qt
 modules may have differing terms; the bundled Qt module/plugin inventory must
 be checked against the official Qt 6.12 licensing matrix before each release:
