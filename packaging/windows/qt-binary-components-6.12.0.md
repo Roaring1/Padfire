@@ -61,6 +61,40 @@ resolved license files and package version are recorded in the generated
   `VCRUNTIME140.dll`, and `VCRUNTIME140_1.dll` — Microsoft Visual C++
   runtime libraries, not Qt modules.
 
+## CPython TLS runtime (outside the PySide6 subdirectory)
+
+| File under the one-folder bundle | Role |
+|---|---|
+| `_internal/_ssl.pyd` | CPython 3.12.10 standard-library SSL extension |
+| `_internal/libssl-3.dll` | OpenSSL 3.0.16 runtime library used by CPython |
+| `_internal/libcrypto-3.dll` | OpenSSL 3.0.16 runtime library used by CPython |
+
+The Apache-2.0 license text for OpenSSL 3.0.16 is included in
+`ThirdPartyLicenses/OpenSSL-3.0-Apache-2.0.txt`.
+
+An earlier PyInstaller package also contained an OpenSSL 3.5.5
+`libcrypto-3-x64.dll`/`libssl-3-x64.dll` pair in addition to CPython's 3.0.16
+pair. Qt for Python's official Windows package documentation says those
+wheels do not ship OpenSSL DLLs; the pair was an unrelated build-host addition.
+The post-build normalizer now strips those `-x64` files, and CI asserts that
+they are absent while the CPython 3.0.16 libraries remain. Qt's Windows
+Schannel TLS backend is preserved.
+
+## Implementation licensing and third-party crosswalk
+
+The spot-checked Qt 6.12.0 module/plugin implementation headers use the
+Qt-compatible SPDX expression
+`LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only`.
+The LGPLv3 option is selected for Padfire's community build. This is distinct
+from third-party code statically built into Qt modules and plugins.
+
+See
+[`qt-third-party-crosswalk-6.12.0.md`](qt-third-party-crosswalk-6.12.0.md)
+for the source-file spot checks, QtCore/QtGui/Network/image-format candidates,
+license families and unresolved build-specific questions. The Qt source
+archives and Python dependency inventory alone do not prove which conditional
+third-party components were included in these wheel binaries.
+
 ## Scope and release gate
 
 The main Qt module list above does not include any of the modules named by
