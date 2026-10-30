@@ -1,17 +1,24 @@
 # Console companion, shipped as a replaceable one-folder distribution.
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 root = Path.cwd()
+
+binaries = collect_dynamic_libs("_sounddevice_data") + collect_dynamic_libs("_soundfile_data")
+datas = collect_data_files("_sounddevice_data", excludes=["**/*.dll"])
+datas += collect_data_files("_soundfile_data", excludes=["**/*.dll"])
 a = Analysis(
     ["padfire_windows_cli.py"],
     pathex=[str(root)],
-    binaries=[],
-    datas=[],
+    binaries=binaries,
+    datas=datas,
     hiddenimports=[
         "mido.backends.rtmidi",
         "rtmidi",
         "sounddevice",
         "soundfile",
+        "_sounddevice_data",
+        "_soundfile_data",
         "pyloudnorm",
         "PySide6.QtCore",
         "PySide6.QtGui",
