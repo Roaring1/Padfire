@@ -158,15 +158,15 @@ If distro MIDI bindings are unavailable or too old:
 
 ### Launch and commands
 
-    ./padfire-launch
+    bash ./padfire-launch
     python3 padfire.py
-    ./padfire-launch --show
-    ./padfire-launch --stop
-    ./padfire-launch --reload
-    ./padfire-launch --quit
-    ./padfire-launch --status
-    ./padfire-launch --version
-    ./padfire-launch --install
+    bash ./padfire-launch --show
+    bash ./padfire-launch --stop
+    bash ./padfire-launch --reload
+    bash ./padfire-launch --quit
+    bash ./padfire-launch --status
+    bash ./padfire-launch --version
+    bash ./padfire-launch --install
 
 The launcher resolves padfire.py next to itself and preloads the JACK
 callback shim before importing MIDI libraries. The Linux install command
