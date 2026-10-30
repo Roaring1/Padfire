@@ -38,12 +38,48 @@ jobs:
           if (-not (Test-Path "dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/PySide/pyside-setup-everywhere-src-6.12.0.tar.xz")) {
             throw "Verified PySide/Shiboken source archive missing."
           }
+          python tools/split_qt_source.py --source dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/Qt/qt-everywhere-src-6.12.0.zip --output dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/Qt-Chunks
+          if ($LASTEXITCODE -ne 0) { throw "Qt source splitting or chunk verification failed." }
+          foreach ($part in @("001", "002", "003")) {
+            $chunkPath = "dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/Qt-Chunks/qt-everywhere-src-6.12.0.zip.part$part"
+            if (-not (Test-Path $chunkPath)) { throw "Qt source chunk $part is missing." }
+          }
           Get-Content "dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/SOURCE_MANIFEST.md"
-      - name: Upload corresponding source package
+      - name: Upload Qt source part 1 of 3
         uses: actions/upload-artifact@v7
         with:
-          name: Padfire-Windows-Qt-Corresponding-Source-6.12.0
-          path: dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/
+          name: Padfire-Windows-Qt-Source-6.12.0-Part-1-of-3
+          path: dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/Qt-Chunks/qt-everywhere-src-6.12.0.zip.part001
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+      - name: Upload Qt source part 2 of 3
+        uses: actions/upload-artifact@v7
+        with:
+          name: Padfire-Windows-Qt-Source-6.12.0-Part-2-of-3
+          path: dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/Qt-Chunks/qt-everywhere-src-6.12.0.zip.part002
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+      - name: Upload Qt source part 3 of 3
+        uses: actions/upload-artifact@v7
+        with:
+          name: Padfire-Windows-Qt-Source-6.12.0-Part-3-of-3
+          path: dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/Qt-Chunks/qt-everywhere-src-6.12.0.zip.part003
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+      - name: Upload PySide source and manifests
+        uses: actions/upload-artifact@v7
+        with:
+          name: Padfire-Windows-Qt-PySide-And-Source-Manifest-6.12.0
+          path: |
+            dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/PySide/pyside-setup-everywhere-src-6.12.0.tar.xz
+            dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/SOURCE_MANIFEST.md
+            dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/SHA256SUMS.txt
+            dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/BINARY_COMPONENTS.md
+            dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/Qt-Chunks/QT_CHUNKS.md
+            dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/Qt-Chunks/QT_CHUNKS_SHA256SUMS.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
