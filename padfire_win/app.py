@@ -838,7 +838,8 @@ class PadfireWindow(QMainWindow):
             app_dir = Path(__file__).resolve().parents[1]
             license_dir = app_dir / "licenses"
             inventory = app_dir / "THIRD_PARTY_NOTICES.md"
-        qt_license = license_dir / "LGPL-3.0-and-GPL-3.0.txt"
+        qt_lgpl_license = license_dir / "LGPL-3.0-only.txt"
+        qt_gpl_license = license_dir / "GPL-3.0-only.txt"
         python_license = license_dir / "PSF-2.0.txt"
         QMessageBox.about(
             self,
@@ -847,11 +848,13 @@ class PadfireWindow(QMainWindow):
             f"<p>Version {VERSION}</p>"
             "<p>This application uses Qt 6, PySide6 and Shiboken6 under the "
             "<b>GNU Lesser General Public License version 3 (LGPLv3)</b>.</p>"
-            f"<p>Qt/PySide license text: <code>{qt_license}</code></p>"
+            f"<p>Qt/PySide LGPLv3 text: <code>{qt_lgpl_license}</code></p>"
+            f"<p>GNU GPLv3 text: <code>{qt_gpl_license}</code></p>"
             f"<p>Component license inventory and notices: <code>{inventory}</code></p>"
             f"<p>Python runtime license: <code>{python_license}</code></p>"
             f"<p>License folder: <code>{license_dir}</code></p>"
-            f"<p>Qt license file present: {qt_license.is_file()}<br>"
+            f"<p>Qt LGPLv3 file present: {qt_lgpl_license.is_file()}<br>"
+            f"GNU GPLv3 file present: {qt_gpl_license.is_file()}<br>"
             f"Python license file present: {python_license.is_file()}<br>"
             f"Component inventory present: {inventory.is_file()}</p>"
         )
