@@ -106,8 +106,8 @@ In the installed build, use the console companion for commands and scripting:
     .\packaging\windows\build.ps1 -Clean
 
 This runs syntax checks, the cross-platform contract tests, an offscreen Qt UI
-smoke test, collects license files from the installed runtime wheels, and
-builds two one-folder distributions: the windowed UI at dist\Padfire\Padfire.exe
+smoke test, collects and verifies license files for the installed runtime,
+CPython and PyInstaller bootloader, and builds two one-folder distributions: the windowed UI at dist\Padfire\Padfire.exe
 and the console utility at dist\PadfireCLI\PadfireCLI.exe. Each package contains
 the MIT project license, the third-party notice, and a generated
 ThirdPartyLicenses\COMPONENTS.md inventory with the license files found in
