@@ -146,10 +146,12 @@ No written source offer is made by this repository document.
       license/notice files; strict CI rejects missing wheel-provided notices.
 - [x] Source workflow run [`41037541392`](https://github.com/Roaring1/Padfire/actions/runs/41037541392) completed successfully on
       2026-10-30 and published three Qt 6.12.0 chunks plus the
-      PySide/Shiboken source and manifest artifact (90-day retention). Local
-      verification of the same source workflow output confirmed every chunk
-      hash, the reassembled 604,643,023-byte Qt ZIP hash, and the PySide TAR.XZ
-      hash against the upstream values.
+      PySide/Shiboken source and manifest artifact (90-day retention). The
+      same source workflow output from run `41037318209` was downloaded and
+      locally verified: every chunk hash matched, the reassembled Qt ZIP was
+      604,643,023 bytes with the upstream SHA-256, and the PySide TAR.XZ hash
+      matched its upstream value. Run `41037541392` republished the same
+      source archives and checksummed chunk format.
 - Source artifacts from run `41037541392`:
   - [Qt source part 1](https://github.com/Roaring1/Padfire/actions/runs/41037541392/artifacts/12969185140)
   - [Qt source part 2](https://github.com/Roaring1/Padfire/actions/runs/41037541392/artifacts/12967979721)
