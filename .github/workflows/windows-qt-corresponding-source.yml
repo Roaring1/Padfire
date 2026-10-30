@@ -2,6 +2,12 @@ name: Qt corresponding source package
 
 on:
   workflow_dispatch:
+  push:
+    branches: ["port/windows-native"]
+    paths:
+      - ".github/workflows/windows-qt-corresponding-source.yml"
+      - "tools/package_qt_corresponding_source.py"
+      - "packaging/windows/qt-binary-components-6.12.0.md"
 
 permissions:
   contents: read
@@ -24,7 +30,7 @@ jobs:
       - name: Fetch and verify upstream source archives
         shell: pwsh
         run: |
-          python tools/package_qt_corresponding_source.py --output dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0
+          python tools/package_qt_corresponding_source.py --output dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0 --binary-inventory packaging/windows/qt-binary-components-6.12.0.md
           if ($LASTEXITCODE -ne 0) { throw "Qt/PySide source archive verification failed." }
           if (-not (Test-Path "dist/Padfire-Windows-Qt-Corresponding-Source-6.12.0/Qt/qt-everywhere-src-6.12.0.zip")) {
             throw "Verified Qt source archive missing."
