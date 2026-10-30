@@ -454,7 +454,9 @@ class PadEditor(QDialog):
             "Scripts (*.ps1 *.cmd *.bat *.exe *.py);;All files (*)"
         )
         if filename:
-            self.command.setText(filename)
+            # Browse returns a bare path; keep spaces as part of the first
+            # command token when the user later launches the selected script.
+            self.command.setText(subprocess.list2cmdline([filename]))
 
     def _test_play(self) -> None:
         filename = self.file.text().strip()
