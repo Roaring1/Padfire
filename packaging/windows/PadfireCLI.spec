@@ -13,6 +13,10 @@ if not license_root.is_dir():
 binaries = collect_dynamic_libs("_sounddevice_data") + collect_dynamic_libs("_soundfile_data")
 datas = collect_data_files("_sounddevice_data", excludes=["**/*.dll"])
 datas += collect_data_files("_soundfile_data", excludes=["**/*.dll"])
+datas += [
+    (str(root / "licenses" / "LGPL-3.0-and-GPL-3.0.txt"), "ThirdPartyLicenses"),
+    (str(root / "licenses" / "PSF-2.0.txt"), "ThirdPartyLicenses"),
+]
 for license_file in sorted(license_root.rglob("*")):
     if license_file.is_file():
         relative_parent = license_file.parent.relative_to(license_root)
