@@ -47,6 +47,13 @@ class LicensePathDiscoveryTests(unittest.TestCase):
         self.assertTrue(is_license_path(Path("LICENSE")))
         self.assertFalse(is_license_path(Path("PySide6/Qt6Core.dll")))
 
+    def test_python_modules_inside_license_named_package_are_not_notices(self) -> None:
+        self.assertFalse(is_license_path(Path("packaging/licenses/__init__.py")))
+        self.assertFalse(is_license_path(Path("packaging/licenses/_spdx.py")))
+        self.assertFalse(is_license_path(Path("packaging/licenses/_spdx.pyi")))
+        self.assertFalse(is_license_path(Path("packaging/licenses/__pycache__/_spdx.cpython-312.pyc")))
+        self.assertTrue(is_license_path(Path("vendor/LICENSES/Apache-2.0.txt")))
+
 class PySideLicenseInventoryTests(unittest.TestCase):
     def test_commercial_reference_notice_is_not_mistaken_for_selected_license(self) -> None:
         expression = "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only"

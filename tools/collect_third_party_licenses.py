@@ -84,9 +84,19 @@ def runtime_distributions() -> list[metadata.Distribution]:
 
 
 def is_license_path(relative: PurePosixPath) -> bool:
-    """Recognize license directories as well as conventional root filenames."""
+    """Recognize license directories and conventional names, not code modules."""
     parts = [part.casefold() for part in relative.parts]
     filename = relative.name.casefold()
+
+    # Some packages have an importable Python module literally named
+    # licenses (for example packaging/licenses/_spdx.py). Those files
+    # describe or parse SPDX identifiers; they are not license texts and
+    # must not be copied into the third-party notice inventory as such.
+    if relative.suffix.casefold() in {
+        ".py", ".pyc", ".pyo", ".pyi", ".so", ".pyd", ".dll", ".exe"
+    }:
+        return False
+
     return "licenses" in parts or filename.startswith(LICENSE_PREFIXES)
 
 def license_files(distribution: metadata.Distribution) -> list[tuple[object, Path]]:
