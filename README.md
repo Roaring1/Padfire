@@ -246,5 +246,13 @@ Do a physical Launchpad/audio playtest on each platform before making a release.
 Padfire's own source code and documentation are licensed under the MIT License;
 see [LICENSE](LICENSE). This license does not replace or change the separate
 licenses of third-party libraries and native components bundled with a build.
-Review [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before redistributing
-Windows binaries.
+
+The Windows packages also include the applicable LGPLv3/GPLv3, CPython PSF,
+and OpenSSL 3.0.16 Apache-2.0 license texts. The post-build packaging check
+removes unrelated OpenSSL DLLs captured from the build runner while preserving
+the CPython TLS runtime. Review [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
+the [Qt source compliance checklist](WINDOWS_QT_SOURCE_COMPLIANCE.md), and the
+[Qt third-party crosswalk](packaging/windows/qt-third-party-crosswalk-6.12.0.md)
+before redistributing Windows binaries. Corresponding Qt/PySide source archives
+are published as separate, temporary Actions artifacts; there is not yet a
+permanent written source offer or a demonstrated Windows relinking procedure.
