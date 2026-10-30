@@ -1185,6 +1185,9 @@ class PadfireWindow(QMainWindow):
         for (row, col), button in self._pad_buttons.items():
             pad = self._pad(row, col)
             self._render_pad(button, pad, self._pad_key(row, col))
+        # Reconcile hardware LEDs every UI tick. Audio may end naturally or be
+        # stopped by the global Stop button without a pad action callback.
+        self._led_dirty = True
         self._refresh_leds()
 
     def _on_monitor_toggled(self, checked: bool) -> None:
