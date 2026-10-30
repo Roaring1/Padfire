@@ -35,3 +35,6 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch Padfire"; Flags: postinstall nowait skipifsilent
 
+[UninstallRun]
+; Remove the optional per-user sign-in entry before the CLI is deleted.
+Filename: "{app}\CLI\PadfireCLI.exe"; Parameters: "--uninstall"; RunOnceId: "RemovePadfireStartup"; Flags: runhidden skipifdoesntexist
