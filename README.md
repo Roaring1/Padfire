@@ -1,140 +1,258 @@
 # Padfire
 
-GTK3 soundboard for the Novation Launchpad Mini (MK1/MK2).
+Padfire is a soundboard for the Novation Launchpad Mini MK1/MK2. It provides
+eight pages of assignable pads, sound playback, LED feedback, per-pad actions,
+and a keyboard/mouse interface.
 
-8 pages of 8x8 pads. Each pad plays a sound file via PipeWire (`paplay`). LED feedback with per-page colors. IPC socket so Hearth can show playback status.
+The repository now contains two native desktop front ends over the same
+configuration and Launchpad MIDI contract:
+
+- **Linux:** the established GTK3 application using PipeWire/PulseAudio.
+- **Windows:** a native Qt application using Windows audio endpoints and the
+  Windows MIDI backend. It does not require WSL, MSYS2, PipeWire, GTK, or a
+  Unix shell.
+
+The Linux application remains available as **padfire.py**; the Windows entry
+point is **padfire_windows.py**.
 
 ---
 
 ## Features
 
-- 8 pages (top-row CC 104-111), 64 assignable pads per page
-- Per-pad: sound file, label, volume (0-150%), output sink, loop toggle, color
-- Per-pad actions: `play`, `script`, `stop_sfx`, `stop_all`, `stop_key`
-- LED feedback: pad lights on press, color reflects assignment state
-- Missing sound files are shown on the pad itself: a dashed red border and a `!` glyph, so a broken assignment is visible before you press it
-- Tray icon with a live page indicator (`P1`-`P8`) and stop-all
-- IPC: `status`, `stop_all`, `show`, `reload`, `quit` over a Unix socket (`~/.config/padfire/padfire.sock`)
-- Hearth integration: Padfire status panel in Hearth shows current page, playing sounds, MIDI connection state. When Hearth is not running, its controls hide instead of showing empty labels
-- VU meter follows your configured monitor/output sink rather than a fixed one
-- MIDI input via `mido` (rtmidi backend), auto-reconnect on device unplug/replug
-- Audio via `paplay` subprocess -> PipeWire, no JACK/PortAudio dependency
-- Loudness analysis (`--` LUFS target -18.0) available from the pad editor
+- 8 pages, 64 grid pads and 8 side-column pads per page
+- Top-row Launchpad CC 104–111 switches pages 1–8
+- Per-pad sound file, label, volume (0–150%), output device, loop, retrigger
+  mode, color and notes
+- Per-pad actions: **play**, **script**, **stop_sfx**, **stop_all**, **stop_key**
+- Pad LED feedback uses the Launchpad Mini MK1/MK2 double-buffer protocol
+- Missing sound files are visibly marked on the pad
+- Drag audio files onto pads; drag pads to move them, or Ctrl-drag to copy
+- Tray controls for show, stop-all, settings and quit
+- IPC commands: **status**, **stop_all**, **show**, **reload**, **quit**
+- MIDI input auto-reconnects after the Launchpad is unplugged/reconnected
+- Loudness analysis suggests a pad volume for a -18 LUFS target
+- Shared version-5 JSON config, atomic saves and one previous-generation backup
+
+**Supported hardware:** Launchpad Mini MK1 and MK2. MK3 is intentionally
+excluded until its different MIDI/LED protocol is implemented and tested.
 
 ---
 
-## Requirements
+## Windows
+
+### Requirements
+
+- Windows 10 or 11 (64-bit)
+- Python 3.12 (64-bit) for a source checkout
+- Novation Launchpad Mini MK1 or MK2
+- A Windows playback device (WASAPI/shared mode through PortAudio)
+
+The Windows app uses the lighter PySide6-Essentials distribution for its
+Qt desktop UI, python-rtmidi for MIDI,
+and sounddevice / soundfile for audio playback and decoding. The selected
+output is a Windows audio endpoint; an old Linux sink name found in an imported
+config safely falls back to the Windows system default until changed in
+Settings.
+
+### Run from source
+
+Open PowerShell in the repository:
+
+    py -3.12 -m venv .venv
+    .\.venv\Scripts\Activate.ps1
+    python -m pip install --upgrade pip
+    python -m pip install -r packaging/windows/requirements.txt
+    python .\padfire_windows.py
+
+The first start creates the config at:
+
+    %APPDATA%\Padfire\padfire.json
+
+Your existing version-5 config can be copied there. Pad assignments, labels,
+actions, colors, loop/retrigger settings and notes are shared. Sound paths are
+not rewritten during import: relink files whose Linux paths do not exist on
+Windows, and choose Windows output devices in Settings.
+
+### Windows commands
+
+    python .\padfire_windows.py --version
+    python .\padfire_windows.py --status
+    python .\padfire_windows.py --show
+    python .\padfire_windows.py --stop
+    python .\padfire_windows.py --reload
+    python .\padfire_windows.py --quit
+    python .\padfire_windows.py --install
+    python .\padfire_windows.py --uninstall
+
+The install command adds a per-user Windows sign-in entry under
+HKCU\Software\Microsoft\Windows\CurrentVersion\Run; it does not request
+administrator access. The console companion removes the entry with
+`--uninstall`. For a manually deployed one-folder build, run that command
+before deleting the folder. The Inno Setup uninstaller runs this cleanup
+automatically before removing the installed files.
+
+In the installed build, use the console companion for commands and scripting:
+
+    .\CLI\PadfireCLI.exe --status
+    .\CLI\PadfireCLI.exe --show
+    .\CLI\PadfireCLI.exe --stop
+    .\CLI\PadfireCLI.exe --reload
+    .\CLI\PadfireCLI.exe --quit
+    .\CLI\PadfireCLI.exe --install
+    .\CLI\PadfireCLI.exe --uninstall
+
+### Build the Windows executable
+
+    .\packaging\windows\build.ps1 -Clean
+
+This runs syntax checks, the cross-platform contract tests, an offscreen Qt UI
+smoke test, collects and verifies license files for the installed runtime,
+CPython and PyInstaller bootloader, and builds two one-folder distributions: the windowed UI at dist\Padfire\Padfire.exe
+and the console utility at dist\PadfireCLI\PadfireCLI.exe. Each package contains
+the MIT project license, the third-party notice, and a generated
+ThirdPartyLicenses\COMPONENTS.md inventory with the license files found in
+the resolved build environment. Qt shared libraries remain separate beside
+each executable rather than being hidden in one opaque file.
+
+To also produce a per-user installer, install Inno Setup and run:
+
+    .\packaging\windows\build.ps1 -Installer
+
+The installer definition is packaging/windows/Padfire.iss. It installs
+under the current user's LocalAppData, so no administrator account is needed.
+The one-folder layout keeps Qt DLLs separate and replaceable. The Windows
+community build selects LGPLv3 for Qt/PySide6. Before publishing or otherwise
+redistributing a Windows binary, complete the corresponding Qt/PySide source,
+relinking and installation-information obligations documented in
+THIRD_PARTY_NOTICES.md. The CI artifact is not yet a release-ready source-
+compliance package.
+
+### Windows-specific notes
+
+- The output meter follows Padfire's own audio streams. It is not a capture of
+  every sound playing elsewhere on the Windows desktop.
+- Hearth integration is not enabled in the Windows app because the current
+  Hearth service exposes a Linux Unix-domain-socket interface. Padfire itself
+  runs without Hearth.
+- .cmd and .bat commands run through the Windows command processor. Direct
+  .ps1 files are started with PowerShell and respect the user's execution
+  policy; Padfire does not silently bypass it.
+- Direct .py script pads use the active interpreter in a source checkout. In a
+  packaged build they require a separate python.exe or py.exe on PATH; Padfire
+  does not treat its GUI executable as a Python interpreter.
+- Hardware-free CI does not prove a physical Launchpad, speaker, USB hub or
+  audio driver works. Test those on the target Windows PC before relying on it.
+
+---
+
+## Linux
+
+### Requirements
 
 - Python 3.10+
-- GTK3 (`python-gobject`)
-- `mido` + `python-rtmidi`
-- `paplay` (PipeWire / pipewire-pulse)
-- `parec` (optional -- VU meter; the meter hides itself if absent)
-- `libappindicator3` (tray, optional)
+- GTK3 / PyGObject
+- mido + python-rtmidi
+- paplay (PipeWire / pipewire-pulse)
+- parec (optional; VU meter hides itself if absent)
+- libappindicator3 (optional tray backend)
 - Novation Launchpad Mini MK1 or MK2
 
-```bash
-# Fedora / Nobara / RHEL-like
-sudo dnf install python3-gobject python3-mido python3-rtmidi libappindicator-gtk3
+Fedora / Nobara / RHEL-like:
 
-# Arch
-sudo pacman -S python-gobject python-mido python-rtmidi libappindicator-gtk3
+    sudo dnf install python3-gobject python3-mido python3-rtmidi libappindicator-gtk3
 
-# Any distro, if the packaged MIDI bindings are missing or too old
-pip install --user mido python-rtmidi
-```
+Arch:
 
-> **Note on `pip install --user`.** If `mido` lives in `~/.local/lib/python3.X/site-packages`, it is only importable when `HOME` is set to that user. Anything that launches Padfire with a different or empty `HOME` (some sandboxes, some service managers) will fail at `import mido`. Prefer distro packages for a system service, or set `PYTHONPATH` explicitly.
+    sudo pacman -S python-gobject python-mido python-rtmidi libappindicator-gtk3
 
----
+If distro MIDI bindings are unavailable or too old:
 
-## Launch
+    pip install --user mido python-rtmidi
 
-```bash
-./padfire-launch        # recommended -- silences JACK error spam before import
-python3 padfire.py      # direct launch (JACK may print errors on startup)
-```
+### Launch and commands
 
-`padfire-launch` is a shell wrapper that pre-loads `libjack.so.0` and overrides its error/info callbacks before Python imports `mido`, preventing the JACK "cannot connect" spam that appears even when JACK is not in use.
+    bash ./padfire-launch
+    python3 padfire.py
+    bash ./padfire-launch --show
+    bash ./padfire-launch --stop
+    bash ./padfire-launch --reload
+    bash ./padfire-launch --quit
+    bash ./padfire-launch --status
+    bash ./padfire-launch --version
+    bash ./padfire-launch --install
 
-If no X or Wayland display is available, Padfire exits with a one-line message instead of a GTK traceback.
-
----
-
-## Command line
-
-```bash
-./padfire-launch --show     # show existing instance
-./padfire-launch --stop     # stop all audio
-./padfire-launch --reload   # re-read padfire.json without restarting
-./padfire-launch --quit     # ask a running instance to exit
-./padfire-launch --status   # JSON status for Hearth/tools
-./padfire-launch --version  # print version
-./padfire-launch --install  # install a systemd --user service
-```
-
-`--status` **always** prints valid JSON, so it is safe to pipe into a parser. With no instance running it prints `{"running": false, "version": "..."}` and exits 0.
-
-`--show`, `--stop`, `--reload` and `--quit` print human-readable text and exit **1** when no instance was listening, so scripts can tell "done" from "nothing was there".
+The launcher resolves padfire.py next to itself and preloads the JACK
+callback shim before importing MIDI libraries. The Linux install command
+writes and enables a systemd --user service.
 
 ---
 
-## Config
+## Configuration and MIDI mapping
 
-Pad assignments are saved to `~/.config/padfire/padfire.json`. Edit via the GUI (right-click a pad, or use the assignment dialog).
+Linux config: ~/.config/padfire/padfire.json (or
+$XDG_CONFIG_HOME/padfire/padfire.json).
 
-Saves are atomic and keep one generation of backup at `padfire.json.bak`. A corrupt or unreadable config does not prevent startup -- Padfire falls back to defaults rather than refusing to open.
+Windows config: %APPDATA%\Padfire\padfire.json.
 
-Configs are migrated forward automatically on load (`CONFIG_VERSION`), and unknown keys from older versions are pruned rather than carried along.
-
----
-
-## MIDI mapping
+Both front ends preserve the same version-5 schema. Saves are atomic and keep
+one previous generation at padfire.json.bak. An unreadable config falls
+back to safe defaults; the file remains available for recovery.
 
 | Input | Action |
 |---|---|
-| CC 104-111 (top row) | Switch to page 1-8 |
+| CC 104–111 (top row) | Switch to page 1–8 |
 | Note on (grid) | Play pad sound / stop if looping |
-| Note off | -- |
-| Side column notes | Assignable (same as grid pads) |
+| Note off | Release / clear press feedback |
+| Side-column notes | Assignable pads, same as grid |
 
-Grid note numbers are `row * 16 + col`; side-column notes are `row * 16 + 8`.
+Grid note numbers are row * 16 + col; side-column notes are row * 16 + 8.
 
-LED protocol: `velocity = (green & 3) << 4 | (red & 3) | 0x0C`
+LED protocol: velocity = (green & 3) << 4 | (red & 3) | 0x0C.
+The 0x0C term selects double-buffered display without a CC 0 reset.
 
-The `0x0C` term selects double-buffered display without a CC 0 reset. Every LED constant in `padfire.py` satisfies this expression.
-
----
-
-## Keyboard (window)
+## Keyboard controls
 
 | Key | Action |
 |---|---|
-| `1`-`8` (or keypad) | Switch to page 1-8 |
-| `Space` | Stop all audio |
-| `Esc` | Hide to tray (minimize, if the tray is unavailable) |
-| `Ctrl+Q` | Quit |
+| 1–8 (or keypad) | Switch page |
+| Space | Stop all audio |
+| Esc | Hide to tray (or minimize without a tray) |
+| Ctrl+Q | Quit |
 
 ---
 
-## Tools
+## Tests and validation
 
-`tools/padfire-shot` -- open the window, let it settle, capture a PNG, exit. Intended for UI review, bug reports and automated visual checks; it never touches your real config when run with `--demo`.
+Linux regression checks:
 
-```bash
-tools/padfire-shot                       # 1s settle, 60% centre crop -> /tmp/padfire-shot.png
-tools/padfire-shot --demo                # seed a throwaway HOME with example pads
-tools/padfire-shot --demo --scale 250     # also write a 250% upscale
-tools/padfire-shot --playing 0:1          # render a pad in its playing state
-tools/padfire-shot -o out.png --crop 100  # full window, no crop
-```
+    python3 tests/test_padfire_core.py
 
-It writes the capture plus any crop/scale variants and prints each path with its byte size and sha256, so a screenshot can be verified rather than trusted. MIDI, IPC, VU and tray are stubbed out during capture, so it is safe to run while a real instance is live.
+Linux CI also compiles the app and launcher, runs ShellCheck, and renders the
+actual GTK UI under Xvfb.
 
-Run the fast, hardware-free v2.3 regression checks with:
+Windows contract tests and offscreen UI smoke test:
 
-```bash
-python3 tests/test_padfire_core.py
-```
+    python -m unittest discover -s tests -p "test_padfire_platform.py"
+    $env:QT_QPA_PLATFORM = "offscreen"
+    python -m unittest discover -s tests -p "test_padfire_windows_ui.py"
+    python .\padfire_windows.py --smoke-ui
 
-These checks use a temporary `HOME`; they cover config migration and backup rotation, malformed-config fallback, configured VU-source selection, Launchpad Mini MK3 rejection, and LED protocol invariants. They do not replace a separate physical-device/audio playtest.
+The automated suites do not open MIDI hardware or play to real output devices.
+Do a physical Launchpad/audio playtest on each platform before making a release.
+---
+
+## License
+
+Padfire's own source code and documentation are licensed under the MIT License;
+see [LICENSE](LICENSE). This license does not replace or change the separate
+licenses of third-party libraries and native components bundled with a build.
+
+The Windows packages also include the applicable LGPLv3/GPLv3, CPython PSF,
+and OpenSSL 3.0.16 Apache-2.0 license texts. The post-build packaging check
+removes unrelated OpenSSL DLLs captured from the build runner while preserving
+the CPython TLS runtime. Review [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
+the [Qt source compliance checklist](WINDOWS_QT_SOURCE_COMPLIANCE.md), and the
+[Qt third-party crosswalk](packaging/windows/qt-third-party-crosswalk-6.12.0.md)
+before redistributing Windows binaries. Corresponding Qt/PySide source archives
+are published as separate, temporary Actions artifacts; there is not yet a
+permanent written source offer or a demonstrated Windows relinking procedure.

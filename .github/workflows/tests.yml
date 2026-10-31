@@ -2,17 +2,24 @@ name: Padfire tests
 
 on:
   push:
-    branches: [main, "release/padfire-v2.3-20261028"]
+    branches: [main, "release/padfire-v2.3-20261028", "port/windows-native"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: padfire-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux-smoke:
+    name: Linux GTK regression and screenshot
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install GTK and smoke-test dependencies
         run: |
           sudo apt-get update
@@ -22,12 +29,12 @@ jobs:
       - name: Run hardware-free regression tests
         run: |
           python3 tests/test_padfire_core.py
-          python3 -m py_compile padfire.py tools/padfire-shot tests/test_padfire_core.py
+          python3 -m py_compile padfire_core.py padfire.py tools/padfire-shot tests/test_padfire_core.py
           bash -n padfire-launch
           shellcheck padfire-launch
       - name: Render the real GTK UI in a virtual display
         run: |
-          xvfb-run -a tools/padfire-shot --demo \
+          xvfb-run -a python3 tools/padfire-shot --demo \
             -o /tmp/padfire-shot.png --crop 60 --scale 200 --settle 500
           python3 - <<'PY'
           from pathlib import Path
@@ -47,3 +54,368 @@ jobs:
                   assert any(lo != hi for lo, hi in rgb.getextrema()), path
               print(f'PASS nonblank GTK screenshot: {path.name}')
           PY
+
+  windows-smoke:
+    name: Windows Qt, MIDI contract and executable build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+      - name: Isolate per-run Windows user data
+        shell: pwsh
+        run: |
+          $appData = Join-Path $env:RUNNER_TEMP "Padfire-AppData"
+          $localData = Join-Path $env:RUNNER_TEMP "Padfire-LocalAppData"
+          New-Item -ItemType Directory -Force -Path $appData, $localData | Out-Null
+          "APPDATA=$appData" >> $env:GITHUB_ENV
+          "LOCALAPPDATA=$localData" >> $env:GITHUB_ENV
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: packaging/windows/requirements.txt
+      - name: Install Windows runtime and build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
+          python -m pip install --report "$env:RUNNER_TEMP\numpy-pip-report.json" -r packaging/windows/requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw "Windows runtime dependency installation failed" }
+      - name: Verify official Microsoft VC++ runtime prerequisite
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+          $runtime = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+          if ($null -eq $runtime -or $runtime.Installed -ne 1) {
+            throw "The Windows runner needs the official x64 VC++ Redistributable."
+          }
+          $versionText = '{0}.{1}.{2}.{3}' -f $runtime.Major, $runtime.Minor, $runtime.Bld, $runtime.Rbld
+          if ([version]$versionText -lt [version]'14.44.35211.0') {
+            throw "VC++ Redistributable $versionText is older than required 14.44.35211.0."
+          }
+          Write-Host "Using system Visual C++ Redistributable $versionText."
+      - name: Collect runtime third-party license files
+        run: python tools/collect_third_party_licenses.py --output packaging/windows/generated_licenses --fail-on-missing
+      - name: Rebind NumPy MSVC imports to system runtime
+        shell: pwsh
+        run: |
+          python tools/normalize_numpy_msvc_runtime.py --pip-report "$env:RUNNER_TEMP\numpy-pip-report.json" --output packaging/windows/generated_licenses/WINDOWS_RUNTIME_PATCHES.md
+          if ($LASTEXITCODE -ne 0) { throw "NumPy wheel provenance or MSVC import patch validation failed" }
+      - name: Validate corresponding-source package recipe without downloading
+        shell: pwsh
+        run: |
+          $preview = Join-Path $env:RUNNER_TEMP "Qt Source Manifest Preview"
+          python tools/package_qt_corresponding_source.py --manifest-only --output $preview --binary-inventory packaging/windows/qt-binary-components-6.12.0.md
+          if ($LASTEXITCODE -ne 0) { throw "Qt source package manifest validation failed." }
+          if (-not (Select-String -Path (Join-Path $preview "SOURCE_MANIFEST.md") -Pattern "a72e89c33726d742e67edf494abf7b625eaffc756673221c9823322ecd1a32d1")) {
+            throw "Qt source SHA-256 is missing from source manifest."
+          }
+      - name: Compile all Windows modules
+        run: python -m compileall -q padfire_core.py padfire_win padfire_windows.py
+      - name: Run shared config, MIDI and IPC tests
+        run: python -m unittest discover -s tests -p "test_padfire_platform.py" -v
+      - name: Test Windows package normalization
+        run: python -m unittest discover -s tests -p "test_windows_bundle_normalizer.py" -v
+      - name: Build and exercise the Qt UI without hardware
+        run: |
+          python -m unittest discover -s tests -p "test_padfire_windows_ui.py" -v
+          python padfire_windows.py --smoke-ui
+      - name: Test guarded QtCore relink source patch
+        run: python -m unittest discover -s tests -p "test_qt_relink_probe_patch.py" -v
+
+      - name: Build the packaged executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller --clean --noconfirm packaging/windows/Padfire.spec
+          python -m PyInstaller --clean --noconfirm packaging/windows/PadfireCLI.spec
+          python tools/normalize_windows_licenses.py --bundles dist/Padfire dist/PadfireCLI
+          $runtimeDllNames = @("MSVCP140.dll", "MSVCP140_1.dll", "MSVCP140_2.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "ucrtbase.dll")
+          foreach ($folder in @("dist\Padfire", "dist\PadfireCLI")) {
+            $localRuntime = Get-ChildItem $folder -File -Recurse | Where-Object { $runtimeDllNames -contains $_.Name }
+            if ($localRuntime) { throw "$folder still contains app-local VC/UCRT DLLs: $($localRuntime.FullName -join ', ')" }
+            if (Get-ChildItem $folder -Filter "msvcp140-*.dll" -File -Recurse) {
+              throw "$folder must not ship NumPy's hash-renamed MSVC runtime DLL."
+            }
+            foreach ($notice in @("WINDOWS_RUNTIME_REQUIREMENTS.md", "ThirdPartyLicenses\QtThirdParty\README.md", "ThirdPartyLicenses\QtThirdParty\qtbase\freetype-LICENSE.txt", "ThirdPartyLicenses\QtThirdParty\qtimageformats\libwebp-BSD-3-Clause.txt")) {
+              if (-not (Test-Path (Join-Path $folder $notice))) { throw "$folder is missing Qt/runtime notice $notice" }
+            }
+          }
+          if (-not (Test-Path "dist\Padfire\Padfire.exe")) { throw "Padfire.exe was not produced" }
+          if (-not (Test-Path "dist\PadfireCLI\PadfireCLI.exe")) { throw "PadfireCLI.exe was not produced" }
+          foreach ($folder in @("dist\Padfire", "dist\PadfireCLI")) {
+            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "WINDOWS_RUNTIME_REQUIREMENTS.md", "ThirdPartyLicenses\COMPONENTS.md", "ThirdPartyLicenses\WINDOWS_RUNTIME_PATCHES.md", "ThirdPartyLicenses\OpenSSL-3.0-Apache-2.0.txt", "ThirdPartyLicenses\QtThirdParty\README.md", "ThirdPartyLicenses\QtThirdParty\qtbase\freetype-LICENSE.txt")) {
+              if (-not (Test-Path (Join-Path $folder $file))) {
+                throw "$folder is missing $file"
+              }
+            }
+            $componentFiles = Get-ChildItem (Join-Path $folder "ThirdPartyLicenses") -File -Recurse |
+              Where-Object { $_.Name -ne "COMPONENTS.md" }
+            if (-not $componentFiles) { throw "$folder has no third-party license files or review markers" }
+            foreach ($ambient in @("libcrypto-3-x64.dll", "libssl-3-x64.dll")) {
+              if (Get-ChildItem $folder -Filter $ambient -File -Recurse) {
+                throw "$folder must not ship ambient runner DLL $ambient"
+              }
+            }
+            foreach ($cpythonSsl in @("libcrypto-3.dll", "libssl-3.dll")) {
+              if (-not (Get-ChildItem $folder -Filter $cpythonSsl -File -Recurse)) {
+                throw "$folder is missing the CPython 3.12 OpenSSL runtime $cpythonSsl"
+              }
+            }
+          }
+          & "dist\PadfireCLI\PadfireCLI.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "Packaged CLI --version smoke test failed" }
+          $status = & "dist\PadfireCLI\PadfireCLI.exe" --status | ConvertFrom-Json
+          if ($status.running -ne $false) { throw "Expected --status to report no running instance" }
+      - name: Install Inno Setup compiler
+        shell: pwsh
+        run: |
+          choco install innosetup --version=6.7.1 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compiler installation failed" }
+      - name: Build and verify per-user installer lifecycle
+        shell: pwsh
+        run: |
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          if (-not $compiler) {
+            $compilerPath = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $compilerPath)) { throw "ISCC.exe was not installed" }
+          } else {
+            $compilerPath = $compiler.Source
+          }
+          & $compilerPath "packaging/windows/Padfire.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed" }
+          $installer = Join-Path $PWD "dist\installer\Padfire-Setup-2.4-dev.exe"
+          if (-not (Test-Path $installer)) { throw "Installer output was not created" }
+
+          $installDir = Join-Path $env:RUNNER_TEMP "Padfire Installer E2E"
+          $installArgs = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR=`"$installDir`""
+          $installed = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru
+          if ($installed.ExitCode -ne 0) { throw "Silent installer failed: $($installed.ExitCode)" }
+          $gui = Join-Path $installDir "Padfire.exe"
+          $cli = Join-Path $installDir "CLI\PadfireCLI.exe"
+          $uninstaller = Join-Path $installDir "unins000.exe"
+          if (-not (Test-Path $gui) -or -not (Test-Path $cli) -or -not (Test-Path $uninstaller)) {
+            throw "Installer did not lay down the expected GUI, CLI and uninstaller"
+          }
+          foreach ($folder in @($installDir, (Join-Path $installDir "CLI"))) {
+            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "ThirdPartyLicenses\COMPONENTS.md", "ThirdPartyLicenses\WINDOWS_RUNTIME_PATCHES.md", "ThirdPartyLicenses\OpenSSL-3.0-Apache-2.0.txt")) {
+              if (-not (Test-Path (Join-Path $folder $file))) {
+                throw "Installed folder $folder is missing $file"
+              }
+            }
+            $componentFiles = Get-ChildItem (Join-Path $folder "ThirdPartyLicenses") -File -Recurse |
+              Where-Object { $_.Name -ne "COMPONENTS.md" }
+            if (-not $componentFiles) { throw "Installed folder $folder has no third-party license files or review markers" }
+          }
+
+          & .\tools\test_qt_dll_replacement.ps1 -InstallDir $installDir
+          & $cli --install
+          if ($LASTEXITCODE -ne 0) { throw "Installed CLI could not register startup" }
+          $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+          $startup = (Get-ItemProperty -Path $runKey -Name Padfire -ErrorAction Stop).Padfire
+          if ($startup -ne "`"$gui`"") { throw "Startup value does not point at the installed GUI: $startup" }
+
+          $removed = Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait -PassThru
+          if ($removed.ExitCode -ne 0) { throw "Silent uninstall failed: $($removed.ExitCode)" }
+          $remaining = Get-ItemProperty -Path $runKey -Name Padfire -ErrorAction SilentlyContinue
+          if ($null -ne $remaining) { throw "Uninstaller left the Padfire sign-in entry behind" }
+          if ((Test-Path $gui) -or (Test-Path $cli)) { throw "Uninstaller left application executables behind" }
+          Write-Host "PASS: installer installs GUI+CLI, CLI startup registration works, and uninstall removes the Run entry."
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: Padfire-Windows-x64
+          path: |
+            dist/Padfire/
+            dist/PadfireCLI/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: Padfire-Windows-Installer
+          path: dist/installer/Padfire-Setup-2.4-dev.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-qt-modified-relink:
+    name: Windows modified QtCore relink proof
+    if: github.event_name == 'push' && github.ref == 'refs/heads/port/windows-native' && contains(github.event.head_commit.message, '[qt-relink-test]')
+    needs: windows-smoke
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python for source verification
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Activate the MSVC 2022 x64 toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Ensure Ninja is available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "Ninja installation failed." }
+          }
+          cmake --version
+          ninja --version
+          cl.exe /Bv
+
+      - name: Download the Windows portable bundle from this workflow run
+        uses: actions/download-artifact@v7
+        with:
+          name: Padfire-Windows-x64
+          path: C:\qt-relink\app
+
+      - name: Download and verify Qt and PySide corresponding source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\qt-relink\source, C:\qt-relink\evidence | Out-Null
+          python tools/package_qt_corresponding_source.py --output C:\qt-relink\source --binary-inventory packaging\windows\qt-binary-components-6.12.0.md
+          if ($LASTEXITCODE -ne 0) { throw "Qt/PySide source download or checksum verification failed." }
+          $qtZip = "C:\qt-relink\source\Qt\qt-everywhere-src-6.12.0.zip"
+          $qtHash = (Get-FileHash -LiteralPath $qtZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $qtSize = (Get-Item -LiteralPath $qtZip).Length
+          if ($qtSize -ne 604643023 -or $qtHash -ne "a72e89c33726d742e67edf494abf7b625eaffc756673221c9823322ecd1a32d1") {
+            throw "Qt source archive identity does not match the pinned source."
+          }
+          Copy-Item C:\qt-relink\source\SOURCE_MANIFEST.md C:\qt-relink\evidence\
+          Copy-Item C:\qt-relink\source\SHA256SUMS.txt C:\qt-relink\evidence\
+          Write-Host "Verified the exact Qt 6.12.0 source archive: $qtSize bytes, $qtHash"
+
+      - name: Extract Qt source and add a non-ABI marker to QtCore
+        shell: pwsh
+        run: |
+          Expand-Archive -LiteralPath C:\qt-relink\source\Qt\qt-everywhere-src-6.12.0.zip -DestinationPath C:\qt-relink\extract
+          $source = "C:\qt-relink\extract\qt-everywhere-src-6.12.0"
+          if (-not (Test-Path (Join-Path $source "configure.bat"))) {
+            throw "Qt source archive did not extract to the expected root."
+          }
+          python tools\patch_qt_relink_probe.py --source-root $source --patch-output C:\qt-relink\evidence\qlibraryinfo.patch
+          if ($LASTEXITCODE -ne 0) { throw "The guarded QtCore source patch failed." }
+          Copy-Item (Join-Path $source "qtbase\src\corelib\global\qlibraryinfo.cpp") C:\qt-relink\evidence\qlibraryinfo.cpp
+
+      - name: Configure a shared Qt 6.12.0 qtbase build with MSVC 2022
+        shell: pwsh
+        run: |
+          $source = "C:\qt-relink\extract\qt-everywhere-src-6.12.0"
+          $build = "C:\qt-relink\build"
+          $prefix = "C:\qt-relink\install"
+          New-Item -ItemType Directory -Force -Path $build, $prefix | Out-Null
+          Push-Location $build
+          try {
+            & (Join-Path $source "configure.bat") -prefix $prefix -release -shared -opensource -confirm-license -nomake examples -nomake tests -submodules qtbase -no-pch 2>&1 | Tee-Object -FilePath C:\qt-relink\evidence\configure.log
+            if ($LASTEXITCODE -ne 0) { throw "Qt configure.bat failed with exit code $LASTEXITCODE." }
+          }
+          finally {
+            Pop-Location
+          }
+          if (-not (Test-Path (Join-Path $build "CMakeCache.txt"))) {
+            throw "Qt configure did not generate CMakeCache.txt."
+          }
+          Copy-Item (Join-Path $build "CMakeCache.txt") C:\qt-relink\evidence\
+
+      - name: Build the modified Qt6Core target
+        shell: pwsh
+        run: |
+          Push-Location C:\qt-relink\build
+          try {
+            cmake --build . --target Qt6Core --parallel 2 2>&1 | Tee-Object -FilePath C:\qt-relink\evidence\qtcore-build.log
+            if ($LASTEXITCODE -ne 0) { throw "The modified Qt6Core build failed with exit code $LASTEXITCODE." }
+          }
+          finally {
+            Pop-Location
+          }
+          $built = @(Get-ChildItem -Path C:\qt-relink\build -Filter Qt6Core.dll -File -Recurse)
+          if ($built.Count -lt 1) { throw "The Qt6Core build produced no Qt6Core.dll." }
+          $preferred = @($built | Where-Object { $_.FullName -match '\\qtbase\\bin\\Qt6Core\.dll$' })
+          if ($preferred.Count -gt 0) { $builtCore = $preferred[0] } else { $builtCore = $built[0] }
+          Copy-Item $builtCore.FullName C:\qt-relink\evidence\Qt6Core.modified.dll
+          $buildHash = (Get-FileHash C:\qt-relink\evidence\Qt6Core.modified.dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          if (-not $buildHash) { throw "Could not hash the newly built Qt6Core.dll." }
+          Write-Host "Built modified QtCore: $($builtCore.FullName)"
+          Write-Host "Modified QtCore SHA-256: $buildHash"
+
+      - name: Substitute the rebuilt DLL, execute its marker, and launch Padfire
+        shell: pwsh
+        run: |
+          $app = "C:\qt-relink\app\Padfire"
+          $gui = Join-Path $app "Padfire.exe"
+          $target = Join-Path $app "_internal\PySide6\Qt6Core.dll"
+          $backup = "C:\qt-relink\evidence\Qt6Core.original.dll"
+          $modified = "C:\qt-relink\evidence\Qt6Core.modified.dll"
+          $patchMarker = "PADFIRE-QT-RELINK-TEST-6.12.0"
+          if (-not (Test-Path $gui)) { throw "The same-run Padfire.exe artifact was not downloaded." }
+          if (-not (Test-Path $target)) { throw "The PyInstaller Qt6Core.dll target was not found." }
+          $originalHash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
+          Copy-Item $target $backup
+          $smokeExit = -1
+          $restored = $false
+          try {
+            Copy-Item $modified $target -Force
+            & python tools\verify_qt_relink_probe.py --library $target --expected-marker $patchMarker 2>&1 | Tee-Object -FilePath C:\qt-relink\evidence\marker-probe.log
+            if ($LASTEXITCODE -ne 0) { throw "The rebuilt QtCore marker could not be called from the replacement DLL." }
+            $process = Start-Process -FilePath $gui -ArgumentList "--smoke-ui" -WorkingDirectory $app -WindowStyle Hidden -PassThru
+            if (-not $process.WaitForExit(30000)) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "Padfire did not exit within 30 seconds against the modified QtCore DLL."
+            }
+            $smokeExit = $process.ExitCode
+            if ($smokeExit -ne 0) { throw "Padfire exited $smokeExit against the modified QtCore DLL." }
+          }
+          finally {
+            if (Test-Path $backup) {
+              Copy-Item $backup $target -Force
+              $restoredHash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
+              $restored = $restoredHash -eq $originalHash
+            }
+          }
+          if (-not $restored) { throw "Original QtCore could not be restored byte-for-byte." }
+          $modifiedHash = (Get-FileHash $modified -Algorithm SHA256).Hash.ToLowerInvariant()
+          @"
+          # Modified QtCore replacement test
+
+          - Qt source: Qt 6.12.0 official source archive
+          - Source archive SHA-256: a72e89c33726d742e67edf494abf7b625eaffc756673221c9823322ecd1a32d1
+          - Patch: append an exported C marker function to qlibraryinfo.cpp; qVersion() and existing Qt APIs are unchanged.
+          - Configure: MSVC 2022 x64, Release, shared, qtbase submodule only, no examples/tests, no PCH.
+          - Build target: Qt6Core
+          - Original packaged Qt6Core SHA-256: $originalHash
+          - Rebuilt, deliberately modified Qt6Core SHA-256: $modifiedHash
+          - Executed marker: $patchMarker
+          - Packaged Padfire.exe --smoke-ui exit code with modified QtCore: $smokeExit
+          - Original Qt6Core restored SHA-256: $originalHash
+
+          This is a functional modified-library replacement test for QtCore in a disposable copy of the exact Windows bundle. It does not reconstruct the un-attested Qt/PySide wheel build flags, prove every Qt module/plugin can be rebuilt, or satisfy the permanent-source, written-offer, full installation-information, SBOM, or legal-review requirements.
+          "@ | Set-Content -LiteralPath C:\qt-relink\evidence\RELINK_TEST_EVIDENCE.md -Encoding UTF8
+          $restoredHash | Set-Content C:\qt-relink\evidence\restored-Qt6Core.sha256 -Encoding ascii
+
+      - name: Record toolchain versions
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\qt-relink\evidence | Out-Null
+          cmake --version 2>&1 | Out-File C:\qt-relink\evidence\cmake-version.txt -Encoding utf8
+          ninja --version 2>&1 | Out-File C:\qt-relink\evidence\ninja-version.txt -Encoding utf8
+          cl.exe /Bv 2>&1 | Out-File C:\qt-relink\evidence\msvc-version.txt -Encoding utf8
+
+      - name: Upload modified QtCore relink evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Padfire-Qt6Core-Modified-Relink-Evidence
+          path: C:\qt-relink\evidence\
+          if-no-files-found: warn
+          retention-days: 90
