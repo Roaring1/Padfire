@@ -172,15 +172,25 @@ offscreen application launched and published Windows IPC status using the
 installed Microsoft redist (14.51.36247.00). The real installation was not
 modified.
 
-One wheel-specific exception remains. NumPy's `numpy.libs` directory
-contains `msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll` (file version
-14.40.33810.0, valid Microsoft Authenticode signature). The PE import table
-shows that `_multiarray_umath.cp312-win_amd64.pyd` and
-`_pocketfft_umath.cp312-win_amd64.pyd` import this exact hashed name. It is
-retained to preserve the upstream wheel import contract. Its precise
-Microsoft redistribution basis and upstream provenance remain an open
-review item. See `WINDOWS_RUNTIME_REQUIREMENTS.md`.
+## NumPy wheel's original private runtime dependency
 
+The NumPy 2.5.4 CPython 3.12 x64 wheel originally supplied
+`numpy.libs/msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll`. Its two importing
+extensions (`_multiarray_umath.cp312-win_amd64.pyd` and
+`_pocketfft_umath.cp312-win_amd64.pyd`) are unsigned PE files; their import
+descriptors are rewritten to the normal system name `msvcp140.dll` using
+pinned `delvewheel 1.13.2`. The hash-named DLL is deleted before PyInstaller
+packaging. A fresh process verifies NumPy dot, SciPy FFT and SciPy linalg
+operations; the manifest records original and patched importer hashes.
+
+The exact wheel is `numpy-2.5.4-cp312-cp312-win_amd64.whl`, SHA-256
+`a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a`.
+PyPI lists a verified Publish Attestation from `numpy/numpy-release` (run
+[38074635821](https://github.com/numpy/numpy-release/actions/runs/38074635821)).
+Padfire captures pip's install report and validates the exact file-host URL
+and hash before patching. This publisher attestation does not certify every
+compiler input or Padfire's downstream PE import rewrite. See
+`WINDOWS_RUNTIME_REQUIREMENTS.md`.
 ## OpenSSL runtime distinction
 
 The Padfire PyInstaller bundle contained CPython 3.12.10's `_ssl.pyd` and
@@ -211,8 +221,9 @@ backend is shipped for native Windows TLS.
    variants and any additional notices required in both bundles. The Python
    wheel inventory does not establish the contents of statically linked Qt
    third-party code.
-4. Resolve the precise Microsoft redistribution basis and upstream provenance
-   for NumPy's retained hash-renamed MSVC runtime dependency.
+4. Re-audit the pinned NumPy wheel and PE-import rewrite whenever NumPy or
+   delvewheel changes; retain the PyPI attestation, pip report, and generated
+   before/after hash manifest for each build.
 5. Repeat the audit for each new Qt/PySide wheel or plugin set.
 
 Until these are complete, this crosswalk is evidence for review, not a
