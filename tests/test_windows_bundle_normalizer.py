@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from tools.normalize_windows_licenses import normalize
+from tools.normalize_windows_licenses import normalize, verify_numpy_system_runtime_imports
 from tools.collect_third_party_licenses import component_license_notes, is_license_path
 from tools.normalize_numpy_msvc_runtime import verify_windows_wheel_report
 
@@ -58,6 +58,62 @@ class NumpyWheelProvenanceTests(unittest.TestCase):
                     path.write_text(json.dumps(value), encoding="utf-8")
                     with self.assertRaises(RuntimeError):
                         verify_windows_wheel_report(path)
+
+
+class PackagedNumpyPEImportTests(unittest.TestCase):
+    def _bundle(self, root: Path) -> Path:
+        bundle = root / "Padfire"
+        (bundle / "numpy" / "_core").mkdir(parents=True)
+        (bundle / "numpy" / "fft").mkdir(parents=True)
+        (bundle / "numpy" / "_core" / "_multiarray_umath.cp312-win_amd64.pyd").write_bytes(b"mock PE")
+        (bundle / "numpy" / "fft" / "_pocketfft_umath.cp312-win_amd64.pyd").write_bytes(b"mock PE")
+        return bundle
+
+    def test_both_packaged_numpy_extensions_use_system_msvc_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = self._bundle(Path(temp))
+            with unittest.mock.patch(
+                "tools.normalize_windows_licenses.pe_import_names",
+                return_value={"msvcp140.dll", "python3.dll"},
+            ):
+                verify_numpy_system_runtime_imports(bundle)
+
+    def test_missing_system_runtime_import_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = self._bundle(Path(temp))
+            with unittest.mock.patch(
+                "tools.normalize_windows_licenses.pe_import_names",
+                return_value={"python3.dll"},
+            ):
+                with self.assertRaisesRegex(RuntimeError, "does not import system msvcp140.dll"):
+                    verify_numpy_system_runtime_imports(bundle)
+
+    def test_private_hashed_runtime_import_in_any_pe_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = self._bundle(Path(temp))
+            extra = bundle / "another_module.pyd"
+            extra.write_bytes(b"mock PE")
+
+            def imports(path: Path) -> set[str]:
+                if path.name == "another_module.pyd":
+                    return {"msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll"}
+                return {"msvcp140.dll"}
+
+            with unittest.mock.patch(
+                "tools.normalize_windows_licenses.pe_import_names",
+                side_effect=imports,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Private hash-renamed Microsoft CRT imports remain"):
+                    verify_numpy_system_runtime_imports(bundle)
+
+    def test_duplicate_expected_numpy_extension_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            bundle = self._bundle(Path(temp))
+            duplicate = bundle / "duplicate"
+            duplicate.mkdir()
+            (duplicate / "_multiarray_umath.cp312-win_amd64.pyd").write_bytes(b"mock PE")
+            with self.assertRaisesRegex(RuntimeError, "Expected exactly one packaged"):
+                verify_numpy_system_runtime_imports(bundle)
 
 
 class NormalizeWindowsLicensesTests(unittest.TestCase):
