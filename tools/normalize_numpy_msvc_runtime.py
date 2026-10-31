@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import hashlib
+import json
 import importlib.metadata as metadata
 import os
 import re
@@ -13,11 +14,55 @@ import subprocess
 import sys
 import sysconfig
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import pefile
 
 HASHED_MSVC_DLL = re.compile(r"^msvcp140-[0-9a-f]{32}\.dll$", re.IGNORECASE)
 SYSTEM_IMPORT_NAME = "msvcp140.dll"
+EXPECTED_NUMPY_VERSION = "2.5.4"
+EXPECTED_NUMPY_WHEEL = "numpy-2.5.4-cp312-cp312-win_amd64.whl"
+EXPECTED_NUMPY_WHEEL_SHA256 = "a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a"
+
+
+def verify_numpy_wheel_report(report_path: Path) -> dict[str, str]:
+    """Fail closed unless pip installed the exact PyPI-attested Windows wheel."""
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    matches = [
+        item for item in report.get("install", [])
+        if item.get("metadata", {}).get("name", "").casefold() == "numpy"
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"Expected exactly one NumPy record in pip install report; found {len(matches)}."
+        )
+    item = matches[0]
+    version = item.get("metadata", {}).get("version")
+    if version != EXPECTED_NUMPY_VERSION:
+        raise RuntimeError(
+            f"Expected NumPy {EXPECTED_NUMPY_VERSION}; pip report records {version!r}."
+        )
+    download = item.get("download_info", {})
+    url = download.get("url", "")
+    parsed = urlparse(url)
+    filename = Path(unquote(parsed.path)).name
+    if parsed.scheme != "https" or parsed.hostname != "files.pythonhosted.org":
+        raise RuntimeError(f"NumPy wheel did not come directly from PyPI's file host: {url!r}.")
+    if filename != EXPECTED_NUMPY_WHEEL:
+        raise RuntimeError(f"Expected {EXPECTED_NUMPY_WHEEL}; got {filename!r}.")
+    actual_hash = download.get("archive_info", {}).get("hashes", {}).get("sha256")
+    if not actual_hash or actual_hash.casefold() != EXPECTED_NUMPY_WHEEL_SHA256:
+        raise RuntimeError(
+            "NumPy wheel SHA-256 does not match the PyPI-published attested wheel: "
+            f"{actual_hash!r}."
+        )
+    return {
+        "version": version,
+        "filename": filename,
+        "url": url,
+        "sha256": actual_hash.casefold(),
+    }
+
 
 
 def sha256(path: Path) -> str:
@@ -73,9 +118,12 @@ def numeric_smoke_test() -> str:
     return result.stdout.strip()
 
 
-def normalize(output: Path) -> Path:
+def normalize(output: Path, pip_report: Path) -> Path:
     if os.name != "nt":
         raise RuntimeError("NumPy MSVC import normalization must run on Windows.")
+    wheel_provenance = verify_numpy_wheel_report(pip_report)
+    if metadata.version("numpy") != EXPECTED_NUMPY_VERSION:
+        raise RuntimeError("Installed NumPy version does not match the audited wheel.")
     try:
         ctypes.WinDLL(SYSTEM_IMPORT_NAME)
     except OSError as exc:
@@ -166,6 +214,12 @@ def normalize(output: Path) -> Path:
         "Generated for this build by tools/normalize_numpy_msvc_runtime.py.",
         "",
         f"- NumPy version: {numpy_version}",
+        "- PyPI wheel filename: " + wheel_provenance["filename"],
+        "- PyPI wheel URL: " + wheel_provenance["url"],
+        "- PyPI wheel SHA-256: " + wheel_provenance["sha256"],
+        "- Publisher provenance: PyPI exposes a verified Publish Attestation for this exact wheel.",
+        "- Publisher workflow: numpy/numpy-release, run 38074635821, Windows CPython 3.12 x64 job 114278931605.",
+        "- Source branch recorded by publisher job: maintenance/2.5.x; this does not pin every compiler/build input.",
         f"- delvewheel version: {tool_version}",
         f"- Hash-renamed wheel runtime DLLs removed: {len(candidates)}",
         f"- System import name: {SYSTEM_IMPORT_NAME}",
@@ -202,13 +256,14 @@ def normalize(output: Path) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pip-report", type=Path, required=True, help="pip install --report JSON for this build")
     parser.add_argument(
         "--output",
         type=Path,
         default=Path("packaging/windows/generated_licenses/WINDOWS_RUNTIME_PATCHES.md"),
     )
     args = parser.parse_args()
-    manifest = normalize(args.output)
+    manifest = normalize(args.output, args.pip_report)
     print(f"NumPy runtime imports normalized; manifest: {manifest.resolve()}")
     return 0
 

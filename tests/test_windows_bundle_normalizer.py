@@ -5,7 +5,46 @@ import unittest
 from pathlib import Path
 from tools.normalize_windows_licenses import normalize
 from tools.collect_third_party_licenses import component_license_notes, is_license_path
+from tools.normalize_numpy_msvc_runtime import verify_numpy_wheel_report
 
+
+class NumpyWheelProvenanceTests(unittest.TestCase):
+    def _report(self, *, filename="numpy-2.5.4-cp312-cp312-win_amd64.whl",
+                digest="a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a",
+                url_host="files.pythonhosted.org"):
+        import json
+        return {"install": [{
+            "metadata": {"name": "numpy", "version": "2.5.4"},
+            "download_info": {
+                "url": f"https://{url_host}/packages/example/{filename}",
+                "archive_info": {"hashes": {"sha256": digest}},
+            },
+        }]}
+
+    def test_accepts_only_the_attested_numpy_cp312_windows_wheel(self) -> None:
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            report_path = Path(temp) / "pip-report.json"
+            report_path.write_text(json.dumps(self._report()), encoding="utf-8")
+            result = verify_numpy_wheel_report(report_path)
+            self.assertEqual(result["version"], "2.5.4")
+            self.assertEqual(result["filename"], "numpy-2.5.4-cp312-cp312-win_amd64.whl")
+            self.assertEqual(result["sha256"], "a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a")
+
+    def test_rejects_wrong_hash_filename_or_host(self) -> None:
+        import json
+        cases = [
+            self._report(digest="0" * 64),
+            self._report(filename="numpy-2.5.4-cp312-cp312-win32.whl"),
+            self._report(url_host="example.invalid"),
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            for i, report in enumerate(cases):
+                with self.subTest(case=i):
+                    report_path = Path(temp) / f"pip-report-{i}.json"
+                    report_path.write_text(json.dumps(report), encoding="utf-8")
+                    with self.assertRaises(RuntimeError):
+                        verify_numpy_wheel_report(report_path)
 
 class NormalizeWindowsLicensesTests(unittest.TestCase):
     def _source(self, root: Path) -> None:

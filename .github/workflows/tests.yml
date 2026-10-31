@@ -78,8 +78,12 @@ jobs:
           cache: pip
           cache-dependency-path: packaging/windows/requirements.txt
       - name: Install Windows runtime and build dependencies
-        run: python -m pip install --upgrade pip; python -m pip install -r packaging/windows/requirements.txt
         shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
+          python -m pip install --report "$env:RUNNER_TEMP\numpy-pip-report.json" -r packaging/windows/requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw "Windows runtime dependency installation failed" }
       - name: Verify official Microsoft VC++ runtime prerequisite
         shell: pwsh
         run: |
@@ -96,7 +100,10 @@ jobs:
       - name: Collect runtime third-party license files
         run: python tools/collect_third_party_licenses.py --output packaging/windows/generated_licenses --fail-on-missing
       - name: Rebind NumPy MSVC imports to system runtime
-        run: python tools/normalize_numpy_msvc_runtime.py --output packaging/windows/generated_licenses/WINDOWS_RUNTIME_PATCHES.md
+        shell: pwsh
+        run: |
+          python tools/normalize_numpy_msvc_runtime.py --pip-report "$env:RUNNER_TEMP\numpy-pip-report.json" --output packaging/windows/generated_licenses/WINDOWS_RUNTIME_PATCHES.md
+          if ($LASTEXITCODE -ne 0) { throw "NumPy wheel provenance or MSVC import patch validation failed" }
       - name: Validate corresponding-source package recipe without downloading
         shell: pwsh
         run: |
