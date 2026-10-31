@@ -32,7 +32,7 @@ def pe_import_names(path: Path) -> set[str]:
             for entry in (getattr(pe, directory, None) or []):
                 raw = getattr(entry, "dll", None)
                 if raw:
-                    result.add(raw.decode("ascii", errors="replace").rstrip("\\x00").casefold())
+                    result.add(raw.decode("ascii", errors="replace").rstrip("\x00").casefold())
         return result
     finally:
         pe.close()

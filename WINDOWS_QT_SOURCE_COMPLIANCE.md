@@ -139,10 +139,10 @@ No written source offer is made by this repository document.
 
 ## Current status
 
-- [x] Latest PR validation run [41162260178](https://github.com/Roaring1/Padfire/actions/runs/41162260178) passed both Linux and Windows jobs on commit `2309fd5`. Windows CI verifies the exact NumPy, PySide6-Essentials and Shiboken6 wheel identities from pip's install report; checks their PyPI SHA-256 values and provenance labels; rebinds NumPy's two MSVC PE imports to the system runtime; runs fresh-process NumPy/SciPy numerical tests; enforces removal of the hash-named DLL; builds GUI and CLI; compiles the installer; tests per-user install/startup/uninstall; exercises byte-identical Qt DLL replacement-and-restore; and uploads both artifacts. These are 14-day Actions artifacts, not permanent releases:
-  - [Windows x64 portable GUI + CLI](https://github.com/Roaring1/Padfire/actions/runs/41162260178/artifacts/13027782266)
-  - [Windows installer](https://github.com/Roaring1/Padfire/actions/runs/41162260178/artifacts/13027971875)
-- [x] The `2309fd5` portable artifact was downloaded and inspected locally. Both GUI and CLI folders contain Qt modules/plugins, complete LGPL/GPL texts, PSF notice, OpenSSL 3.0.16 Apache notice, generated component inventories, the runtime prerequisite, Qt third-party candidate notices, and `WINDOWS_RUNTIME_PATCHES.md`. The manifest lists exact filename, URL and SHA-256 for all three runtime wheels and explicitly marks NumPy as PyPI-attested and PySide/Shiboken as un-attested. Neither bundle contains ordinary app-local MSVC/UCRT DLLs, NumPy's hash-renamed runtime DLL, or missing-wheel-license markers.
+- [x] Latest PR validation run [41166308578](https://github.com/Roaring1/Padfire/actions/runs/41166308578) passed both Linux and Windows jobs on commit `33c98cd`. Windows CI verifies the exact NumPy, PySide6-Essentials and Shiboken6 wheel identities; rewrites NumPy's two MSVC PE imports; runs fresh-process NumPy/SciPy checks; scans the final GUI and CLI distributions to require `msvcp140.dll` imports in both expected NumPy extensions and reject any remaining hash-renamed import; checks runtime/legal payloads; builds both apps; compiles the installer; exercises installation/startup/uninstall and Qt DLL replacement mechanics. These are 14-day Actions artifacts, not permanent releases:
+  - [Windows x64 portable GUI + CLI](https://github.com/Roaring1/Padfire/actions/runs/41166308578/artifacts/13029209294)
+  - [Windows installer](https://github.com/Roaring1/Padfire/actions/runs/41166308578/artifacts/13029560359)
+- [x] The `33c98cd` portable artifact was downloaded and inspected locally. Each GUI/CLI folder contains 454 files (85 DLLs), the three-wheel manifest, runtime requirements, Qt candidate notices, and component inventory. Neither contains ordinary app-local MSVC/UCRT DLLs, NumPy's hash-renamed runtime DLL, or missing-license markers. Independent PE inspection of both final folders confirms `_multiarray_umath` and `_pocketfft_umath` import system `msvcp140.dll`; no private hashed import remains. Portable ZIP SHA-256: `56ffda1152eab481a9a42b9fb60e37dee5c1933f669996419183dac82af23e13`.
 - [x] Static PE import-table inspection confirms the Qt DLLs are separate dynamic dependencies of the PySide extension modules and Windows plugins. CI also copies `Qt6Core.dll` byte-for-byte to a new path, substitutes it into the installed tree, starts the smoke UI, restores the original, and verifies its SHA-256. This tests replaceable-file mechanics, not a modified/rebuilt Qt implementation.
 - [x] The bundle retains CPython's `libssl-3.dll`/`libcrypto-3.dll` pair and excludes the unrelated ambient OpenSSL 3.5 `*-x64.dll` pair.
 - [ ] Physical Launchpad Mini MK1/MK2 MIDI, LED feedback/reconnect, actual audio playback/quality, and visible Windows tray behavior remain untested.
@@ -275,3 +275,25 @@ The manifest is present in both portable folders and the Inno Setup
 installer lifecycle verifies it is copied into both the GUI and CLI
 installations. The current artifacts remain short-lived CI artifacts with
 14-day retention, not permanent release attachments.
+
+
+## Final-bundle PE import check (2026-10-31)
+
+The final-bundle PE gate was added in commit `768ee02` and passed in both
+PR and push CI runs for `33c98cd` (PR run
+[41166308578](https://github.com/Roaring1/Padfire/actions/runs/41166308578)).
+After normalizing each PyInstaller output, the packaging command uses the
+pinned `pefile 2024.8.26` parser to inspect normal and delay-load imports in
+the final GUI and CLI PE files. It requires exactly one copy of each expected
+NumPy extension per distribution, checks that both import `msvcp140.dll`,
+and rejects any remaining `msvcp140-<hash>.dll` dependency anywhere in the
+bundle.
+
+The downloaded artifact was also checked independently with LLVM's PE
+import-table reader. All four packaged extension binaries (two modules in
+each of GUI and CLI) import `msvcp140.dll`; no hashed private name remains.
+The final portable archive SHA-256 is
+`56ffda1152eab481a9a42b9fb60e37dee5c1933f669996419183dac82af23e13`.
+The installer artifact ZIP SHA-256 is
+`58274701092765f5a3e5bd54f5d6bbf9f77c7ce53a861f388cdda5c80d8ae5ca`.
+These 14-day Actions artifacts are test outputs, not permanent release assets.
