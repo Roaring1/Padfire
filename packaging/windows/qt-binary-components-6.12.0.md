@@ -118,9 +118,10 @@ the PyInstaller hooks, or the packaged plugins change.
 
 ## Current normalized package verification
 
-The PR artifact from run 41160613711 (commit cdbdffe) was inspected from its
+The PR artifact from run 41162260178 (commit 2309fd5) was inspected from its
 downloaded ZIP. Both GUI and CLI one-folder bundles contain runtime
 requirements, Qt third-party candidate notices and the NumPy runtime patch
-manifest; neither contains ordinary app-local MSVC/UCRT DLLs or the private
-hash-renamed NumPy DLL. Both have no `LICENSE_FILE_NOT_INCLUDED.txt` markers.
-This artifact is a 14-day Actions test artifact, not a permanent release.
+manifest with exact PyPI hashes for NumPy, PySide6-Essentials and Shiboken6.
+Neither contains ordinary app-local MSVC/UCRT DLLs or the private hash-renamed
+NumPy DLL. Both have no `LICENSE_FILE_NOT_INCLUDED.txt` markers. This artifact
+is a 14-day Actions test artifact, not a permanent release.

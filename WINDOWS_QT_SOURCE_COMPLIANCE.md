@@ -139,10 +139,10 @@ No written source offer is made by this repository document.
 
 ## Current status
 
-- [x] Current PR validation run [41160613711](https://github.com/Roaring1/Padfire/actions/runs/41160613711) passed both Linux and Windows jobs on commit `cdbdffe`. Windows CI verifies the exact attested NumPy wheel, rebinds its two MSVC PE imports to the system runtime, runs fresh-process NumPy/SciPy numerical tests, enforces removal of the hash-named DLL, builds GUI and CLI, compiles the installer, tests the per-user install/startup/uninstall lifecycle, exercises the byte-identical Qt DLL replacement-and-restore check, and uploads both artifacts. These are 14-day Actions artifacts, not permanent releases:
-  - [Windows x64 portable GUI + CLI](https://github.com/Roaring1/Padfire/actions/runs/41160613711/artifacts/13026639371)
-  - [Windows installer](https://github.com/Roaring1/Padfire/actions/runs/41160613711/artifacts/13026978049)
-- [x] The `cdbdffe` portable artifact was downloaded and inspected locally. Both GUI and CLI folders contain Qt modules/plugins, complete LGPL/GPL texts, PSF notice, OpenSSL 3.0.16 Apache notice, generated component inventories, the runtime prerequisite, Qt third-party candidate notices, and `WINDOWS_RUNTIME_PATCHES.md`. Neither bundle contains ordinary app-local MSVC/UCRT DLLs or NumPy's hash-renamed runtime DLL. Both patch manifests record the original wheel/runtime hash, two changed PE importers and before/after hashes. Neither inventory contains a missing-wheel-license marker.
+- [x] Latest PR validation run [41162260178](https://github.com/Roaring1/Padfire/actions/runs/41162260178) passed both Linux and Windows jobs on commit `2309fd5`. Windows CI verifies the exact NumPy, PySide6-Essentials and Shiboken6 wheel identities from pip's install report; checks their PyPI SHA-256 values and provenance labels; rebinds NumPy's two MSVC PE imports to the system runtime; runs fresh-process NumPy/SciPy numerical tests; enforces removal of the hash-named DLL; builds GUI and CLI; compiles the installer; tests per-user install/startup/uninstall; exercises byte-identical Qt DLL replacement-and-restore; and uploads both artifacts. These are 14-day Actions artifacts, not permanent releases:
+  - [Windows x64 portable GUI + CLI](https://github.com/Roaring1/Padfire/actions/runs/41162260178/artifacts/13027782266)
+  - [Windows installer](https://github.com/Roaring1/Padfire/actions/runs/41162260178/artifacts/13027971875)
+- [x] The `2309fd5` portable artifact was downloaded and inspected locally. Both GUI and CLI folders contain Qt modules/plugins, complete LGPL/GPL texts, PSF notice, OpenSSL 3.0.16 Apache notice, generated component inventories, the runtime prerequisite, Qt third-party candidate notices, and `WINDOWS_RUNTIME_PATCHES.md`. The manifest lists exact filename, URL and SHA-256 for all three runtime wheels and explicitly marks NumPy as PyPI-attested and PySide/Shiboken as un-attested. Neither bundle contains ordinary app-local MSVC/UCRT DLLs, NumPy's hash-renamed runtime DLL, or missing-wheel-license markers.
 - [x] Static PE import-table inspection confirms the Qt DLLs are separate dynamic dependencies of the PySide extension modules and Windows plugins. CI also copies `Qt6Core.dll` byte-for-byte to a new path, substitutes it into the installed tree, starts the smoke UI, restores the original, and verifies its SHA-256. This tests replaceable-file mechanics, not a modified/rebuilt Qt implementation.
 - [x] The bundle retains CPython's `libssl-3.dll`/`libcrypto-3.dll` pair and excludes the unrelated ambient OpenSSL 3.5 `*-x64.dll` pair.
 - [ ] Physical Launchpad Mini MK1/MK2 MIDI, LED feedback/reconnect, actual audio playback/quality, and visible Windows tray behavior remain untested.
@@ -216,7 +216,7 @@ the wheel. For any FreeType source included in the Qt distribution, Padfire
 selects the FreeType License (FTL) option; exact binary presence remains
 unverified without the wheel's build-specific SBOM.
 
-The PR validation at `cdbdffe` also runs a byte-identical QtCore DLL
+The PR validation at `2309fd5` also runs a byte-identical QtCore DLL
 substitution inside the newly installed CI test tree. The smoke UI launches
 against the substituted file and the original is restored and SHA-256
 verified. This does not modify/rebuild Qt code and is not represented as a
@@ -256,3 +256,22 @@ their input identity is known but their wheel-production pipeline is not
 cryptographically attested. This reinforces why the exact Qt/PySide wheel
 build configuration, SPDX SBOM and upstream source correspondence remain
 unresolved; matching source archives by tag alone are not enough.
+
+
+## Three-wheel input manifest and current CI (2026-10-31)
+
+The current `2309fd5` validation passed after expanding the pip install-report
+guard to three runtime wheels:
+- NumPy 2.5.4: PyPI attested; SHA-256
+  `a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a`.
+- PySide6-Essentials 6.12.0: PyPI marks the exact Windows wheel
+  "Without provenance"; SHA-256
+  `c9a95102aa23c1f86516a30d5a9be37552d324eee7e567eb7508973f1218cb42`.
+- Shiboken6 6.12.0: PyPI marks the exact Windows wheel
+  "Without provenance"; SHA-256
+  `a1906cb8116869178c64b6bab52623bbc8b4ceed7b30bfc3c9aa0f6e67f6438e`.
+
+The manifest is present in both portable folders and the Inno Setup
+installer lifecycle verifies it is copied into both the GUI and CLI
+installations. The current artifacts remain short-lived CI artifacts with
+14-day retention, not permanent release attachments.
