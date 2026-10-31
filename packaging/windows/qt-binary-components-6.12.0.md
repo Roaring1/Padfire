@@ -118,12 +118,8 @@ the PyInstaller hooks, or the packaged plugins change.
 
 ## Current normalized package verification
 
-The PR artifact from run 41166308578 (commit 33c98cd) was inspected from its
-downloaded ZIP. Both GUI and CLI one-folder bundles contain runtime
-requirements, Qt third-party candidate notices and the NumPy runtime patch
-manifest with exact PyPI hashes for NumPy, PySide6-Essentials and Shiboken6.
-Neither contains ordinary app-local MSVC/UCRT DLLs or the private hash-renamed
-NumPy DLL. Independent PE import-table inspection confirms both NumPy
-extensions in each bundle import `msvcp140.dll`. Both have no
-`LICENSE_FILE_NOT_INCLUDED.txt` markers. This artifact is a 14-day Actions
-test artifact, not a permanent release.
+The exact PR artifact from run [41172239266](https://github.com/Roaring1/Padfire/actions/runs/41172239266) (commit `9103d7e`) was downloaded and independently inspected. The archive SHA-256 is `2e12d3be94deca1afc56d68bf8ce93a15864c98258564e2890cef471c3c4880e`. It contains exactly 908 file entries: 454 in the GUI bundle and 454 in the CLI bundle, each with 85 DLLs. Both include the runtime requirements, Qt third-party candidate notices, component inventory and NumPy runtime patch manifest. Neither contains ordinary app-local MSVC/UCRT DLLs, the private hash-renamed NumPy DLL, ambient OpenSSL `*-x64.dll` files, or `LICENSE_FILE_NOT_INCLUDED.txt` markers.
+
+Independent LLVM PE import-table inspection of all four packaged NumPy extensions (two each in GUI and CLI) confirms they import system `msvcp140.dll`, `VCRUNTIME140.dll`, and `VCRUNTIME140_1.dll`. The official system Visual C++ Redistributable prerequisite therefore remains required.
+
+The installer artifact from the same run is [artifact 13031284688](https://github.com/Roaring1/Padfire/actions/runs/41172239266/artifacts/13031284688); its ZIP SHA-256 is `abdff308b3dce451afa349492f9350b4070df0f542625e7f9829db6fb93a872d`. It contains the expected single Inno Setup executable. The successful Windows CI job also completed the per-user install/startup/uninstall lifecycle and byte-identical Qt DLL replacement-and-restore mechanics. Both binary artifacts are 14-day Actions test artifacts, not permanent releases; they expire on 2026-11-14.
