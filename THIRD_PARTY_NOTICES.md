@@ -55,7 +55,7 @@ source offer. See [WINDOWS_QT_SOURCE_COMPLIANCE.md](WINDOWS_QT_SOURCE_COMPLIANCE
 for the exact checksums, source workflow, binary component inventory and
 remaining release checklist. The separate
 [Qt third-party crosswalk](packaging/windows/qt-third-party-crosswalk-6.12.0.md)
-records the outstanding binary-specific SBOM and FreeType license questions.
+records the outstanding binary-specific SBOM and exact third-party component-presence questions.
 See the official requirements:
 
 - Qt's LGPL obligations:

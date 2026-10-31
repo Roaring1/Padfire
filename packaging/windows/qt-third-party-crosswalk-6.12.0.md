@@ -202,9 +202,9 @@ backend is shipped for native Windows TLS.
 1. Obtain the Qt SPDX 2.3 SBOM for the exact Qt runtime build used in the
    PySide6 6.12.0 wheel, or have Qt for Python maintainers provide the wheel's
    exact source revisions, build configuration and third-party manifest.
-2. Map each of the third-party candidate components above to the actual DLL
-   contents and selected license variant. FreeType's FTL-vs-GPL2 choice is a
-   particularly important unresolved item.
+2. Map each third-party candidate above to the actual Qt DLL/plugin contents
+   and selected build variant. Padfire selects the FTL option for any FreeType
+   code included; the wheel-specific SBOM is still needed to confirm presence.
 3. Use the Qt/PySide build-specific SBOM and source revisions to identify
    which mapped Qt third-party components are actually compiled into the
    distributed module/plugin DLLs, then confirm their selected license
