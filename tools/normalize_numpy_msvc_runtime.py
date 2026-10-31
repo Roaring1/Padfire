@@ -264,7 +264,7 @@ def normalize(output: Path, pip_report: Path) -> Path:
         "",
         "| Original file | SHA-256 |",
         "|---|---|",
-    ]
+    ])
     for name, digest in sorted(original_runtime_hashes.items()):
         lines.append(f"| {name} | {digest} |")
     lines.extend([
