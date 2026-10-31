@@ -110,8 +110,6 @@ def normalize(bundle: Path, source_root: Path) -> None:
     if remaining:
         raise RuntimeError("App-local or hash-renamed Microsoft CRT DLLs remain: " + ", ".join(remaining))
 
-    verify_numpy_system_runtime_imports(bundle)
-
     destination = bundle / "ThirdPartyLicenses"
     candidates = (destination, bundle / "_internal" / "ThirdPartyLicenses")
     license_source = next((x for x in candidates if x.is_dir()), None)
@@ -138,7 +136,8 @@ def main() -> int:
     root = args.root.resolve()
     for bundle in args.bundles:
         normalize(bundle, root)
-        print(f"Legal documents staged at bundle root: {bundle.resolve()}")
+        verify_numpy_system_runtime_imports(bundle)
+        print(f"Legal documents staged and NumPy PE imports verified: {bundle.resolve()}")
     return 0
 
 

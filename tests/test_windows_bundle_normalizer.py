@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from tools.normalize_windows_licenses import normalize, verify_numpy_system_runtime_imports
+from unittest import mock
 from tools.collect_third_party_licenses import component_license_notes, is_license_path
 from tools.normalize_numpy_msvc_runtime import verify_windows_wheel_report
 
@@ -72,7 +73,7 @@ class PackagedNumpyPEImportTests(unittest.TestCase):
     def test_both_packaged_numpy_extensions_use_system_msvc_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             bundle = self._bundle(Path(temp))
-            with unittest.mock.patch(
+            with mock.patch(
                 "tools.normalize_windows_licenses.pe_import_names",
                 return_value={"msvcp140.dll", "python3.dll"},
             ):
