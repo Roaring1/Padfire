@@ -25,44 +25,63 @@ EXPECTED_NUMPY_WHEEL = "numpy-2.5.4-cp312-cp312-win_amd64.whl"
 EXPECTED_NUMPY_WHEEL_SHA256 = "a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a"
 
 
-def verify_numpy_wheel_report(report_path: Path) -> dict[str, str]:
-    """Fail closed unless pip installed the exact PyPI-attested Windows wheel."""
+def verify_windows_wheel_report(report_path: Path) -> dict[str, dict[str, str]]:
+    """Validate exact PyPI wheel identities for NumPy, PySide and Shiboken."""
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    matches = [
-        item for item in report.get("install", [])
-        if item.get("metadata", {}).get("name", "").casefold() == "numpy"
-    ]
-    if len(matches) != 1:
-        raise RuntimeError(
-            f"Expected exactly one NumPy record in pip install report; found {len(matches)}."
-        )
-    item = matches[0]
-    version = item.get("metadata", {}).get("version")
-    if version != EXPECTED_NUMPY_VERSION:
-        raise RuntimeError(
-            f"Expected NumPy {EXPECTED_NUMPY_VERSION}; pip report records {version!r}."
-        )
-    download = item.get("download_info", {})
-    url = download.get("url", "")
-    parsed = urlparse(url)
-    filename = Path(unquote(parsed.path)).name
-    if parsed.scheme != "https" or parsed.hostname != "files.pythonhosted.org":
-        raise RuntimeError(f"NumPy wheel did not come directly from PyPI's file host: {url!r}.")
-    if filename != EXPECTED_NUMPY_WHEEL:
-        raise RuntimeError(f"Expected {EXPECTED_NUMPY_WHEEL}; got {filename!r}.")
-    actual_hash = download.get("archive_info", {}).get("hashes", {}).get("sha256")
-    if not actual_hash or actual_hash.casefold() != EXPECTED_NUMPY_WHEEL_SHA256:
-        raise RuntimeError(
-            "NumPy wheel SHA-256 does not match the PyPI-published attested wheel: "
-            f"{actual_hash!r}."
-        )
-    return {
-        "version": version,
-        "filename": filename,
-        "url": url,
-        "sha256": actual_hash.casefold(),
+    expected = {
+        "numpy": {
+            "version": "2.5.4",
+            "filename": "numpy-2.5.4-cp312-cp312-win_amd64.whl",
+            "sha256": "a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a",
+            "provenance": "PyPI Publish Attestation",
+        },
+        "pyside6-essentials": {
+            "version": "6.12.0",
+            "filename": "pyside6_essentials-6.12.0-cp310-abi3-win_amd64.whl",
+            "sha256": "c9a95102aa23c1f86516a30d5a9be37552d324eee7e567eb7508973f1218cb42",
+            "provenance": "No PyPI provenance attestation",
+        },
+        "shiboken6": {
+            "version": "6.12.0",
+            "filename": "shiboken6-6.12.0-cp310-abi3-win_amd64.whl",
+            "sha256": "a1906cb8116869178c64b6bab52623bbc8b4ceed7b30bfc3c9aa0f6e67f6438e",
+            "provenance": "No PyPI provenance attestation",
+        },
     }
-
+    found: dict[str, dict[str, str]] = {}
+    for item in report.get("install", []):
+        raw_name = item.get("metadata", {}).get("name", "")
+        name = re.sub(r"[-_.]+", "-", raw_name.casefold())
+        if name not in expected:
+            continue
+        if name in found:
+            raise RuntimeError(f"Duplicate {name} entries in pip install report.")
+        spec = expected[name]
+        version = item.get("metadata", {}).get("version")
+        if version != spec["version"]:
+            raise RuntimeError(f"Expected {name} {spec['version']}; pip report records {version!r}.")
+        download = item.get("download_info", {})
+        url = download.get("url", "")
+        parsed = urlparse(url)
+        filename = Path(unquote(parsed.path)).name
+        if parsed.scheme != "https" or parsed.hostname != "files.pythonhosted.org":
+            raise RuntimeError(f"{name} wheel did not come directly from PyPI's file host: {url!r}.")
+        if filename != spec["filename"]:
+            raise RuntimeError(f"Expected {spec['filename']}; got {filename!r}.")
+        digest = download.get("archive_info", {}).get("hashes", {}).get("sha256")
+        if not digest or digest.casefold() != spec["sha256"]:
+            raise RuntimeError(f"{name} wheel SHA-256 does not match PyPI: {digest!r}.")
+        found[name] = {
+            "version": version,
+            "filename": filename,
+            "url": url,
+            "sha256": digest.casefold(),
+            "provenance": spec["provenance"],
+        }
+    missing = sorted(set(expected) - set(found))
+    if missing:
+        raise RuntimeError("Pip install report is missing required Windows wheels: " + ", ".join(missing))
+    return found
 
 
 def sha256(path: Path) -> str:
@@ -121,7 +140,8 @@ def numeric_smoke_test() -> str:
 def normalize(output: Path, pip_report: Path) -> Path:
     if os.name != "nt":
         raise RuntimeError("NumPy MSVC import normalization must run on Windows.")
-    wheel_provenance = verify_numpy_wheel_report(pip_report)
+    wheel_inputs = verify_windows_wheel_report(pip_report)
+    wheel_provenance = wheel_inputs["numpy"]
     if metadata.version("numpy") != EXPECTED_NUMPY_VERSION:
         raise RuntimeError("Installed NumPy version does not match the audited wheel.")
     try:
@@ -226,6 +246,19 @@ def normalize(output: Path, pip_report: Path) -> Path:
         "- Only PE import descriptor names changed; the Microsoft runtime DLL itself was not modified or copied.",
         "- Required target prerequisite: Microsoft Visual C++ x64 Redistributable 14.44.35211.0 or newer.",
         f"- Fresh-process numeric test: {smoke_output}",
+        "",
+        "## Resolved PyPI Windows wheel inputs",
+        "",
+        "| Distribution | Version | Wheel filename | SHA-256 | PyPI provenance |",
+        "|---|---|---|---|---|",
+    ]
+    for name in ("numpy", "pyside6-essentials", "shiboken6"):
+        wheel = wheel_inputs[name]
+        lines.append(
+            f"| {name} | {wheel['version']} | {wheel['filename']} | "
+            f"{wheel['sha256']} | {wheel['provenance']} |"
+        )
+    lines.extend([
         "",
         "## Removed wheel runtime files",
         "",

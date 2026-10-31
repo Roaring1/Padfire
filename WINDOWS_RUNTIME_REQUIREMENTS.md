@@ -67,3 +67,22 @@ before/after importer hashes below.
 The patch is a build modification and must be re-audited when NumPy or
 delvewheel changes. This is a packaging technique, not legal advice or a
 Microsoft licensing determination.
+
+
+## Pinned Qt for Python wheel identity (2026-10-31)
+
+The same pip install report now records and validates the exact Windows wheels
+for the Qt bindings as well as NumPy:
+- PySide6-Essentials 6.12.0:
+  `pyside6_essentials-6.12.0-cp310-abi3-win_amd64.whl`,
+  SHA-256 `c9a95102aa23c1f86516a30d5a9be37552d324eee7e567eb7508973f1218cb42`.
+- Shiboken6 6.12.0:
+  `shiboken6-6.12.0-cp310-abi3-win_amd64.whl`,
+  SHA-256 `a1906cb8116869178c64b6bab52623bbc8b4ceed7b30bfc3c9aa0f6e67f6438e`.
+
+PyPI marks both Windows x64 files as **Without provenance**. Their metadata
+shows upload via Twine rather than Trusted Publishing. The pip report and
+manifest now preserve their direct PyPI file-host URLs and hashes, but this
+provides artifact identity, not a trusted build attestation or an SBOM.
+The Qt/PySide wheel build configuration and exact third-party selections
+remain a release gate.

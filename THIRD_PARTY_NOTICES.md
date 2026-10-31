@@ -179,3 +179,11 @@ license applies only to Padfire-authored material. It does not relicense Qt,
 PySide6, Shiboken6, audio/MIDI libraries, codecs, or other third-party files
 included in a binary distribution. Each bundled component retains its own
 license and attribution requirements.
+
+
+The build's wheel-identity manifest also pins the exact PySide6-Essentials
+6.12.0 and Shiboken6 6.12.0 Windows x64 wheel filenames and PyPI SHA-256
+values. PyPI labels both files "Without provenance"; their hashes and direct
+download URLs are captured for identity, but they do not supply a verified
+publisher/build attestation. The Qt/PySide SBOM and actual wheel build
+configuration therefore remain open release gates.

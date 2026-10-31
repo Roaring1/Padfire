@@ -247,3 +247,12 @@ passes after deletion. The generated patch manifest records the exact wheel
 URL/hash, original runtime DLL hash and before/after importer hashes.
 No NumPy source is rebuilt by Padfire; this is a downstream binary packaging
 modification that must be re-audited if NumPy or delvewheel changes.
+
+
+The pip install report also now records the exact PySide6-Essentials 6.12.0
+and Shiboken6 6.12.0 Windows x64 wheels and verifies their PyPI SHA-256 values.
+PyPI labels both files "Without provenance" and records Twine uploads, so
+their input identity is known but their wheel-production pipeline is not
+cryptographically attested. This reinforces why the exact Qt/PySide wheel
+build configuration, SPDX SBOM and upstream source correspondence remain
+unresolved; matching source archives by tag alone are not enough.

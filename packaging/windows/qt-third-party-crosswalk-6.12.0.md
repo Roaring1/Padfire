@@ -229,3 +229,17 @@ backend is shipped for native Windows TLS.
 Until these are complete, this crosswalk is evidence for review, not a
 certification that the Windows bundle's Qt third-party attribution is
 complete.
+
+
+## Exact PySide/Shiboken wheel identity
+
+The build now checks the PyPI install report for the exact Windows x64 wheels:
+- PySide6-Essentials 6.12.0, SHA-256
+  `c9a95102aa23c1f86516a30d5a9be37552d324eee7e567eb7508973f1218cb42`.
+- Shiboken6 6.12.0, SHA-256
+  `a1906cb8116869178c64b6bab52623bbc8b4ceed7b30bfc3c9aa0f6e67f6438e`.
+
+PyPI marks both files "Without provenance". The pip report records their
+direct wheel URLs and hashes, but no trusted publisher attestation accompanies
+them. This makes the exact binary inputs reproducible by identity, while the
+actual wheel build pipeline and binary-specific Qt SPDX SBOM remain open.

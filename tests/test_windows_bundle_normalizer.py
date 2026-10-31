@@ -5,46 +5,60 @@ import unittest
 from pathlib import Path
 from tools.normalize_windows_licenses import normalize
 from tools.collect_third_party_licenses import component_license_notes, is_license_path
-from tools.normalize_numpy_msvc_runtime import verify_numpy_wheel_report
+from tools.normalize_numpy_msvc_runtime import verify_windows_wheel_report
 
 
 class NumpyWheelProvenanceTests(unittest.TestCase):
-    def _report(self, *, filename="numpy-2.5.4-cp312-cp312-win_amd64.whl",
-                digest="a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a",
-                url_host="files.pythonhosted.org"):
-        import json
+    def _report(self):
+        entries = [
+            ("numpy", "2.5.4", "numpy-2.5.4-cp312-cp312-win_amd64.whl", "a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a"),
+            ("pyside6_essentials", "6.12.0", "pyside6_essentials-6.12.0-cp310-abi3-win_amd64.whl", "c9a95102aa23c1f86516a30d5a9be37552d324eee7e567eb7508973f1218cb42"),
+            ("shiboken6", "6.12.0", "shiboken6-6.12.0-cp310-abi3-win_amd64.whl", "a1906cb8116869178c64b6bab52623bbc8b4ceed7b30bfc3c9aa0f6e67f6438e"),
+        ]
         return {"install": [{
-            "metadata": {"name": "numpy", "version": "2.5.4"},
+            "metadata": {"name": name, "version": version},
             "download_info": {
-                "url": f"https://{url_host}/packages/example/{filename}",
+                "url": f"https://files.pythonhosted.org/packages/example/{filename}",
                 "archive_info": {"hashes": {"sha256": digest}},
             },
-        }]}
+        } for name, version, filename, digest in entries]}
 
-    def test_accepts_only_the_attested_numpy_cp312_windows_wheel(self) -> None:
+    def test_validates_exact_numpy_pyside_and_shiboken_wheels(self) -> None:
         import json
         with tempfile.TemporaryDirectory() as temp:
             report_path = Path(temp) / "pip-report.json"
             report_path.write_text(json.dumps(self._report()), encoding="utf-8")
-            result = verify_numpy_wheel_report(report_path)
-            self.assertEqual(result["version"], "2.5.4")
-            self.assertEqual(result["filename"], "numpy-2.5.4-cp312-cp312-win_amd64.whl")
-            self.assertEqual(result["sha256"], "a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a")
+            result = verify_windows_wheel_report(report_path)
+            self.assertEqual(result["numpy"]["sha256"], "a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a")
+            self.assertEqual(result["pyside6-essentials"]["sha256"], "c9a95102aa23c1f86516a30d5a9be37552d324eee7e567eb7508973f1218cb42")
+            self.assertEqual(result["shiboken6"]["sha256"], "a1906cb8116869178c64b6bab52623bbc8b4ceed7b30bfc3c9aa0f6e67f6438e")
+            self.assertEqual(result["numpy"]["provenance"], "PyPI Publish Attestation")
+            self.assertEqual(result["pyside6-essentials"]["provenance"], "No PyPI provenance attestation")
 
-    def test_rejects_wrong_hash_filename_or_host(self) -> None:
+    def test_rejects_wrong_hash_filename_host_or_missing_wheel(self) -> None:
         import json
-        cases = [
-            self._report(digest="0" * 64),
-            self._report(filename="numpy-2.5.4-cp312-cp312-win32.whl"),
-            self._report(url_host="example.invalid"),
-        ]
+        report = self._report()
+        cases = []
+        wrong_hash = json.loads(json.dumps(report))
+        wrong_hash["install"][1]["download_info"]["archive_info"]["hashes"]["sha256"] = "0" * 64
+        cases.append(wrong_hash)
+        wrong_name = json.loads(json.dumps(report))
+        wrong_name["install"][2]["download_info"]["url"] = "https://files.pythonhosted.org/packages/example/wrong.whl"
+        cases.append(wrong_name)
+        wrong_host = json.loads(json.dumps(report))
+        wrong_host["install"][0]["download_info"]["url"] = "https://example.invalid/numpy.whl"
+        cases.append(wrong_host)
+        missing = json.loads(json.dumps(report))
+        missing["install"].pop(2)
+        cases.append(missing)
         with tempfile.TemporaryDirectory() as temp:
-            for i, report in enumerate(cases):
-                with self.subTest(case=i):
-                    report_path = Path(temp) / f"pip-report-{i}.json"
-                    report_path.write_text(json.dumps(report), encoding="utf-8")
+            for index, value in enumerate(cases):
+                with self.subTest(case=index):
+                    path = Path(temp) / f"report-{index}.json"
+                    path.write_text(json.dumps(value), encoding="utf-8")
                     with self.assertRaises(RuntimeError):
-                        verify_numpy_wheel_report(report_path)
+                        verify_windows_wheel_report(path)
+
 
 class NormalizeWindowsLicensesTests(unittest.TestCase):
     def _source(self, root: Path) -> None:
