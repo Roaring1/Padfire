@@ -25,6 +25,15 @@ replace/relink, and installation-information conditions have been satisfied.
 The complete GNU LGPL v3 and GNU GPL v3 license texts are included separately
 in `ThirdPartyLicenses/LGPL-3.0-only.txt` and
 `ThirdPartyLicenses/GPL-3.0-only.txt` in both Windows distributions.
+
+The bundles also include source-derived Qt 6.12.0 third-party license and
+copyright texts under `ThirdPartyLicenses/QtThirdParty/`. This is a broad
+candidate superset, not a binary-specific SBOM: the PySide6 wheel does not
+disclose which conditional third-party components and build variants were
+included. The directory README and Qt crosswalk explain this limitation.
+For any FreeType 2.14.3 code included in the Qt distribution, Padfire selects
+the FreeType License (FTL) redistribution option; the full upstream license
+notice is included.
 Qt/PySide use is also identified in the application's **About** dialog. Qt
 modules may have differing terms; the bundled Qt module/plugin inventory must
 be checked against the official Qt 6.12 licensing matrix before each release:
@@ -55,6 +64,20 @@ See the official requirements:
   https://www.qt.io/faq/qt-open-source-licensing
 - PySide6 licensing: https://doc.qt.io/qtforpython-6/licenses.html
 - GNU LGPL v3: https://www.gnu.org/licenses/lgpl-3.0.html
+
+## Microsoft Visual C++ runtime prerequisite
+
+The Windows x64 app requires the system Microsoft Visual C++ Redistributable
+14.44.35211.0 or newer. The installer checks for it and opens Microsoft's
+official download page if missing; portable users must install it separately.
+Ordinary app-local MSVC/UCRT DLL copies are removed from both bundles in
+accordance with Qt's Windows deployment guidance. See
+`WINDOWS_RUNTIME_REQUIREMENTS.md`.
+
+NumPy's upstream wheel also contains a hash-renamed MSVC runtime DLL imported
+by two NumPy extension modules. It remains present to preserve the wheel's PE
+import contract; its exact Microsoft redistribution basis remains under
+review. This is separate from the system runtime prerequisite.
 
 ## CPython TLS runtime (OpenSSL)
 

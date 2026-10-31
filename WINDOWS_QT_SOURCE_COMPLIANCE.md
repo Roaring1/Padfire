@@ -139,13 +139,12 @@ No written source offer is made by this repository document.
 
 ## Current status
 
-- [x] Latest PR validation run [41067731709](https://github.com/Roaring1/Padfire/actions/runs/41067731709) passed both Linux and Windows jobs on commit `3cecdb3`. The Windows job passed the license-inventory tests, clean-profile startup registration, silent install/registration/uninstall lifecycle, and both artifact uploads. These are 14-day CI artifacts, not permanent releases:
-  - [Windows x64 portable GUI + CLI](https://github.com/Roaring1/Padfire/actions/runs/41067731709/artifacts/12984621021)
-  - [Windows installer](https://github.com/Roaring1/Padfire/actions/runs/41067731709/artifacts/12984595939)
-- [x] The current portable bundle was downloaded and inspected locally. Both GUI and CLI folders contain Qt modules/plugins, complete LGPL/GPL texts, PSF notice, OpenSSL 3.0.16 Apache notice, and generated component inventories. The inventories now preserve the wheel-reported `LICENSES/` paths and explicitly distinguish the PySide/Shiboken multi-option wheel metadata from the commercial-reference file; no missing-wheel-license markers were found.
-- [x] Static PE import-table inspection confirms the Qt DLLs are separate dynamic dependencies of the PySide extension modules and Windows plugins. This supports the one-folder replacement design but does **not** prove that a user-modified Qt DLL can be substituted and run; that test remains open.
+- [x] PR validation run [41159602458](https://github.com/Roaring1/Padfire/actions/runs/41159602458) passed both Linux and Windows jobs on commit `cb21148`. Windows CI verifies the official system VC++ runtime, runs the license and bundle-normalization tests, builds the GUI and CLI, compiles the installer, tests the per-user install/startup/uninstall lifecycle, exercises a byte-identical Qt DLL replacement-and-restore check, and uploads both artifacts. These are 14-day Actions artifacts, not permanent releases:
+  - [Windows x64 portable GUI + CLI](https://github.com/Roaring1/Padfire/actions/runs/41159602458/artifacts/13025809601)
+  - [Windows installer](https://github.com/Roaring1/Padfire/actions/runs/41159602458/artifacts/13025914432)
+- [x] The `cb21148` portable artifact was downloaded and inspected locally. Both GUI and CLI folders contain Qt modules/plugins, complete LGPL/GPL texts, PSF notice, OpenSSL 3.0.16 Apache notice, generated component inventories, the new Windows runtime prerequisite, and a Qt 6.12 third-party candidate-notice superset under `ThirdPartyLicenses/QtThirdParty/`. Neither bundle contains ordinary app-local MSVC/UCRT DLLs. Both retain NumPy's wheel-specific hash-named `msvcp140-*.dll`. Neither inventory contains a missing-wheel-license marker.
+- [x] Static PE import-table inspection confirms the Qt DLLs are separate dynamic dependencies of the PySide extension modules and Windows plugins. CI also copies `Qt6Core.dll` byte-for-byte to a new path, substitutes it into the installed tree, starts the smoke UI, restores the original, and verifies its SHA-256. This tests replaceable-file mechanics, not a modified/rebuilt Qt implementation.
 - [x] The bundle retains CPython's `libssl-3.dll`/`libcrypto-3.dll` pair and excludes the unrelated ambient OpenSSL 3.5 `*-x64.dll` pair.
-- [ ] Physical Launchpad Mini MK1/MK2 MIDI, LED feedback/reconnect, actual audio playback/quality, and visible Windows tray behavior remain untested.
 - [ ] Physical Launchpad Mini MK1/MK2 MIDI, LED feedback/reconnect, actual audio playback/quality, and visible Windows tray behavior remain untested.
 - [x] Padfire-authored code and documentation have an explicit MIT license.
 - [x] LGPLv3 and GPLv3 license texts are included in the Windows bundles.
@@ -171,14 +170,55 @@ No written source offer is made by this repository document.
       installer.
 - [ ] No build-specific Qt SPDX SBOM or exact PySide wheel source/build provenance has been obtained.
 - [ ] No controlled written source offer has been issued.
-- [ ] DLL replacement/relinking has not yet been demonstrated on Windows.
+- [x] Byte-identical Qt DLL file replacement and successful load/restoration are covered by CI.
+- [ ] A modified or rebuilt Qt DLL has not been tested. The LGPL relinking/replaceability obligation is not yet demonstrated by a genuinely modified Qt library.
 - [x] A first-pass Qt source/plugin map is recorded in
       `packaging/windows/qt-third-party-crosswalk-6.12.0.md`.
-- [ ] Exact third-party dependencies/selected license variants remain unconfirmed
-      until the Qt/PySide build-specific SBOM is available. FreeType's FTL vs
-      GPL-2.0-only selection needs particular attention.
-- [ ] Review Microsoft Visual C++ runtime redistribution terms.
+- [ ] Exact third-party dependencies and binary presence remain unconfirmed until the Qt/PySide build-specific SBOM is available. Padfire records FTL as its selected redistribution option for any FreeType code included; whether the wheel includes FreeType is still unconfirmed.
+- [x] Ordinary app-local MSVC/UCRT copies are removed; Inno Setup requires the official x64 VC++ Redistributable 14.44.35211.0 or newer. A disposable-copy run on the connected Windows 11 laptop succeeded after all 33 ordinary copies were removed.
+- [ ] Review the Microsoft redistribution/provenance basis for NumPy's hash-renamed `numpy.libs/msvcp140-*.dll`, which remains in the wheel and is imported by two NumPy extension modules.
 
 Until the remaining items are complete, CI outputs should be treated as
 engineering/test artifacts, not as a declaration of release-ready LGPL
 compliance.
+
+
+## Runtime and replacement-mechanics follow-up (2026-10-31)
+
+Qt's Windows deployment guide states that the individual compiler runtime DLLs
+that can be picked up from a development machine are not intended or licensed
+for redistribution, and directs distributors to use the official Microsoft
+Visual C++ Redistributable. The build now removes ordinary app-local
+`MSVCP140*.dll`, `VCRUNTIME140*.dll`, and `ucrtbase.dll` copies from both
+GUI and CLI folders. The installer checks for the system x64 redist at
+14.44.35211.0 or newer and links to Microsoft's official download page when
+missing. See `WINDOWS_RUNTIME_REQUIREMENTS.md`.
+
+On the connected Windows 11 laptop, the installed runtime reports
+14.51.36247.00. A disposable copy of the installed GUI/CLI had 33 ordinary
+app-local MSVC/UCRT DLL copies removed; the app launched offscreen, reported
+working Windows IPC status, and the temporary directory/profile were deleted.
+The actual installed app and user profile were not changed. The remaining
+NumPy wheel file `numpy.libs/msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll`
+is retained because exactly two NumPy PE extensions import that name:
+`_multiarray_umath` and `_pocketfft_umath`. Its file version is
+14.40.33810.0 and its Authenticode signature is valid, but its precise
+Microsoft redistribution basis remains an open review item.
+
+Both GUI and CLI build outputs now contain the Qt 6.12 source-derived
+third-party notice superset under `ThirdPartyLicenses/QtThirdParty`. This is
+not a wheel-specific SBOM and does not prove each candidate is compiled into
+the wheel. For any FreeType source included in the Qt distribution, Padfire
+selects the FreeType License (FTL) option; exact binary presence remains
+unverified without the wheel's build-specific SBOM.
+
+The PR validation at `cb21148` also runs a byte-identical QtCore DLL
+substitution inside the newly installed CI test tree. The smoke UI launches
+against the substituted file and the original is restored and SHA-256
+verified. This does not modify/rebuild Qt code and is not represented as a
+completed LGPL relink test.
+
+The laptop hardware check confirms only Windows MIDI 2.0 virtual/test devices
+are currently present; no physical Launchpad/Novation controller is visible.
+Audio endpoints enumerate but no audio sample has been played. Tray/window
+visual behavior remains unverified because the launch was offscreen.

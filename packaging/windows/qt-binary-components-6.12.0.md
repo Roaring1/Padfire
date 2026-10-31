@@ -53,13 +53,19 @@ resolved license files and package version are recorded in the generated
 | `plugins/tls/qopensslbackend.dll` | TLS backend |
 | `plugins/tls/qschannelbackend.dll` | TLS backend |
 
-## Additional files in the PySide folder
+## Microsoft Visual C++ runtime dependency (system-installed)
 
-- `opengl32sw.dll` — software OpenGL implementation distributed with the
-  Qt/PySide runtime package.
-- `MSVCP140.dll`, `MSVCP140_1.dll`, `MSVCP140_2.dll`,
-  `VCRUNTIME140.dll`, and `VCRUNTIME140_1.dll` — Microsoft Visual C++
-  runtime libraries, not Qt modules.
+The PyInstaller output previously included ordinary `MSVCP140*.dll` and
+`VCRUNTIME140*.dll` copies in PySide/Shiboken and at the bundle root.
+Those copies are now removed by the post-build normalizer. The Windows
+installer requires Microsoft's system x64 Visual C++ Redistributable
+14.44.35211.0 or newer; the portable distribution documents the same
+prerequisite in `WINDOWS_RUNTIME_REQUIREMENTS.md`.
+
+The NumPy wheel contributes one separate hash-renamed file under
+`numpy.libs/msvcp140-<hash>.dll`, retained because two NumPy extension modules
+import that exact filename. Its Microsoft redistribution basis remains under
+review; see `WINDOWS_RUNTIME_REQUIREMENTS.md`.
 
 ## CPython TLS runtime (outside the PySide6 subdirectory)
 
@@ -107,3 +113,13 @@ it embeds still needs review against the exact source tree.
 
 The inventory must be regenerated and reviewed whenever PySide6/Shiboken, Qt,
 the PyInstaller hooks, or the packaged plugins change.
+
+
+## Current normalized package verification
+
+The PR artifact from run 41159602458 (commit cb21148) was inspected from its
+downloaded ZIP. Both GUI and CLI one-folder bundles contain the runtime
+requirements and Qt third-party candidate notice directory, contain no
+ordinary app-local MSVC/UCRT DLLs, retain NumPy's wheel-specific runtime, and
+have no `LICENSE_FILE_NOT_INCLUDED.txt` markers. This artifact is a 14-day
+Actions test artifact, not a permanent release.

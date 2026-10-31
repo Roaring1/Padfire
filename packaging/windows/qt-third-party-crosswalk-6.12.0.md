@@ -110,7 +110,7 @@ third-party-code page and the matching source REUSE metadata.
 | Qt Core | Unicode UCD / CLDR | 36 / 48.2 | Unicode license agreements |
 | Qt Core | BLAKE2 | source revision in Qt docs | CC0-1.0 or Apache-2.0 |
 | Qt Core | Easing equations, SHA/SipHash and related small algorithms | varies | BSD, CC0 or public-domain notices as recorded in Qt REUSE |
-| Qt GUI | FreeType | 2.14.3 | FTL **or GPL-2.0-only**; the PyPI wheel does not disclose which option was used |
+| Qt GUI | FreeType | 2.14.3 | Padfire selects FTL for any FreeType code included in this redistribution; exact binary presence still needs the wheel SBOM |
 | Qt GUI | HarfBuzz-NG | 14.5.0 | MIT |
 | Qt GUI | libjpeg-turbo | 3.2.0 | IJG and BSD-3-Clause |
 | Qt GUI | libpng | 1.6.58 | Libpng and libpng-2.0 |
@@ -132,8 +132,9 @@ attributions for TIFF/WebP.
 
 Likewise, Qt's Qt Core and Qt GUI third-party components may be statically
 compiled into `Qt6Core.dll` and `Qt6Gui.dll` without separate DLLs. A
-build-specific SBOM is required to determine exact inclusion and versions,
-including the actual FreeType license choice.
+build-specific SBOM is required to determine exact inclusion and versions.
+Padfire selects FTL as the redistribution option for any FreeType code
+included; actual presence of FreeType in the wheel remains unconfirmed.
 
 ## Dynamic-link evidence and the remaining replacement test
 
@@ -148,19 +149,38 @@ the PySide extension modules import separate Qt DLLs:
   Schannel TLS plugin imports `Qt6Network.dll` and `Qt6Core.dll`.
 
 This confirms that those runtime libraries are separate files with PE
-dependencies, rather than statically merged into Padfire.exe. It is useful
-evidence for a replaceable one-folder layout, but it is **not** a replacement
-test: no modified Qt DLL has yet been built, substituted, and run with
-Padfire on a clean Windows machine.
+dependencies, rather than statically merged into Padfire.exe. CI now copies
+Qt6Core.dll byte-for-byte to a new path, substitutes it into the installed
+tree, starts the smoke UI, restores the original, and verifies its SHA-256.
+This checks replaceable-file mechanics. It does not test modified/rebuilt Qt
+code; a genuine modified-library relink demonstration remains open.
 
 ## Microsoft Visual C++ runtime files
 
-The inspected bundle includes `MSVCP140.dll`, `MSVCP140_1.dll`,
-`MSVCP140_2.dll`, `VCRUNTIME140.dll`, and `VCRUNTIME140_1.dll` under the
-PySide/Shiboken runtime folders. Their exact file versions, source provenance,
-and redistribution basis still need to be checked against the applicable
-Visual Studio REDIST list and Microsoft Software License Terms. See the
-official [Visual C++ redistribution guidance](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files).
+Ordinary app-local `MSVCP140*.dll`, `VCRUNTIME140*.dll`, and
+`ucrtbase.dll` copies are now removed from both GUI and CLI outputs.
+Qt's Windows deployment documentation states that loose compiler runtime
+DLLs picked up from a developer machine are not intended or licensed for
+redistribution and directs application distributors to Microsoft's official
+Visual C++ Redistributable package. The Inno Setup package therefore checks
+for the system x64 redist at version 14.44.35211.0 or newer; portable users
+must install it separately.
+
+This policy was exercised on a disposable copy of the connected Windows 11
+laptop's Padfire install: 33 ordinary runtime DLL copies were removed and the
+offscreen application launched and published Windows IPC status using the
+installed Microsoft redist (14.51.36247.00). The real installation was not
+modified.
+
+One wheel-specific exception remains. NumPy's `numpy.libs` directory
+contains `msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll` (file version
+14.40.33810.0, valid Microsoft Authenticode signature). The PE import table
+shows that `_multiarray_umath.cp312-win_amd64.pyd` and
+`_pocketfft_umath.cp312-win_amd64.pyd` import this exact hashed name. It is
+retained to preserve the upstream wheel import contract. Its precise
+Microsoft redistribution basis and upstream provenance remain an open
+review item. See `WINDOWS_RUNTIME_REQUIREMENTS.md`.
+
 ## OpenSSL runtime distinction
 
 The Padfire PyInstaller bundle contained CPython 3.12.10's `_ssl.pyd` and
@@ -191,9 +211,8 @@ backend is shipped for native Windows TLS.
    variants and any additional notices required in both bundles. The Python
    wheel inventory does not establish the contents of statically linked Qt
    third-party code.
-4. Verify the exact versions and redistribution basis of the bundled
-   Microsoft Visual C++ runtime DLLs against Microsoft's current REDIST list
-   and Software License Terms.
+4. Resolve the precise Microsoft redistribution basis and upstream provenance
+   for NumPy's retained hash-renamed MSVC runtime dependency.
 5. Repeat the audit for each new Qt/PySide wheel or plugin set.
 
 Until these are complete, this crosswalk is evidence for review, not a
