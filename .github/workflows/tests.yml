@@ -80,6 +80,19 @@ jobs:
       - name: Install Windows runtime and build dependencies
         run: python -m pip install --upgrade pip; python -m pip install -r packaging/windows/requirements.txt
         shell: pwsh
+      - name: Verify official Microsoft VC++ runtime prerequisite
+        shell: pwsh
+        run: |
+          $key = 'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+          $runtime = Get-ItemProperty -Path $key -ErrorAction SilentlyContinue
+          if ($null -eq $runtime -or $runtime.Installed -ne 1) {
+            throw "The Windows runner needs the official x64 VC++ Redistributable."
+          }
+          $versionText = '{0}.{1}.{2}.{3}' -f $runtime.Major, $runtime.Minor, $runtime.Bld, $runtime.Rbld
+          if ([version]$versionText -lt [version]'14.44.35211.0') {
+            throw "VC++ Redistributable $versionText is older than required 14.44.35211.0."
+          }
+          Write-Host "Using system Visual C++ Redistributable $versionText."
       - name: Collect runtime third-party license files
         run: python tools/collect_third_party_licenses.py --output packaging/windows/generated_licenses --fail-on-missing
       - name: Validate corresponding-source package recipe without downloading
@@ -107,10 +120,21 @@ jobs:
           python -m PyInstaller --clean --noconfirm packaging/windows/Padfire.spec
           python -m PyInstaller --clean --noconfirm packaging/windows/PadfireCLI.spec
           python tools/normalize_windows_licenses.py --bundles dist/Padfire dist/PadfireCLI
+          $runtimeDllNames = @("MSVCP140.dll", "MSVCP140_1.dll", "MSVCP140_2.dll", "VCRUNTIME140.dll", "VCRUNTIME140_1.dll", "ucrtbase.dll")
+          foreach ($folder in @("dist\Padfire", "dist\PadfireCLI")) {
+            $localRuntime = Get-ChildItem $folder -File -Recurse | Where-Object { $runtimeDllNames -contains $_.Name }
+            if ($localRuntime) { throw "$folder still contains app-local VC/UCRT DLLs: $($localRuntime.FullName -join ', ')" }
+            if (-not (Get-ChildItem (Join-Path $folder "_internal\numpy.libs") -Filter "msvcp140-*.dll" -File)) {
+              throw "$folder is missing NumPy's upstream hash-named MSVCP import dependency."
+            }
+            foreach ($notice in @("WINDOWS_RUNTIME_REQUIREMENTS.md", "ThirdPartyLicenses\QtThirdParty\README.md", "ThirdPartyLicenses\QtThirdParty\qtbase\freetype-LICENSE.txt", "ThirdPartyLicenses\QtThirdParty\qtimageformats\libwebp-BSD-3-Clause.txt")) {
+              if (-not (Test-Path (Join-Path $folder $notice))) { throw "$folder is missing Qt/runtime notice $notice" }
+            }
+          }
           if (-not (Test-Path "dist\Padfire\Padfire.exe")) { throw "Padfire.exe was not produced" }
           if (-not (Test-Path "dist\PadfireCLI\PadfireCLI.exe")) { throw "PadfireCLI.exe was not produced" }
           foreach ($folder in @("dist\Padfire", "dist\PadfireCLI")) {
-            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "ThirdPartyLicenses\COMPONENTS.md", "ThirdPartyLicenses\LGPL-3.0-only.txt", "ThirdPartyLicenses\GPL-3.0-only.txt", "ThirdPartyLicenses\PSF-2.0.txt", "ThirdPartyLicenses\OpenSSL-3.0-Apache-2.0.txt")) {
+            foreach ($file in @("LICENSE", "THIRD_PARTY_NOTICES.md", "WINDOWS_RUNTIME_REQUIREMENTS.md", "ThirdPartyLicenses\COMPONENTS.md", "ThirdPartyLicenses\OpenSSL-3.0-Apache-2.0.txt", "ThirdPartyLicenses\QtThirdParty\README.md", "ThirdPartyLicenses\QtThirdParty\qtbase\freetype-LICENSE.txt")) {
               if (-not (Test-Path (Join-Path $folder $file))) {
                 throw "$folder is missing $file"
               }
@@ -174,6 +198,7 @@ jobs:
             if (-not $componentFiles) { throw "Installed folder $folder has no third-party license files or review markers" }
           }
 
+          & .\tools\test_qt_dll_replacement.ps1 -InstallDir $installDir
           & $cli --install
           if ($LASTEXITCODE -ne 0) { throw "Installed CLI could not register startup" }
           $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
