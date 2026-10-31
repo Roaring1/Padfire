@@ -123,6 +123,9 @@ jobs:
         run: |
           python -m unittest discover -s tests -p "test_padfire_windows_ui.py" -v
           python padfire_windows.py --smoke-ui
+      - name: Test guarded QtCore relink source patch
+        run: python -m unittest discover -s tests -p "test_qt_relink_probe_patch.py" -v
+
       - name: Build the packaged executable
         shell: pwsh
         run: |
@@ -237,3 +240,182 @@ jobs:
           path: dist/installer/Padfire-Setup-2.4-dev.exe
           if-no-files-found: error
           retention-days: 14
+
+  windows-qt-modified-relink:
+    name: Windows modified QtCore relink proof
+    if: github.event_name == 'push' && github.ref == 'refs/heads/port/windows-native' && contains(github.event.head_commit.message, '[qt-relink-test]')
+    needs: windows-smoke
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python for source verification
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Activate the MSVC 2022 x64 toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Ensure Ninja is available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "Ninja installation failed." }
+          }
+          cmake --version
+          ninja --version
+          cl.exe /Bv
+
+      - name: Download the Windows portable bundle from this workflow run
+        uses: actions/download-artifact@v7
+        with:
+          name: Padfire-Windows-x64
+          path: C:\qt-relink\app
+
+      - name: Download and verify Qt and PySide corresponding source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\qt-relink\source, C:\qt-relink\evidence | Out-Null
+          python tools/package_qt_corresponding_source.py --output C:\qt-relink\source --binary-inventory packaging\windows\qt-binary-components-6.12.0.md
+          if ($LASTEXITCODE -ne 0) { throw "Qt/PySide source download or checksum verification failed." }
+          $qtZip = "C:\qt-relink\source\Qt\qt-everywhere-src-6.12.0.zip"
+          $qtHash = (Get-FileHash -LiteralPath $qtZip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $qtSize = (Get-Item -LiteralPath $qtZip).Length
+          if ($qtSize -ne 604643023 -or $qtHash -ne "a72e89c33726d742e67edf494abf7b625eaffc756673221c9823322ecd1a32d1") {
+            throw "Qt source archive identity does not match the pinned source."
+          }
+          Copy-Item C:\qt-relink\source\SOURCE_MANIFEST.md C:\qt-relink\evidence\
+          Copy-Item C:\qt-relink\source\SHA256SUMS.txt C:\qt-relink\evidence\
+          Write-Host "Verified the exact Qt 6.12.0 source archive: $qtSize bytes, $qtHash"
+
+      - name: Extract Qt source and add a non-ABI marker to QtCore
+        shell: pwsh
+        run: |
+          Expand-Archive -LiteralPath C:\qt-relink\source\Qt\qt-everywhere-src-6.12.0.zip -DestinationPath C:\qt-relink\extract
+          $source = "C:\qt-relink\extract\qt-everywhere-src-6.12.0"
+          if (-not (Test-Path (Join-Path $source "configure.bat"))) {
+            throw "Qt source archive did not extract to the expected root."
+          }
+          python tools\patch_qt_relink_probe.py --source-root $source --patch-output C:\qt-relink\evidence\qlibraryinfo.patch
+          if ($LASTEXITCODE -ne 0) { throw "The guarded QtCore source patch failed." }
+          Copy-Item (Join-Path $source "qtbase\src\corelib\global\qlibraryinfo.cpp") C:\qt-relink\evidence\qlibraryinfo.cpp
+
+      - name: Configure a shared Qt 6.12.0 qtbase build with MSVC 2022
+        shell: pwsh
+        run: |
+          $source = "C:\qt-relink\extract\qt-everywhere-src-6.12.0"
+          $build = "C:\qt-relink\build"
+          $prefix = "C:\qt-relink\install"
+          New-Item -ItemType Directory -Force -Path $build, $prefix | Out-Null
+          Push-Location $build
+          try {
+            & (Join-Path $source "configure.bat") -prefix $prefix -release -shared -opensource -confirm-license -nomake examples -nomake tests -submodules qtbase -no-pch 2>&1 | Tee-Object -FilePath C:\qt-relink\evidence\configure.log
+            if ($LASTEXITCODE -ne 0) { throw "Qt configure.bat failed with exit code $LASTEXITCODE." }
+          }
+          finally {
+            Pop-Location
+          }
+          if (-not (Test-Path (Join-Path $build "CMakeCache.txt"))) {
+            throw "Qt configure did not generate CMakeCache.txt."
+          }
+          Copy-Item (Join-Path $build "CMakeCache.txt") C:\qt-relink\evidence\
+
+      - name: Build the modified Qt6Core target
+        shell: pwsh
+        run: |
+          Push-Location C:\qt-relink\build
+          try {
+            cmake --build . --target Qt6Core --parallel 2 2>&1 | Tee-Object -FilePath C:\qt-relink\evidence\qtcore-build.log
+            if ($LASTEXITCODE -ne 0) { throw "The modified Qt6Core build failed with exit code $LASTEXITCODE." }
+          }
+          finally {
+            Pop-Location
+          }
+          $built = @(Get-ChildItem -Path C:\qt-relink\build -Filter Qt6Core.dll -File -Recurse)
+          if ($built.Count -lt 1) { throw "The Qt6Core build produced no Qt6Core.dll." }
+          $preferred = @($built | Where-Object { $_.FullName -match '\\qtbase\\bin\\Qt6Core\.dll$' })
+          if ($preferred.Count -gt 0) { $builtCore = $preferred[0] } else { $builtCore = $built[0] }
+          Copy-Item $builtCore.FullName C:\qt-relink\evidence\Qt6Core.modified.dll
+          $buildHash = (Get-FileHash C:\qt-relink\evidence\Qt6Core.modified.dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          if (-not $buildHash) { throw "Could not hash the newly built Qt6Core.dll." }
+          Write-Host "Built modified QtCore: $($builtCore.FullName)"
+          Write-Host "Modified QtCore SHA-256: $buildHash"
+
+      - name: Substitute the rebuilt DLL, execute its marker, and launch Padfire
+        shell: pwsh
+        run: |
+          $app = "C:\qt-relink\app\Padfire"
+          $gui = Join-Path $app "Padfire.exe"
+          $target = Join-Path $app "_internal\PySide6\Qt6Core.dll"
+          $backup = "C:\qt-relink\evidence\Qt6Core.original.dll"
+          $modified = "C:\qt-relink\evidence\Qt6Core.modified.dll"
+          $patchMarker = "PADFIRE-QT-RELINK-TEST-6.12.0"
+          if (-not (Test-Path $gui)) { throw "The same-run Padfire.exe artifact was not downloaded." }
+          if (-not (Test-Path $target)) { throw "The PyInstaller Qt6Core.dll target was not found." }
+          $originalHash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
+          Copy-Item $target $backup
+          $smokeExit = -1
+          $restored = $false
+          try {
+            Copy-Item $modified $target -Force
+            & python tools\verify_qt_relink_probe.py --library $target --expected-marker $patchMarker 2>&1 | Tee-Object -FilePath C:\qt-relink\evidence\marker-probe.log
+            if ($LASTEXITCODE -ne 0) { throw "The rebuilt QtCore marker could not be called from the replacement DLL." }
+            $process = Start-Process -FilePath $gui -ArgumentList "--smoke-ui" -WorkingDirectory $app -WindowStyle Hidden -PassThru
+            if (-not $process.WaitForExit(30000)) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+              throw "Padfire did not exit within 30 seconds against the modified QtCore DLL."
+            }
+            $smokeExit = $process.ExitCode
+            if ($smokeExit -ne 0) { throw "Padfire exited $smokeExit against the modified QtCore DLL." }
+          }
+          finally {
+            if (Test-Path $backup) {
+              Copy-Item $backup $target -Force
+              $restoredHash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()
+              $restored = $restoredHash -eq $originalHash
+            }
+          }
+          if (-not $restored) { throw "Original QtCore could not be restored byte-for-byte." }
+          $modifiedHash = (Get-FileHash $modified -Algorithm SHA256).Hash.ToLowerInvariant()
+          @"
+          # Modified QtCore replacement test
+
+          - Qt source: Qt 6.12.0 official source archive
+          - Source archive SHA-256: a72e89c33726d742e67edf494abf7b625eaffc756673221c9823322ecd1a32d1
+          - Patch: append an exported C marker function to qlibraryinfo.cpp; qVersion() and existing Qt APIs are unchanged.
+          - Configure: MSVC 2022 x64, Release, shared, qtbase submodule only, no examples/tests, no PCH.
+          - Build target: Qt6Core
+          - Original packaged Qt6Core SHA-256: $originalHash
+          - Rebuilt, deliberately modified Qt6Core SHA-256: $modifiedHash
+          - Executed marker: $patchMarker
+          - Packaged Padfire.exe --smoke-ui exit code with modified QtCore: $smokeExit
+          - Original Qt6Core restored SHA-256: $originalHash
+
+          This is a functional modified-library replacement test for QtCore in a disposable copy of the exact Windows bundle. It does not reconstruct the un-attested Qt/PySide wheel build flags, prove every Qt module/plugin can be rebuilt, or satisfy the permanent-source, written-offer, full installation-information, SBOM, or legal-review requirements.
+          "@ | Set-Content -LiteralPath C:\qt-relink\evidence\RELINK_TEST_EVIDENCE.md -Encoding UTF8
+          $restoredHash | Set-Content C:\qt-relink\evidence\restored-Qt6Core.sha256 -Encoding ascii
+
+      - name: Record toolchain versions
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\qt-relink\evidence | Out-Null
+          cmake --version 2>&1 | Out-File C:\qt-relink\evidence\cmake-version.txt -Encoding utf8
+          ninja --version 2>&1 | Out-File C:\qt-relink\evidence\ninja-version.txt -Encoding utf8
+          cl.exe /Bv 2>&1 | Out-File C:\qt-relink\evidence\msvc-version.txt -Encoding utf8
+
+      - name: Upload modified QtCore relink evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Padfire-Qt6Core-Modified-Relink-Evidence
+          path: C:\qt-relink\evidence\
+          if-no-files-found: warn
+          retention-days: 90
