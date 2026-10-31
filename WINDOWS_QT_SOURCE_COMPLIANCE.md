@@ -139,10 +139,10 @@ No written source offer is made by this repository document.
 
 ## Current status
 
-- [x] Latest PR validation run [41172239266](https://github.com/Roaring1/Padfire/actions/runs/41172239266) passed both Linux and Windows jobs on commit `9103d7e`. Linux passed all 7 steps, including GTK regression and screenshot validation. Windows passed all 21 steps, including exact wheel identity/provenance checks, NumPy PE import normalization and numerical smoke tests, license/runtime checks, Qt source-manifest recipe validation, GUI/CLI builds, Inno Setup compilation, per-user install/startup/uninstall, and byte-identical Qt DLL replacement mechanics. These are 14-day Actions test artifacts, not permanent releases:
-  - [Windows x64 portable GUI + CLI](https://github.com/Roaring1/Padfire/actions/runs/41172239266/artifacts/13032200674)
-  - [Windows installer](https://github.com/Roaring1/Padfire/actions/runs/41172239266/artifacts/13031284688)
-- [x] The exact-head portable artifact was downloaded and independently inspected. Each GUI/CLI folder contains 454 files and 85 DLLs. Both contain the required license/runtime notices and component inventories; neither contains ordinary app-local MSVC/UCRT DLLs, NumPy's private hash-renamed runtime DLL, ambient OpenSSL `*-x64.dll` files, or missing-license markers. Independent PE inspection confirms both NumPy extensions in both bundles import system `msvcp140.dll`, `VCRUNTIME140.dll`, and `VCRUNTIME140_1.dll`. Portable ZIP SHA-256: `2e12d3be94deca1afc56d68bf8ce93a15864c98258564e2890cef471c3c4880e`. The installer artifact contains the single expected setup executable and its ZIP SHA-256 is `abdff308b3dce451afa349492f9350b4070df0f542625e7f9829db6fb93a872d`. The two artifacts expire on 2026-11-14 (GitHub timestamps: 2026-11-14 05:28:37Z and 05:28:55Z).
+- [x] Current PR-head validation passed in both event contexts on commit `5979f6b`: [PR run 41175376945](https://github.com/Roaring1/Padfire/actions/runs/41175376945) and [push run 41175373577](https://github.com/Roaring1/Padfire/actions/runs/41175373577) each passed Linux 7/7 and Windows 21/21 steps. The `5979f6b` commit is documentation-only; application code is unchanged from `9103d7e`. Windows coverage includes wheel identity/provenance checks, NumPy PE normalization and numerical smoke tests, source-manifest recipe validation, module compilation, shared config/MIDI/IPC tests, GUI/CLI builds, Inno Setup and per-user install/startup/uninstall.
+- [x] The current-head [portable artifact](https://github.com/Roaring1/Padfire/actions/runs/41175373577/artifacts/13033120960) was downloaded and independently inspected. Each GUI/CLI folder contains 454 files and 85 DLLs (908 file entries total). Both contain required license/runtime notices, component inventory and NumPy runtime patch manifest. Neither contains ordinary app-local MSVC/UCRT DLLs, NumPy's private hash-renamed runtime DLL, ambient OpenSSL `*-x64.dll` files, or missing-license markers. All four packaged NumPy extensions (two in each bundle) import system `msvcp140.dll`, `VCRUNTIME140.dll`, and `VCRUNTIME140_1.dll`. Portable ZIP SHA-256: `0b029e5e1c0efd3d2d7113a0abe3f770d10ef8368c81ecc7b44996065d651683`.
+- [x] The current-head [installer artifact](https://github.com/Roaring1/Padfire/actions/runs/41175373577/artifacts/13031919500) was ZIP-tested and contains the single expected `Padfire-Setup-2.4-dev.exe`. Installer ZIP SHA-256: `7a307e35e06af23f7d7c334d03a178d89e1a662eea5a5df3c3e8b76e8fa7af03`. The successful Windows job completed install/startup/uninstall and byte-identical Qt DLL replacement mechanics.
+- Both binary artifacts are 14-day Actions test artifacts, not permanent releases. They expire on 2026-11-14 (06:13:31Z and 06:13:42Z).
 - [x] Static PE import-table inspection confirms the Qt DLLs are separate dynamic dependencies of the PySide extension modules and Windows plugins. CI also copies `Qt6Core.dll` byte-for-byte to a new path, substitutes it into the installed tree, starts the smoke UI, restores the original, and verifies its SHA-256. This tests replaceable-file mechanics, not a modified/rebuilt Qt implementation.
 - [x] The bundle retains CPython's `libssl-3.dll`/`libcrypto-3.dll` pair and excludes the unrelated ambient OpenSSL 3.5 `*-x64.dll` pair.
 - [ ] Physical Launchpad Mini MK1/MK2 MIDI, LED feedback/reconnect, actual audio playback/quality, and visible Windows tray behavior remain untested.
@@ -151,11 +151,11 @@ No written source offer is made by this repository document.
 - [x] The About dialog identifies Qt/PySide6 use and points to the license files.
 - [x] The build records exact Python dependency versions and copies available
       license/notice files; strict CI rejects missing wheel-provided notices.
-- [x] Exact-head source workflow run [41172235938](https://github.com/Roaring1/Padfire/actions/runs/41172235938) completed successfully on `9103d7e`. It downloaded and hash-verified both version-matched upstream archives, split and reassembly-checked the Qt ZIP, and uploaded all four source artifacts (90-day retention; expires 2027-01-29 05:20:59Z):
-  - [Qt source part 1](https://github.com/Roaring1/Padfire/actions/runs/41172235938/artifacts/13031368399)
-  - [Qt source part 2](https://github.com/Roaring1/Padfire/actions/runs/41172235938/artifacts/13031154393)
-  - [Qt source part 3](https://github.com/Roaring1/Padfire/actions/runs/41172235938/artifacts/13030949985)
-  - [PySide source and manifests](https://github.com/Roaring1/Padfire/actions/runs/41172235938/artifacts/13031575842)
+- [x] Current PR-head corresponding-source workflow [41175373357](https://github.com/Roaring1/Padfire/actions/runs/41175373357) passed on `5979f6b`. It downloaded and hash-verified the version-matched Qt 6.12.0 and PySide6 6.12.0 upstream source archives, split/reassembly-checked the Qt ZIP and uploaded four source artifacts (90-day retention; expires 2027-01-29 06:08:40Z):
+  - [Qt source part 1](https://github.com/Roaring1/Padfire/actions/runs/41175373357/artifacts/13033070415)
+  - [Qt source part 2](https://github.com/Roaring1/Padfire/actions/runs/41175373357/artifacts/13033245246)
+  - [Qt source part 3](https://github.com/Roaring1/Padfire/actions/runs/41175373357/artifacts/13032770926)
+  - [PySide source and manifests](https://github.com/Roaring1/Padfire/actions/runs/41175373357/artifacts/13032404902)
 - [ ] Attach the verified source to a permanent release or provide a legally
       valid distributor-controlled written offer before distributing the
       Windows binaries. Actions artifacts expire and are not included in the
@@ -311,3 +311,23 @@ The extracted Qt chunks have sizes 262,144,000, 262,144,000, and 80,355,023 byte
 Concatenating those three raw chunks reconstructs `qt-everywhere-src-6.12.0.zip` at exactly 604,643,023 bytes with SHA-256 `a72e89c33726d742e67edf494abf7b625eaffc756673221c9823322ecd1a32d1`; ZIP integrity validation passed. The PySide/Shiboken TAR.XZ is exactly 18,211,772 bytes with SHA-256 `099c1a597cf33c1b000e11cf68a0b82d216fb802bf81726efc720394f10c7751`; `xz -t` passed. The manifest and per-chunk checksum files were also present in the fourth artifact.
 
 This is reproducible source-archive preparation and transport evidence. It is not a distributor-controlled written offer, does not establish that these upstream archives reproduce the exact un-attested PySide/Shiboken wheel build, and does not demonstrate a modified Qt library can be rebuilt, substituted, and run by a recipient. Those release gates remain open.
+
+
+## Qt-hosted wheel hash corroboration (2026-10-31)
+
+Qt's official download.qt.io MirrorBrain metadata for the Windows x64 wheels
+publishes the same SHA-256 values recorded by PyPI and the Padfire pip report:
+
+- [PySide6-Essentials 6.12.0 mirror metadata](https://download.qt.io/official_releases/QtForPython/pyside6-essentials/pyside6_essentials-6.12.0-cp310-abi3-win_amd64.whl.mirrorlist):
+  82,153,795 bytes; SHA-256
+  `c9a95102aa23c1f86516a30d5a9be37552d324eee7e567eb7508973f1218cb42`.
+- [Shiboken6 6.12.0 mirror metadata](https://download.qt.io/official_releases/QtForPython/shiboken6/shiboken6-6.12.0-cp310-abi3-win_amd64.whl.mirrorlist):
+  1,265,476 bytes; SHA-256
+  `a1906cb8116869178c64b6bab52623bbc8b4ceed7b30bfc3c9aa0f6e67f6438e`.
+
+This independently corroborates the byte identities across PyPI and Qt-hosted
+release metadata. PyPI still marks both files "Without provenance" and says
+they were not uploaded using Trusted Publishing. The mirror hash does not
+attest the compiler environment, build workflow, source commit, build flags,
+or exact third-party components in the resulting wheels; an authoritative
+wheel-specific SBOM/build record remains a release gate.
