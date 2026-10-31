@@ -74,10 +74,16 @@ Ordinary app-local MSVC/UCRT DLL copies are removed from both bundles in
 accordance with Qt's Windows deployment guidance. See
 `WINDOWS_RUNTIME_REQUIREMENTS.md`.
 
-NumPy's upstream wheel also contains a hash-renamed MSVC runtime DLL imported
-by two NumPy extension modules. It remains present to preserve the wheel's PE
-import contract; its exact Microsoft redistribution basis remains under
-review. This is separate from the system runtime prerequisite.
+The upstream NumPy Windows wheel supplies a hash-renamed msvcp140 DLL.
+During the Windows build, pinned delvewheel 1.13.2 rewrites the two unsigned
+NumPy extension-module import descriptors to the standard system name
+msvcp140.dll, verifies the PE import tables, and removes the private hash-named
+wheel DLL before packaging. The generated
+ThirdPartyLicenses/WINDOWS_RUNTIME_PATCHES.md records the original DLL SHA-256
+and modified extension checksums. NumPy/SciPy numerical smoke tests run after
+the original DLL is deleted. No NumPy hash-renamed MSVC DLL is shipped in
+either Padfire distribution. The upstream PyPI wheel has no build provenance
+attestation; its build flags/source provenance remain a separate limitation.
 
 ## CPython TLS runtime (OpenSSL)
 

@@ -25,6 +25,7 @@ class NormalizeWindowsLicensesTests(unittest.TestCase):
         legal = internal / "ThirdPartyLicenses"
         legal.mkdir(parents=True)
         (legal / "COMPONENTS.md").write_text("Components", encoding="utf-8")
+        (legal / "WINDOWS_RUNTIME_PATCHES.md").write_text("Patched imports", encoding="utf-8")
         return bundle, internal
 
     def test_ambient_openssl_removed_and_cpython_pair_preserved(self) -> None:
@@ -43,7 +44,7 @@ class NormalizeWindowsLicensesTests(unittest.TestCase):
             self.assertTrue((bundle / "ThirdPartyLicenses" / "QtThirdParty" / "README.md").is_file())
             self.assertTrue((bundle / "ThirdPartyLicenses" / "QtThirdParty" / "qtbase" / "freetype-LICENSE.txt").is_file())
 
-    def test_standard_app_local_crt_removed_but_numpy_hashed_dll_is_kept(self) -> None:
+    def test_standard_app_local_crt_removed_and_numpy_hash_dll_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._source(root)
@@ -67,7 +68,8 @@ class NormalizeWindowsLicensesTests(unittest.TestCase):
                 "vcruntime140.dll", "vcruntime140_1.dll", "ucrtbase.dll",
             }
             self.assertFalse([p for p in bundle.rglob("*.dll") if p.name.casefold() in forbidden])
-            self.assertTrue(numpy_dll.is_file())
+            with self.assertRaisesRegex(RuntimeError, "hash-renamed Microsoft CRT DLLs remain"):
+                normalize(bundle, root)
 
     def test_qt_candidate_notices_are_staged(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

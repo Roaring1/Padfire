@@ -9,7 +9,7 @@ ROOT_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md", "WINDOWS_RUNTIME_REQUIREMENTS
 AMBIENT_OPENSSL_DLLS = {"libcrypto-3-x64.dll", "libssl-3-x64.dll"}
 # Qt 6.12 says loose compiler runtimes picked up from developer machines are
 # not intended/licensed for redistribution. Require the official system VC++
-# Redistributable. NumPy's hash-renamed wheel dependency is deliberately kept.
+# Redistributable. NumPy's hashed import name is normalized before PyInstaller.
 APP_LOCAL_RUNTIME_DLLS = {
     "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
     "vcruntime140.dll", "vcruntime140_1.dll", "ucrtbase.dll",
@@ -47,9 +47,10 @@ def normalize(bundle: Path, source_root: Path) -> None:
     remaining = [
         p.relative_to(bundle).as_posix() for p in bundle.rglob("*.dll")
         if p.name.casefold() in APP_LOCAL_RUNTIME_DLLS
+        or (p.name.casefold().startswith("msvcp140-") and p.name.casefold().endswith(".dll"))
     ]
     if remaining:
-        raise RuntimeError("App-local Microsoft CRT/UCRT DLLs remain: " + ", ".join(remaining))
+        raise RuntimeError("App-local or hash-renamed Microsoft CRT DLLs remain: " + ", ".join(remaining))
 
     destination = bundle / "ThirdPartyLicenses"
     candidates = (destination, bundle / "_internal" / "ThirdPartyLicenses")
@@ -63,6 +64,8 @@ def normalize(bundle: Path, source_root: Path) -> None:
     shutil.copytree(qt_licenses_source, destination / "QtThirdParty", dirs_exist_ok=True)
     if not (destination / "COMPONENTS.md").is_file():
         raise FileNotFoundError(f"Component inventory missing from {destination}")
+    if not (destination / "WINDOWS_RUNTIME_PATCHES.md").is_file():
+        raise FileNotFoundError(f"NumPy runtime patch manifest missing from {destination}")
     if not (destination / "QtThirdParty" / "README.md").is_file():
         raise FileNotFoundError("Qt third-party candidate notice README missing from bundle")
 

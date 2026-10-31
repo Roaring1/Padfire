@@ -20,10 +20,10 @@ build must install the same Microsoft runtime before starting Padfire.exe.
 Qt's Qt 6.12 Windows deployment guide says loose compiler runtime DLLs picked
 up from a development machine are not intended or licensed for redistribution,
 and directs distributors to use Microsoft's official Visual C++ Redistributable.
-Padfire's post-build normalizer therefore removes ordinary MSVCP140,
-VCRUNTIME140, and ucrtbase.dll copies from both GUI and CLI bundles. Windows
-10 1809 and later supply the Universal CRT as a Windows component; the Visual
-C++ libraries are provided by the installed Microsoft Redistributable.
+Padfire's post-build normalizer removes ordinary MSVCP140, VCRUNTIME140, and
+ucrtbase.dll copies from both GUI and CLI bundles. The build checks for the
+official x64 system redistributable and the installer checks for version
+14.44.35211.0 or later.
 
 This is backed by a disposable-copy test on a Windows 11 laptop with system
 VC++ runtime 14.51.36247.00: all 33 ordinary app-local MSVC/UCRT DLL copies
@@ -31,14 +31,27 @@ were removed from temporary GUI/CLI copies, Padfire launched offscreen and
 published working Windows IPC status, and the temporary copies were deleted.
 The existing installation and its profile were not touched.
 
-## Remaining wheel-specific Microsoft runtime item
+## NumPy wheel runtime import patch
 
-NumPy's Windows wheel contains a private, hash-renamed
-numpy.libs/msvcp140-<hash>.dll dependency. The corresponding NumPy extension
-modules import that exact hashed filename, so the current build retains the
-upstream wheel file rather than renaming it or modifying NumPy's PE import
-tables. In the inspected package it is file version 14.40.33810.0 and has a
-valid Microsoft Authenticode signature. This is a separate Microsoft runtime
-redistribution/provenance item: it is not the standard system prerequisite,
-and the project has not yet established the precise license basis for
-redistributing that wheel-bundled copy. It remains an open release-review gate.
+The upstream NumPy Windows wheel used by this build includes a private,
+hash-renamed copy of msvcp140.dll in numpy.libs. Two unsigned NumPy extension
+modules import that private filename. The build now uses the pinned
+delvewheel 1.13.2 PE import-rewrite command to change those two import names
+to the standard system name msvcp140.dll, verifies that all PE import tables
+refer to the standard name, then removes the hash-renamed wheel DLL before
+PyInstaller packaging.
+
+The script records the source DLL SHA-256, importer file paths and before/after
+SHA-256 values, and the exact rewrite tool version in
+ThirdPartyLicenses/WINDOWS_RUNTIME_PATCHES.md. It also performs fresh-process
+NumPy and SciPy numerical smoke tests after deleting the original wheel DLL.
+The hash-renamed DLL is not shipped in either Padfire distribution.
+
+This is a deterministic PE import-name patch to NumPy's binary extension
+modules; it does not modify NumPy source code or the Microsoft runtime DLL.
+The original PyPI wheel has no build provenance attestation, so the project
+pins and records its resolved distribution version, keeps the official wheel
+checksum in build logs, and retains the script/manifest as evidence.
+The patch is a build modification and must be re-audited when NumPy or
+delvewheel changes. This is a packaging technique, not legal advice or a
+Microsoft licensing determination.

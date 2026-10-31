@@ -7,3 +7,6 @@ sounddevice>=0.5,<1
 soundfile>=0.13,<1
 pyloudnorm>=0.1.1,<1
 PyInstaller>=6.12,<7
+# Build-only PE parser and import rewriter for NumPy's Windows CRT dependency.
+pefile==2024.8.26
+delvewheel==1.13.2
