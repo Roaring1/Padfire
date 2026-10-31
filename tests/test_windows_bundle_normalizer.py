@@ -44,7 +44,7 @@ class NormalizeWindowsLicensesTests(unittest.TestCase):
             self.assertTrue((bundle / "ThirdPartyLicenses" / "QtThirdParty" / "README.md").is_file())
             self.assertTrue((bundle / "ThirdPartyLicenses" / "QtThirdParty" / "qtbase" / "freetype-LICENSE.txt").is_file())
 
-    def test_standard_app_local_crt_removed_and_numpy_hash_dll_is_rejected(self) -> None:
+    def test_standard_app_local_crt_removed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._source(root)
@@ -59,15 +59,21 @@ class NormalizeWindowsLicensesTests(unittest.TestCase):
                 path = internal.joinpath(*parts)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"runtime")
-            numpy_dll = internal / "numpy.libs" / "msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll"
-            numpy_dll.parent.mkdir(parents=True)
-            numpy_dll.write_bytes(b"NumPy wheel import")
             normalize(bundle, root)
             forbidden = {
                 "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
                 "vcruntime140.dll", "vcruntime140_1.dll", "ucrtbase.dll",
             }
             self.assertFalse([p for p in bundle.rglob("*.dll") if p.name.casefold() in forbidden])
+
+    def test_numpy_hash_renamed_runtime_dll_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._source(root)
+            bundle, internal = self._bundle(root)
+            numpy_dll = internal / "numpy.libs" / "msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll"
+            numpy_dll.parent.mkdir(parents=True)
+            numpy_dll.write_bytes(b"NumPy wheel import")
             with self.assertRaisesRegex(RuntimeError, "hash-renamed Microsoft CRT DLLs remain"):
                 normalize(bundle, root)
 
