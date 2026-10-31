@@ -49,9 +49,21 @@ The hash-renamed DLL is not shipped in either Padfire distribution.
 
 This is a deterministic PE import-name patch to NumPy's binary extension
 modules; it does not modify NumPy source code or the Microsoft runtime DLL.
-The original PyPI wheel has no build provenance attestation, so the project
-pins and records its resolved distribution version, keeps the official wheel
-checksum in build logs, and retains the script/manifest as evidence.
+The exact wheel is published on PyPI with a verified Publish Attestation:
+- Wheel: `numpy-2.5.4-cp312-cp312-win_amd64.whl`
+- PyPI-published SHA-256: `a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a`
+- Publisher repository/workflow: `numpy/numpy-release`, Windows CPython 3.12 x64 job in run
+  [38074635821](https://github.com/numpy/numpy-release/actions/runs/38074635821)
+  (job 114278931605); its logs record source ref `maintenance/2.5.x`.
+- The Padfire build pins NumPy 2.5.4, captures pip's `--report`, and fails unless
+  the resolved wheel filename, `files.pythonhosted.org` URL and SHA-256 match
+  that PyPI-attested file. The generated manifest records those values.
+
+The attestation establishes the publisher/workflow identity for this exact
+wheel; it is not, by itself, a complete reproducible-build record for every
+compiler flag or environment input. The NumPy PE import rewrite is a
+downstream Padfire build modification and is separately recorded by the
+before/after importer hashes below.
 The patch is a build modification and must be re-audited when NumPy or
 delvewheel changes. This is a packaging technique, not legal advice or a
 Microsoft licensing determination.

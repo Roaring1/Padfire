@@ -62,10 +62,11 @@ installer requires Microsoft's system x64 Visual C++ Redistributable
 14.44.35211.0 or newer; the portable distribution documents the same
 prerequisite in `WINDOWS_RUNTIME_REQUIREMENTS.md`.
 
-The NumPy wheel contributes one separate hash-renamed file under
-`numpy.libs/msvcp140-<hash>.dll`, retained because two NumPy extension modules
-import that exact filename. Its Microsoft redistribution basis remains under
-review; see `WINDOWS_RUNTIME_REQUIREMENTS.md`.
+The NumPy 2.5.4 Windows wheel originally contributes a private hash-renamed
+MSVC runtime. Padfire rewrites the two importing PE extension descriptors to
+the standard system `msvcp140.dll`, deletes the private wheel DLL, and runs
+fresh-process NumPy/SciPy smoke tests. The exact wheel and import patch are
+recorded in `ThirdPartyLicenses/WINDOWS_RUNTIME_PATCHES.md`.
 
 ## CPython TLS runtime (outside the PySide6 subdirectory)
 
@@ -117,9 +118,9 @@ the PyInstaller hooks, or the packaged plugins change.
 
 ## Current normalized package verification
 
-The PR artifact from run 41159602458 (commit cb21148) was inspected from its
-downloaded ZIP. Both GUI and CLI one-folder bundles contain the runtime
-requirements and Qt third-party candidate notice directory, contain no
-ordinary app-local MSVC/UCRT DLLs, retain NumPy's wheel-specific runtime, and
-have no `LICENSE_FILE_NOT_INCLUDED.txt` markers. This artifact is a 14-day
-Actions test artifact, not a permanent release.
+The PR artifact from run 41160613711 (commit cdbdffe) was inspected from its
+downloaded ZIP. Both GUI and CLI one-folder bundles contain runtime
+requirements, Qt third-party candidate notices and the NumPy runtime patch
+manifest; neither contains ordinary app-local MSVC/UCRT DLLs or the private
+hash-renamed NumPy DLL. Both have no `LICENSE_FILE_NOT_INCLUDED.txt` markers.
+This artifact is a 14-day Actions test artifact, not a permanent release.

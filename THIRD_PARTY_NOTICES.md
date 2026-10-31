@@ -74,16 +74,22 @@ Ordinary app-local MSVC/UCRT DLL copies are removed from both bundles in
 accordance with Qt's Windows deployment guidance. See
 `WINDOWS_RUNTIME_REQUIREMENTS.md`.
 
-The upstream NumPy Windows wheel supplies a hash-renamed msvcp140 DLL.
+The upstream NumPy 2.5.4 Windows wheel supplies a hash-renamed msvcp140 DLL.
+Padfire pins the exact `numpy-2.5.4-cp312-cp312-win_amd64.whl`; its PyPI-published
+SHA-256 is `a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a`.
+PyPI lists a verified Publish Attestation from `numpy/numpy-release` (see
+[publisher workflow run 38074635821](https://github.com/numpy/numpy-release/actions/runs/38074635821)).
+CI validates the resolved wheel URL and SHA-256 from pip's install report.
 During the Windows build, pinned delvewheel 1.13.2 rewrites the two unsigned
 NumPy extension-module import descriptors to the standard system name
-msvcp140.dll, verifies the PE import tables, and removes the private hash-named
+`msvcp140.dll`, verifies the PE import tables, and removes the private hash-named
 wheel DLL before packaging. The generated
-ThirdPartyLicenses/WINDOWS_RUNTIME_PATCHES.md records the original DLL SHA-256
+`ThirdPartyLicenses/WINDOWS_RUNTIME_PATCHES.md` records the original DLL SHA-256
 and modified extension checksums. NumPy/SciPy numerical smoke tests run after
 the original DLL is deleted. No NumPy hash-renamed MSVC DLL is shipped in
-either Padfire distribution. The upstream PyPI wheel has no build provenance
-attestation; its build flags/source provenance remain a separate limitation.
+either Padfire distribution. The PyPI attestation identifies the publisher
+workflow but does not certify every compiler input or Padfire's downstream
+PE modification; the patch manifest documents those separately.
 
 ## CPython TLS runtime (OpenSSL)
 
