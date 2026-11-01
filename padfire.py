@@ -104,10 +104,10 @@ button { transition: background 120ms ease, border-color 120ms ease, box-shadow 
     min-height: 32px;
 }
 .app-logo { font-size: 10px; font-weight: 800; letter-spacing: 4px; color: #0a84ff; }
-.midi-ok  { color: #30d158; font-size: 8px; font-weight: 700; padding: 2px 7px;
-            border-radius: 8px; background: rgba(48,209,88,0.12); }
-.midi-bad { color: rgba(255,255,255,0.30); font-size: 8px; padding: 2px 7px;
-            border-radius: 8px; background: rgba(255,255,255,0.05); }
+.midi-ok  { color: #30d158; font-size: 10px; font-weight: 700; padding: 3px 8px;
+            border-radius: 8px; background: rgba(48,209,88,0.14); }
+.midi-bad { color: #ffb454; font-size: 10px; font-weight: 700; padding: 3px 8px;
+            border-radius: 8px; background: rgba(255,159,10,0.13); }
 
 .grid-wrap { padding: 6px; }
 
@@ -517,10 +517,13 @@ class MidiEngine:
         self._on_pad = on_pad; self._on_top = on_top; self._on_side = on_side
         self._on_connect = on_connect; self._on_disconnect = on_disconnect
         self._in = self._out = None
+        self._input_name: str | None = None
+        self._output_name: str | None = None
         self._out_lock  = threading.Lock()
         self._conn_lock = threading.Lock()
         self._connected = False
         self._running = True
+        self._last_presence_error = 0.0
         self._stop_event = threading.Event()
         self._read_thread = threading.Thread(
             target=self._read_loop, daemon=True, name="midi-read"
@@ -558,6 +561,8 @@ class MidiEngine:
                 in_port = mido.open_input(inn)
                 self._out = out_port
                 self._in = in_port
+                self._input_name = inn
+                self._output_name = outn
                 self._connected = True
                 print(f"[midi] connected: {inn}")
                 self._on_connect()
@@ -576,28 +581,72 @@ class MidiEngine:
                 print(f"[midi] connect failed: {e}")
                 return False
 
+    def _disconnect_locked(self):
+        """Close the current ports while the connection lock is held."""
+        was_connected = self._connected
+        self._connected = False
+        in_port, out_port = self._in, self._out
+        self._in = self._out = None
+        self._input_name = self._output_name = None
+        # Serialize output-port close with LED sends; cleanup also runs
+        # after a partial connection failure, even when _connected=False.
+        with self._out_lock:
+            for port in (in_port, out_port):
+                try:
+                    if port: port.close()
+                except Exception:
+                    pass
+        return was_connected
+
     def _disconnect(self):
         with self._conn_lock:
-            was_connected = self._connected
-            self._connected = False
-            in_port, out_port = self._in, self._out
-            self._in = self._out = None
-            # Serialize output-port close with LED sends; cleanup also runs
-            # after a partial connection failure, even when _connected=False.
-            with self._out_lock:
-                for port in (in_port, out_port):
-                    try:
-                        if port: port.close()
-                    except Exception:
-                        pass
+            was_connected = self._disconnect_locked()
+        if was_connected:
+            self._on_disconnect()
+
+    def _check_connected_device(self):
+        """Detect USB removal even when the MIDI backend leaves receive blocked."""
+        with self._conn_lock:
+            if not self._running or not self._connected:
+                return
+            input_name, output_name = self._input_name, self._output_name
+            try:
+                input_names = mido.get_input_names()
+                output_names = mido.get_output_names()
+            except Exception as exc:
+                # Enumeration can fail briefly while ALSA/RtMidi restarts.
+                # Do not drop an otherwise live connection on one scan error.
+                now = time.monotonic()
+                if now - self._last_presence_error >= 10.0:
+                    print(f"[midi] device check failed; keeping current connection: {exc}")
+                    self._last_presence_error = now
+                return
+
+            if input_name in input_names and output_name in output_names:
+                self._last_presence_error = 0.0
+                return
+
+            missing = []
+            if input_name not in input_names:
+                missing.append("input")
+            if output_name not in output_names:
+                missing.append("output")
+            print(
+                f"[midi] Launchpad disappeared ({'/'.join(missing)} port missing); "
+                "waiting to reconnect"
+            )
+            was_connected = self._disconnect_locked()
+
         if was_connected:
             self._on_disconnect()
 
     def _reconnect_loop(self):
-        while self._running and not self._stop_event.wait(2):
+        while self._running and not self._stop_event.wait(1.0):
             if not self._running:
                 break
-            if not self._connected:
+            if self._connected:
+                self._check_connected_device()
+            else:
                 self.try_connect()
 
     def _read_loop(self):
@@ -612,8 +661,18 @@ class MidiEngine:
                     if not self._running or self._stop_event.is_set():
                         break
                     self._dispatch(msg)
-            except Exception:
-                if self._connected and self._running:
+                # Mido's input iterator returns normally when its backend
+                # closes the port on USB removal. Treat that as a disconnect
+                # instead of repeatedly iterating a dead handle.
+                if (
+                    self._running and not self._stop_event.is_set()
+                    and self._connected and self._in is port
+                ):
+                    print("[midi] input stream ended; waiting to reconnect")
+                    self._disconnect()
+            except Exception as exc:
+                if self._connected and self._running and self._in is port:
+                    print(f"[midi] input lost: {exc}")
                     self._disconnect()
 
     def _dispatch(self, msg):
@@ -1993,7 +2052,12 @@ class PadfireApp:
     def _update_midi_lbl(self):
         conn = self.midi and self.midi.is_connected()
         if self._midi_lbl:
-            self._midi_lbl.set_text("● MIDI" if conn else "○ MIDI")
+            self._midi_lbl.set_text("● Connected" if conn else "○ Disconnected")
+            self._midi_lbl.set_tooltip_text(
+                "Launchpad Mini connected; pad input and LED output are ready."
+                if conn else
+                "Launchpad Mini disconnected; reconnect it to resume pad input."
+            )
             ctx = self._midi_lbl.get_style_context()
             ctx.remove_class("midi-ok"); ctx.remove_class("midi-bad")
             ctx.add_class("midi-ok" if conn else "midi-bad")
@@ -2312,7 +2376,10 @@ class PadfireApp:
         self._msg_lbl.set_visible(False)
         topbar.pack_start(self._msg_lbl, False, False, 4)
 
-        self._midi_lbl = Gtk.Label(label="○ MIDI")
+        self._midi_lbl = Gtk.Label(label="○ Disconnected")
+        self._midi_lbl.set_tooltip_text(
+            "Launchpad Mini disconnected; reconnect it to resume pad input."
+        )
         self._midi_lbl.get_style_context().add_class("midi-bad")
         topbar.pack_start(self._midi_lbl, False, False, 0)
 

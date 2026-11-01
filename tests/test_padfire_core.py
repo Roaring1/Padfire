@@ -296,6 +296,8 @@ class PadfireCoreTests(unittest.TestCase):
     def _bare_midi_engine(self):
         engine = object.__new__(padfire.MidiEngine)
         engine._in = engine._out = None
+        engine._input_name = engine._output_name = None
+        engine._last_presence_error = 0.0
         engine._out_lock = threading.Lock()
         engine._conn_lock = threading.Lock()
         engine._connected = False
@@ -355,6 +357,215 @@ class PadfireCoreTests(unittest.TestCase):
         engine._disconnect()
         self.assertTrue(output.closed)
         self.assertTrue(input_port.closed)
+
+    def test_midi_presence_check_disconnects_when_usb_ports_disappear(self):
+        class FakePort:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        engine = self._bare_midi_engine()
+        input_port = FakePort()
+        output_port = FakePort()
+        engine._in = input_port
+        engine._out = output_port
+        engine._input_name = "Launchpad Mini MIDI 1"
+        engine._output_name = "Launchpad Mini MIDI 1"
+        engine._connected = True
+        disconnect_events = []
+        engine._on_disconnect = lambda: disconnect_events.append(True)
+
+        with patch.object(padfire.mido, "get_input_names", return_value=[]), patch.object(
+            padfire.mido, "get_output_names", return_value=[]
+        ):
+            engine._check_connected_device()
+
+        self.assertFalse(engine.is_connected())
+        self.assertTrue(input_port.closed)
+        self.assertTrue(output_port.closed)
+        self.assertIsNone(engine._input_name)
+        self.assertIsNone(engine._output_name)
+        self.assertEqual(disconnect_events, [True])
+
+    def test_midi_presence_check_keeps_connection_on_transient_scan_error(self):
+        class FakePort:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        engine = self._bare_midi_engine()
+        input_port = FakePort()
+        output_port = FakePort()
+        engine._in = input_port
+        engine._out = output_port
+        engine._input_name = "Launchpad Mini MIDI 1"
+        engine._output_name = "Launchpad Mini MIDI 1"
+        engine._connected = True
+
+        with patch.object(
+            padfire.mido, "get_input_names", side_effect=OSError("ALSA restarting")
+        ):
+            engine._check_connected_device()
+
+        self.assertTrue(engine.is_connected())
+        self.assertFalse(input_port.closed)
+        self.assertFalse(output_port.closed)
+
+    def test_midi_reader_disconnects_when_input_iterator_ends_normally(self):
+        engine = self._bare_midi_engine()
+        input_port = type("EndedInput", (), {
+            "closed": False,
+            "__iter__": lambda _self: iter(()),
+            "close": lambda self: setattr(self, "closed", True),
+        })()
+        output_port = type("FakeOutput", (), {
+            "closed": False,
+            "close": lambda self: setattr(self, "closed", True),
+        })()
+        engine._in = input_port
+        engine._out = output_port
+        engine._input_name = engine._output_name = "Launchpad Mini MIDI 1"
+        engine._connected = True
+        engine._on_disconnect = lambda: engine._stop_event.set()
+
+        engine._read_loop()
+
+        self.assertFalse(engine.is_connected())
+        self.assertTrue(input_port.closed)
+        self.assertTrue(output_port.closed)
+
+    def test_midi_reconnect_watcher_checks_presence_while_connected(self):
+        engine = self._bare_midi_engine()
+        engine._connected = True
+
+        class ContinueUntilReconnect:
+            def __init__(self):
+                self.waits = []
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+                return False
+
+        stop = ContinueUntilReconnect()
+        engine._stop_event = stop
+
+        def device_went_away():
+            engine._connected = False
+
+        def reconnect_attempt():
+            engine._running = False
+
+        with patch.object(
+            engine, "_check_connected_device", side_effect=device_went_away
+        ) as check, patch.object(
+            engine, "try_connect", side_effect=reconnect_attempt
+        ) as reconnect:
+            engine._reconnect_loop()
+
+        self.assertEqual(stop.waits, [1.0, 1.0])
+        check.assert_called_once()
+        reconnect.assert_called_once()
+
+    def test_midi_watcher_reconnects_after_simulated_usb_unplug_and_replug(self):
+        class FakePort:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        engine = self._bare_midi_engine()
+        old_input = FakePort()
+        old_output = FakePort()
+        new_input = FakePort()
+        new_output = FakePort()
+        engine._in = old_input
+        engine._out = old_output
+        engine._input_name = engine._output_name = "Launchpad Mini MIDI 1"
+        engine._connected = True
+
+        events = []
+        engine._on_disconnect = lambda: events.append("disconnected")
+
+        def reconnected():
+            events.append("connected")
+            engine._running = False
+
+        engine._on_connect = reconnected
+        stop = type("Continue", (), {"wait": lambda _self, _seconds: False})()
+        engine._stop_event = stop
+
+        with patch.object(
+            padfire.mido, "get_input_names",
+            side_effect=[[], ["Launchpad Mini MIDI 2"]],
+        ), patch.object(
+            padfire.mido, "get_output_names",
+            side_effect=[[], ["Launchpad Mini MIDI 2"]],
+        ), patch.object(
+            padfire.mido, "open_output", return_value=new_output
+        ), patch.object(
+            padfire.mido, "open_input", return_value=new_input
+        ):
+            engine._reconnect_loop()
+
+        self.assertTrue(old_input.closed)
+        self.assertTrue(old_output.closed)
+        self.assertTrue(engine.is_connected())
+        self.assertIs(engine._in, new_input)
+        self.assertIs(engine._out, new_output)
+        self.assertEqual(engine._input_name, "Launchpad Mini MIDI 2")
+        self.assertEqual(engine._output_name, "Launchpad Mini MIDI 2")
+        self.assertEqual(events, ["disconnected", "connected"])
+
+    def test_midi_status_label_says_connected_or_disconnected(self):
+        class FakeStyleContext:
+            def __init__(self):
+                self.classes = set()
+
+            def remove_class(self, name):
+                self.classes.discard(name)
+
+            def add_class(self, name):
+                self.classes.add(name)
+
+        class FakeLabel:
+            def __init__(self):
+                self.text = ""
+                self.tooltip = ""
+                self.context = FakeStyleContext()
+
+            def set_text(self, value):
+                self.text = value
+
+            def set_tooltip_text(self, value):
+                self.tooltip = value
+
+            def get_style_context(self):
+                return self.context
+
+        class FakeMidi:
+            connected = True
+
+            def is_connected(self):
+                return self.connected
+
+        app = object.__new__(padfire.PadfireApp)
+        app.midi = FakeMidi()
+        app._midi_lbl = FakeLabel()
+
+        app._update_midi_lbl()
+        self.assertEqual(app._midi_lbl.text, "● Connected")
+        self.assertIn("connected", app._midi_lbl.tooltip.lower())
+        self.assertIn("midi-ok", app._midi_lbl.context.classes)
+
+        app.midi.connected = False
+        app._update_midi_lbl()
+        self.assertEqual(app._midi_lbl.text, "○ Disconnected")
+        self.assertIn("disconnected", app._midi_lbl.tooltip.lower())
+        self.assertIn("midi-bad", app._midi_lbl.context.classes)
 
     def test_midi_disconnect_closes_partial_handle_even_when_not_connected(self):
         class FakePort:
