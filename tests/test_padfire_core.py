@@ -327,6 +327,25 @@ esac
         self.assertEqual(json.loads(Path(padfire.CONF + ".bak").read_text()), first)
         self.assertFalse(Path(padfire.CONF + ".tmp").exists())
 
+    def test_load_config_tightens_legacy_backup_permissions(self):
+        primary = {"version": 5, "label": "current"}
+        backup = {"version": 5, "label": "previous"}
+        Path(padfire.CONF).write_text(json.dumps(primary), encoding="utf-8")
+        Path(padfire.CONF + ".bak").write_text(json.dumps(backup), encoding="utf-8")
+        Path(padfire.CONF).chmod(0o644)
+        Path(padfire.CONF + ".bak").chmod(0o644)
+
+        loaded = padfire.load_config()
+
+        self.assertEqual(loaded["pages"], padfire.DEFAULT_CONFIG["pages"])
+        self.assertEqual(json.loads(Path(padfire.CONF + ".bak").read_text()), backup)
+        self.assertEqual(
+            padfire.stat.S_IMODE(Path(padfire.CONF).stat().st_mode), 0o600
+        )
+        self.assertEqual(
+            padfire.stat.S_IMODE(Path(padfire.CONF + ".bak").stat().st_mode), 0o600
+        )
+
     def test_config_and_backup_are_private_after_save(self):
         first = {"version": 5, "command": "example --argument"}
         second = {"version": 5, "command": "updated --argument"}
