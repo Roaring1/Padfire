@@ -5,7 +5,7 @@ Builds the real UI, grabs one frame, and quits. Nothing is clicked, no audio is
 played, no MIDI device is opened, and the tray is never registered. Intended
 for UI review, regression screenshots, and automated inspection.
 
-    tools/padfire-shot                     # -> /tmp/padfire-shot.png
+    tools/padfire-shot                     # -> system temp directory/padfire-shot.png
     tools/padfire-shot -o /tmp/ui.png
     tools/padfire-shot -o ~/Pictures/ui.png
     tools/padfire-shot --demo              # throwaway HOME with sample pads
@@ -31,19 +31,18 @@ def log(msg):
 
 
 def safe_output_path(raw):
-    """Return a screenshot path inside one of the explicitly approved folders.
+    """Return a direct-child PNG path inside an explicitly approved folder.
 
-    The user-selected parent must exactly match an existing fixed location.
-    The complete real path is checked against that root before any filesystem
-    operation, so symlinks and traversal cannot redirect the write elsewhere.
+    Only the four fixed parent directories are accepted. Parent and final-file
+    symlinks are rejected rather than resolved, so a link cannot redirect an
+    otherwise-approved filename into a nested or external directory.
     """
     value = os.fspath(raw)
     if not value or "\x00" in value:
         raise ValueError("Screenshot output path is empty or invalid")
 
     absolute = os.path.abspath(os.path.expanduser(value))
-    requested_dir = os.path.realpath(os.path.dirname(absolute))
-    target = os.path.realpath(absolute)
+    requested_dir = os.path.dirname(absolute)
 
     home = os.path.realpath(Path.home())
     candidate_roots = (
@@ -57,16 +56,18 @@ def safe_output_path(raw):
         if requested_dir == root and os.path.isdir(root):
             safe_root = root
             break
-    if safe_root is None:
+    if safe_root is None or requested_dir != safe_root:
         raise ValueError(
             "Screenshot output must be directly inside HOME, Pictures, Desktop, or the temp directory"
         )
 
-    # Check the normalized complete path, not an independently rebuilt path.
-    # This also catches a final symlink whose target escapes the selected root.
+    # Normalize and prove containment before using this path for filesystem I/O.
+    target = os.path.realpath(absolute)
     if target == safe_root or not target.startswith(safe_root + os.sep):
         raise ValueError("Screenshot output escapes the approved directories")
-    if not target.lower().endswith(".png"):
+    if target != absolute:
+        raise ValueError("Screenshot output must not be a symbolic link")
+    if not os.path.basename(target).lower().endswith(".png"):
         raise ValueError("Screenshot output filename must end in .png")
 
     try:
@@ -80,6 +81,60 @@ def safe_output_path(raw):
     if hasattr(os, "getuid") and info.st_uid != os.getuid():
         raise PermissionError("Screenshot output is owned by another user")
     return Path(target)
+
+
+def _write_atomically(out, writer):
+    """Write a sibling temporary PNG, then replace the destination atomically.
+
+    os.replace() replaces a destination symlink itself rather than following
+    it. This closes the check-to-write window if a link appears after the
+    initial path validation.
+    """
+    # Re-validate locally because static analysis and future callers cannot
+    # assume a path passed across a function boundary was previously checked.
+    absolute = os.path.abspath(os.fspath(out))
+    requested_dir = os.path.dirname(absolute)
+    home = os.path.realpath(Path.home())
+    candidate_roots = (
+        home,
+        os.path.realpath(os.path.join(home, "Pictures")),
+        os.path.realpath(os.path.join(home, "Desktop")),
+        os.path.realpath(tempfile.gettempdir()),
+    )
+    safe_root = next(
+        (root for root in candidate_roots
+         if requested_dir == root and os.path.isdir(root)),
+        None,
+    )
+    if safe_root is None:
+        raise ValueError("Atomic screenshot output is outside approved directories")
+    target = os.path.realpath(absolute)
+    if target == safe_root or not target.startswith(safe_root + os.sep):
+        raise ValueError("Atomic screenshot output escapes approved directories")
+    if target != absolute:
+        raise ValueError("Atomic screenshot output must not be a symbolic link")
+
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=".padfire-shot-", suffix=".png", dir=safe_root
+    )
+    os.close(fd)
+    temporary = Path(temporary_name)
+    out = Path(target)
+    try:
+        if writer(temporary) is False:
+            return False
+        info = os.lstat(temporary)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("Temporary screenshot output is not a private regular file")
+        if hasattr(os, "getuid") and info.st_uid != os.getuid():
+            raise PermissionError("Temporary screenshot output is owned by another user")
+        os.replace(temporary, out)
+        return True
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 # ---------------------------------------------------------------- display
@@ -314,18 +369,19 @@ def capture(out, playing=(), settle_ms=600):
     surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
     win.draw(cairo.Context(surface))
     surface.flush()
-    surface.write_to_png(str(out))
-    log("rendered via cairo")
 
-    if _is_blank(out):
-        # Keep the old path as a fallback: on some themes a top-level window
-        # defers part of its drawing to the compositor.
-        log("cairo frame was blank -- trying an on-screen grab")
-        pb = Gdk.pixbuf_get_from_window(gwin, 0, 0, w, h)
-        if pb is not None:
-            pb.savev(str(out), "png", [], [])
+    def render_png(temporary):
+        surface.write_to_png(str(temporary))
+        if _is_blank(temporary):
+            # Keep the old path as a fallback: on some themes a top-level
+            # window defers part of its drawing to the compositor.
+            log("cairo frame was blank -- trying an on-screen grab")
+            pb = Gdk.pixbuf_get_from_window(gwin, 0, 0, w, h)
+            if pb is not None:
+                pb.savev(str(temporary), "png", [], [])
+        return not _is_blank(temporary)
 
-    if _is_blank(out):
+    if not _write_atomically(out, render_png):
         log("BLANK CAPTURE -- not reporting this as a screenshot.")
         log("  The window rendered nothing. Check whether the screen is")
         log("  blanked or the session is locked:  xset -q | grep -i monitor")
@@ -334,6 +390,7 @@ def capture(out, playing=(), settle_ms=600):
         except Exception:
             pass
         return False
+    log("rendered via cairo")
 
     try: win.destroy()
     except Exception: pass
@@ -350,14 +407,25 @@ def post(out, scale=None, crop=None):
     if crop:
         pct = str(crop).strip().rstrip("%")
         c = safe_output_path(out.with_name(out.stem + f"-crop{pct}.png"))
-        subprocess.run([magick, str(out), "-gravity", "center",
-                        "-crop", f"{pct}%x{pct}%+0+0", "+repage", str(c)], check=False)
-        if c.exists(): made.append(c)
+        try:
+            def make_crop(temporary):
+                subprocess.run([magick, str(out), "-gravity", "center",
+                                "-crop", f"{pct}%x{pct}%+0+0", "+repage",
+                                str(temporary)], check=True)
+            if _write_atomically(c, make_crop):
+                made.append(c)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            log(f"crop failed: {exc}")
     if scale:
         s = safe_output_path(out.with_name(out.stem + f"-{scale}pct.png"))
-        subprocess.run([magick, str(out), "-filter", "point",
-                        "-resize", f"{scale}%", str(s)], check=False)
-        if s.exists(): made.append(s)
+        try:
+            def make_scale(temporary):
+                subprocess.run([magick, str(out), "-filter", "point",
+                                "-resize", f"{scale}%", str(temporary)], check=True)
+            if _write_atomically(s, make_scale):
+                made.append(s)
+        except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+            log(f"scale failed: {exc}")
     return made
 
 

@@ -49,6 +49,8 @@ class PadfireCoreTests(unittest.TestCase):
             helper.safe_output_path(TEST_HOME / "screenshots" / "main.png")
         with self.assertRaises(ValueError):
             helper.safe_output_path(screenshot_dir / "not-a-png.txt")
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(TEST_HOME / ".config" / "nested.png")
 
         with self.assertRaises(ValueError):
             helper.safe_output_path("/etc/padfire-shot-forbidden.png")
@@ -59,11 +61,21 @@ class PadfireCoreTests(unittest.TestCase):
         target.write_bytes(b"keep existing file")
         symlink = TEST_HOME / "output-symlink.png"
         symlink.symlink_to(target)
-        # A final symlink is resolved and accepted only when its target stays
-        # inside the selected fixed output root.
-        self.assertEqual(helper.safe_output_path(symlink), target.resolve())
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(symlink)
 
-        outside_target = TEST_HOME / "outside-target"
+        nested_dir = TEST_HOME / ".config" / "nested"
+        nested_dir.mkdir(parents=True)
+        nested_target = nested_dir / "nested.png"
+        nested_target.write_bytes(b"keep nested file")
+        nested_link = TEST_HOME / "nested-link.png"
+        nested_link.symlink_to(nested_target)
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(nested_link)
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(nested_target)
+
+        outside_target = TEST_HOME / "outside-target.png"
         outside_target.symlink_to("/etc/passwd")
         with self.assertRaises(ValueError):
             helper.safe_output_path(outside_target)
@@ -78,7 +90,27 @@ class PadfireCoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             helper.safe_output_path(external_parent / "padfire-shot-forbidden.png")
 
+        # A symlink inserted after the helper's own validation (while the
+        # writer is producing the temporary file) is replaced as a directory
+        # entry, never followed to overwrite its protected target.
+        race_destination = TEST_HOME / "race.png"
+        checked_destination = helper.safe_output_path(race_destination)
+        protected_target = TEST_HOME / "protected.png"
+        protected_target.write_bytes(b"preserve protected content")
+
+        def add_destination_symlink(temporary):
+            race_destination.symlink_to(protected_target)
+            temporary.write_bytes(b"new screenshot")
+
+        self.assertTrue(
+            helper._write_atomically(checked_destination, add_destination_symlink)
+        )
+        self.assertFalse(race_destination.is_symlink())
+        self.assertEqual(race_destination.read_bytes(), b"new screenshot")
+        self.assertEqual(protected_target.read_bytes(), b"preserve protected content")
+
         self.assertEqual(target.read_bytes(), b"keep existing file")
+        self.assertEqual(nested_target.read_bytes(), b"keep nested file")
 
     def test_release_version_changelog_and_license_are_consistent(self):
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")

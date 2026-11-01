@@ -16,7 +16,9 @@ staging, but a version tag must point to a commit that has been reconciled into
 5. Complete physical Launchpad Mini MK1/MK2 input, page, pad, LED and
    unplug/replug testing. Verify actual playback, stop, looping/retrigger and
    monitor routing. Record what was tested and what was not.
-6. Confirm the exact candidate commit has a successful GitHub Actions run.
+6. Confirm the exact candidate commit has successful Linux CI and CodeQL
+   runs. Review the repository's code-scanning alerts as well; a successful
+   analysis/upload job does not by itself mean there are zero open findings.
 7. Merge the candidate into `main` through a reviewed pull request. Resolve
    branch-history conflicts deliberately; do not force-push or retarget a
    conflict-heavy release PR merely to make the graph look linear.
