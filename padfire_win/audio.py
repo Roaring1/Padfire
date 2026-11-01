@@ -29,6 +29,7 @@ class AudioEngine:
         self.disabled = disabled
         self._lock = threading.RLock()
         self._streams: dict[str, _Playback] = {}
+        self._generations: dict[str, int] = {}
         self._sinks: list[str] = []
         self._level = 0.0
         self._refresh_sinks()
@@ -102,7 +103,8 @@ class AudioEngine:
     ) -> None:
         if self.disabled:
             return
-        self.stop(key)
+        monitor_key = f"__mon__{key}"
+        tokens = self._invalidate((key, monitor_key))
         try:
             samples, sample_rate = sf.read(
                 filepath, dtype="float32", always_2d=True
@@ -115,15 +117,26 @@ class AudioEngine:
             print(f"[audio] {key}: cannot read {filepath!r}: {exc}")
             return
 
+        # Loading a file can take long enough for Stop or a newer Play to
+        # arrive. Do not continue into device resolution/stream startup when
+        # this request has already been superseded.
+        with self._lock:
+            if self._generations.get(key) != tokens[key]:
+                return
+
         gain = max(0.0, min(150, int(vol))) / 100.0
         output = self._resolve_device(sink_name)
-        self._start_stream(key, samples, int(sample_rate), output, gain, loop)
+        self._start_stream(
+            key, samples, int(sample_rate), output, gain, loop,
+            generation=tokens[key],
+        )
         if monitor_sink and monitor_sink != sink_name:
             monitor_output = self._resolve_device(monitor_sink)
             if monitor_output != output:
                 self._start_stream(
-                    f"__mon__{key}", samples, int(sample_rate),
-                    monitor_output, gain, loop, update_meter=False
+                    monitor_key, samples, int(sample_rate),
+                    monitor_output, gain, loop, update_meter=False,
+                    generation=tokens[monitor_key],
                 )
 
     def _start_stream(
@@ -136,6 +149,7 @@ class AudioEngine:
         loop: bool,
         *,
         update_meter: bool = True,
+        generation: int,
     ) -> None:
         playback = _Playback(stop=threading.Event())
         channels = int(samples.shape[1])
@@ -174,6 +188,8 @@ class AudioEngine:
 
         def run() -> None:
             try:
+                if playback.stop.is_set():
+                    return
                 with sd.OutputStream(
                     device=device,
                     samplerate=sample_rate,
@@ -184,7 +200,10 @@ class AudioEngine:
                     with self._lock:
                         if playback.stop.is_set():
                             stream.abort()
-                        playback.stream = stream
+                        else:
+                            playback.stream = stream
+                    if playback.stop.is_set():
+                        return
                     while not playback.stop.wait(0.05):
                         if not stream.active:
                             break
@@ -198,33 +217,68 @@ class AudioEngine:
         playback.thread = threading.Thread(
             target=run, name=f"padfire-audio-{key}", daemon=True
         )
+        # Check the generation, publish, and start while holding one lock.
+        # Previously Stop could pop a registered-but-unstarted Thread and
+        # join it, raising RuntimeError; it could also return before the
+        # publisher subsequently started the worker.
         with self._lock:
+            if self._generations.get(key) != generation:
+                return
             self._streams[key] = playback
-        playback.thread.start()
+            try:
+                playback.thread.start()
+            except Exception as exc:
+                if self._streams.get(key) is playback:
+                    self._streams.pop(key, None)
+                playback.stop.set()
+                print(f"[audio] could not start playback thread ({key}): {exc}")
+
+    def _stop_playback(self, playback: _Playback) -> None:
+        playback.stop.set()
+        if playback.stream is not None:
+            try:
+                playback.stream.abort()
+            except Exception:
+                pass
+        thread = playback.thread
+        if (
+            thread is not None
+            and thread is not threading.current_thread()
+            and thread.ident is not None
+        ):
+            thread.join(timeout=0.35)
+
+    def _invalidate(self, keys: tuple[str, ...]) -> dict[str, int]:
+        tokens: dict[str, int] = {}
+        pending: list[_Playback] = []
+        with self._lock:
+            for key in keys:
+                token = self._generations.get(key, 0) + 1
+                self._generations[key] = token
+                tokens[key] = token
+                playback = self._streams.pop(key, None)
+                if playback is not None:
+                    pending.append(playback)
+        for playback in pending:
+            self._stop_playback(playback)
+        return tokens
 
     def stop(self, key: str) -> None:
-        for stream_key in (key, f"__mon__{key}"):
-            with self._lock:
-                playback = self._streams.pop(stream_key, None)
-            if playback is None:
-                continue
-            playback.stop.set()
-            if playback.stream is not None:
-                try:
-                    playback.stream.abort()
-                except Exception:
-                    pass
-            if playback.thread is not None and playback.thread is not threading.current_thread():
-                playback.thread.join(timeout=0.35)
+        self._invalidate((key, f"__mon__{key}"))
 
     def stop_all(self) -> None:
+        pending: list[_Playback] = []
         with self._lock:
-            keys = list(self._streams)
-        for key in keys:
-            if key.startswith("__mon__"):
-                self.stop(key[len("__mon__"):])
-            else:
-                self.stop(key)
+            # Generations include play requests that are still decoding files
+            # and are not represented in _streams yet.
+            keys = set(self._generations) | set(self._streams)
+            for key in keys:
+                self._generations[key] = self._generations.get(key, 0) + 1
+                playback = self._streams.pop(key, None)
+                if playback is not None:
+                    pending.append(playback)
+        for playback in pending:
+            self._stop_playback(playback)
 
     def is_playing(self, key: str) -> bool:
         with self._lock:
