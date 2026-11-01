@@ -92,6 +92,7 @@ class PadfireCoreTests(unittest.TestCase):
         app._script_procs = {}
         app._script_generations = {}
         app._script_threads = set()
+        app._script_reapers = set()
         app._proc_lock = threading.Lock()
         app._led_dirty = False
         app._vu_level = 0.0
@@ -378,6 +379,41 @@ class PadfireCoreTests(unittest.TestCase):
         self.assertTrue(process.waited)
         self.assertTrue(process.stdout.closed)
         self.assertEqual(app._vu_level, 0.0)
+
+    def test_quit_waits_for_pending_async_script_reaper(self):
+        app = self._bare_app()
+        process = self._fake_process()
+        app._script_procs["0:1"] = process
+        reaper_entered = threading.Event()
+        release_reaper = threading.Event()
+
+        def blocked_reap(_processes):
+            reaper_entered.set()
+            release_reaper.wait(2)
+
+        with patch.object(
+            app, "_reap_script_processes", side_effect=blocked_reap
+        ), patch.object(padfire.Gtk, "main_quit"):
+            app._stop_script_processes(("0:1",), wait=False)
+            self.assertTrue(reaper_entered.wait(1), "async reaper did not start")
+            with app._proc_lock:
+                reapers = list(app._script_reapers)
+            self.assertEqual(len(reapers), 1)
+
+            def release_when_shutting_down():
+                if app._shutdown_event.wait(1):
+                    release_reaper.set()
+
+            releaser = threading.Thread(target=release_when_shutting_down)
+            releaser.start()
+            app._quit()
+            releaser.join(timeout=1)
+            for worker in reapers:
+                worker.join(timeout=1)
+
+        self.assertFalse(releaser.is_alive())
+        self.assertFalse(any(worker.is_alive() for worker in reapers))
+        self.assertFalse(app._script_reapers)
 
     def test_quit_is_idempotent_and_stops_tracked_scripts(self):
         app = self._bare_app()

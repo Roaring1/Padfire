@@ -982,6 +982,7 @@ class PadfireApp:
         self._script_procs: dict = {}
         self._script_generations: dict[str, int] = {}
         self._script_threads: set[threading.Thread] = set()
+        self._script_reapers: set[threading.Thread] = set()
         self._proc_lock   = threading.Lock()
         self._shutdown_event = threading.Event()
         self._rac_thread: threading.Thread | None = None
@@ -1121,6 +1122,13 @@ class PadfireApp:
         for proc in processes:
             _terminate_process(proc, timeout=0.5, process_group=True)
 
+    def _reap_script_processes_async(self, processes):
+        try:
+            self._reap_script_processes(processes)
+        finally:
+            with self._proc_lock:
+                self._script_reapers.discard(threading.current_thread())
+
     def _stop_script_processes(self, keys=None, *, wait=True):
         """Invalidate pending launches and stop every tracked script process."""
         processes = []
@@ -1149,12 +1157,19 @@ class PadfireApp:
             if wait:
                 self._reap_script_processes(processes)
             else:
-                threading.Thread(
-                    target=self._reap_script_processes,
+                reaper = threading.Thread(
+                    target=self._reap_script_processes_async,
                     args=(processes,),
                     daemon=True,
                     name="padfire-script-reaper",
-                ).start()
+                )
+                with self._proc_lock:
+                    self._script_reapers.add(reaper)
+                    try:
+                        reaper.start()
+                    except Exception:
+                        self._script_reapers.discard(reaper)
+                        self._reap_script_processes(processes)
         return tokens
 
     def _stop_key(self, key):
@@ -2116,6 +2131,19 @@ class PadfireApp:
             script_threads = list(self._script_threads)
         deadline = time.monotonic() + 1.5
         for thread in script_threads:
+            if thread is threading.current_thread():
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
+
+        # Retrigger and Stop All use a non-blocking reaper so their input
+        # callbacks stay responsive. Quit owns those workers and waits for
+        # their bounded process-group cleanup before leaving the main loop.
+        with self._proc_lock:
+            reaper_threads = list(self._script_reapers)
+        for thread in reaper_threads:
             if thread is threading.current_thread():
                 continue
             remaining = deadline - time.monotonic()
