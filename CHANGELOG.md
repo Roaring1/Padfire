@@ -24,6 +24,11 @@
 - **Low idle overhead.** The VU worker sleeps at 250 ms while idle and performs
   no sink discovery or capture subprocess work until Padfire is playing.
   System-default sink discovery is cached for five seconds while active.
+- **Compact, readable dialogs.** Edit Pad now sizes itself to the selected
+  action, uses a short path field with Browse, keeps volume at a deliberate
+  width with a live percentage, and moves optional notes behind a collapsed
+  expander. Settings dropdowns are bounded, labels are readable, and monitor
+  switches keep their native width instead of stretching across the row.
 - **Added:** a built-in `Toggle Crosshair` pad action. It invokes the installed
   Crosshair CLI without a shell, off the MIDI/GTK callback thread, and reports
   command errors in the Padfire status area. Existing pad assignments are

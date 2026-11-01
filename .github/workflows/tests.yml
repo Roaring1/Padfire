@@ -22,7 +22,8 @@ jobs:
       - name: Run hardware-free regression tests
         run: |
           python3 tests/test_padfire_core.py
-          python3 -m py_compile padfire.py tools/padfire-shot tests/test_padfire_core.py
+          xvfb-run -a python3 tests/test_padfire_dialogs.py
+          python3 -m py_compile padfire.py tools/padfire-shot tests/test_padfire_core.py tests/test_padfire_dialogs.py
           bash -n padfire-launch
           shellcheck padfire-launch
           desktop-file-validate packaging/padfire.desktop
