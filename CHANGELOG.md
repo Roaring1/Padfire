@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.4.0 — 2026-10-31
+
 - **Standalone, denser main window.** Removed the permanent bottom status bar
   and all Hearth-specific status widgets/polling. The VU meter now sits
   directly beneath the Padfire wordmark at the top-left; live playback names
@@ -34,6 +36,20 @@
   remain enumerated once per second. Close stale handles and retry discovery
   without requiring Padfire to be reopened. The top bar now explicitly says
   Connected or Disconnected with a high-contrast status treatment.
+- **Private local state and bounded IPC.** The config directory is 0700 and
+  config/backup/PID/socket files are 0600. Config reads refuse symlinks,
+  hard links, special files and files larger than 4 MiB. The same-user IPC
+  server caps request/response sizes and concurrent clients, and refuses to
+  unlink arbitrary files or another live Padfire instance's socket.
+- **License and maintainer guidance.** Add the owner-selected MIT license for
+  Padfire-authored source/docs, a security policy, contribution and manual
+  acceptance guidance, a release checklist, and a deferred device-neutral MIDI
+  / carefully scoped USB HID roadmap.
+- **Safer maintenance tools.** The optional restart helper uses graceful IPC
+  shutdown, fails closed if status cannot be verified, and never force-kills
+  broad process patterns or removes a live socket. The manual hardware smoke
+  test uses current Mini MK1/MK2 LED bytes, rejects MK3, and refuses to contend
+  with a running Padfire instance.
 - **Added:** a built-in `Toggle Crosshair` pad action. It invokes the installed
   Crosshair CLI without a shell, off the MIDI/GTK callback thread, and reports
   command errors in the Padfire status area. Existing pad assignments are

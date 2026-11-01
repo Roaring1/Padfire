@@ -22,6 +22,8 @@ A compact GTK3 soundboard and macro pad app for Linux desktops. The current MIDI
 - A top-bar Launchpad status badge: green **Connected** or amber
   **Disconnected**. Padfire checks both MIDI ports once per second and retries
   without requiring the window to be reopened.
+- Owner-only local configuration and IPC state. Padfire stores pad assignments
+  in a private directory and bounds local IPC requests and concurrent clients.
 - Audio via `paplay` subprocess -> PipeWire, no JACK/PortAudio dependency
 - Loudness analysis (`--` LUFS target -18.0) available from the pad editor
 
@@ -91,14 +93,20 @@ Pad assignments are saved to `~/.config/padfire/padfire.json`. Edit via the GUI 
 
 Saves are atomic and keep one generation of backup at `padfire.json.bak`. A corrupt or unreadable config does not prevent startup -- Padfire falls back to defaults rather than refusing to open.
 
-Configs are migrated forward automatically on load (`CONFIG_VERSION`), and unknown keys from older versions are pruned rather than carried along.
+Configs are migrated forward automatically on load (`CONFIG_VERSION`), and unknown keys from older versions are pruned rather than carried along. Current versions keep `~/.config/padfire` private (0700) and the config/backup files private (0600). Config reads reject symlinks, special files and files larger than 4 MiB.
+
+## Security and trusted configurations
+
+Padfire's **Script** pad action intentionally executes the shell command configured by the user. Treat pad configurations as executable content: only import files from people you trust, and review script-pad assignments before triggering them. The config may also contain local file paths and device names, so redact it before sharing.
+
+The local IPC socket is restricted to the current user and exposes a fixed set of local control/status commands; it is not a network service. See [SECURITY.md](SECURITY.md) for the security model and vulnerability-reporting guidance.
 
 ---
 
 ### Toggle Crosshair from a Launchpad pad
 
-Right-click the pad you want to assign, choose **Edit Pad**, set **Does** to
-**Toggle Crosshair**, and save. Pressing that pad runs the Crosshair CLI's
+Right-click the pad you want to assign, choose **Edit Pad**, set **Action**
+to **Toggle Crosshair**, and save. Pressing that pad runs the Crosshair CLI's
 `--toggle` command, switching the overlay between enabled and disabled.
 Padfire resolves `crosshair` from `PATH`, then falls back to
 `~/.local/bin/crosshair`. The action runs off the GTK/MIDI callback thread
@@ -137,6 +145,19 @@ The `0x0C` term selects double-buffered display without a CC 0 reset. Every LED 
 
 `tools/padfire-shot` -- open the window, let it settle, capture a PNG, exit. Intended for UI review, bug reports and automated visual checks; it never touches your real config when run with `--demo`.
 
+The optional hardware smoke test at `packaging/extra-scripts/padfire_test.py`
+opens the Launchpad MIDI ports, lights the grid and reports button events.
+Quit Padfire first; the script refuses to claim the ports while Padfire is
+running. It supports only Mini MK1/MK2, deliberately excludes MK3, and clears
+the LEDs when stopped. Run it manually with:
+
+```bash
+python3 packaging/extra-scripts/padfire_test.py
+```
+
+This sends real LED messages to the controller. It is not an automated test
+and should not be run while another application owns the Launchpad.
+
 ```bash
 tools/padfire-shot                       # 1s settle, 60% centre crop -> /tmp/padfire-shot.png
 tools/padfire-shot --demo                # seed a throwaway HOME with example pads
@@ -147,7 +168,7 @@ tools/padfire-shot -o out.png --crop 100  # full window, no crop
 
 It writes the capture plus any crop/scale variants and prints each path with its byte size and sha256, so a screenshot can be verified rather than trusted. MIDI, IPC, VU and tray are stubbed out during capture, so it is safe to run while a real instance is live.
 
-Run the fast, hardware-free v2.3 regression checks with:
+Run the hardware-free core and GTK dialog regression checks with:
 
 ```bash
 python3 tests/test_padfire_core.py
@@ -155,3 +176,30 @@ xvfb-run -a python3 tests/test_padfire_dialogs.py
 ```
 
 The core checks use a temporary `HOME` and cover config migration, audio routing, MIDI discovery, disconnect detection and simulated USB unplug/replug recovery, process cleanup, and LED protocol invariants. The GTK checks exercise the dialogs under a virtual display without opening MIDI hardware or playing audio. These automated checks do not replace a separate physical-device/audio playtest.
+
+## Roadmap and related software
+
+The current hardware protocol is limited to Launchpad Mini MK1/MK2. Broader
+generic MIDI profiles and carefully scoped USB HID input are deferred ideas,
+not current features. See [ROADMAP.md](ROADMAP.md) for the far-future plan,
+including explicit device-selection and protocol-safety boundaries. The
+tracking issue is [#8](https://github.com/Roaring1/Padfire/issues/8).
+
+A related but separate project is [Lunchpad](https://github.com/ruohki/lunchpad),
+which supports a wider Novation Launchpad family and additional integrations.
+Padfire is independent; this is a reference for ecosystem comparison, not a
+dependency or compatibility claim.
+
+## License
+
+Padfire-authored source and documentation are licensed under the MIT License;
+see [LICENSE](LICENSE). Third-party libraries, desktop runtimes and any
+additional assets remain subject to their own licenses and notices.
+
+## Project docs
+
+- [Contributing and manual acceptance](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Future roadmap](ROADMAP.md)
+- [Release checklist](RELEASING.md)
+- [Release history](CHANGELOG.md)
