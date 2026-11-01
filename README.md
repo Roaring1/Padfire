@@ -143,7 +143,7 @@ The `0x0C` term selects double-buffered display without a CC 0 reset. Every LED 
 
 ## Tools
 
-`tools/padfire-shot` -- open the window, let it settle, capture a PNG, exit. Intended for UI review, bug reports and automated visual checks; it never touches your real config when run with `--demo`. Output paths are normalized and restricted to your home directory or the system temp directory; symlink escapes, hard links, special files and foreign-owned targets are rejected.
+`tools/padfire-shot` -- open the window, let it settle, capture a PNG, exit. Intended for UI review, bug reports and automated visual checks; it never touches your real config when run with `--demo`. Output paths are normalized and restricted to your home directory or the system temp directory; the destination directory must already exist. Symlink escapes, hard links, special files and foreign-owned targets are rejected.
 
 The optional hardware smoke test at `packaging/extra-scripts/padfire_test.py`
 opens the Launchpad MIDI ports, lights the grid and reports button events.

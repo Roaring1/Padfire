@@ -40,9 +40,13 @@ class PadfireCoreTests(unittest.TestCase):
         helper = importlib.util.module_from_spec(helper_spec)
         helper_spec.loader.exec_module(helper)
 
-        safe = helper.safe_output_path(TEST_HOME / "screenshots" / "main.png")
+        screenshot_dir = TEST_HOME / "screenshots"
+        screenshot_dir.mkdir()
+        safe = helper.safe_output_path(screenshot_dir / "main.png")
         self.assertTrue(safe.is_relative_to(TEST_HOME))
         self.assertTrue(safe.parent.is_dir())
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(TEST_HOME / "missing-directory" / "main.png")
 
         with self.assertRaises(ValueError):
             helper.safe_output_path("/etc/padfire-shot-forbidden.png")

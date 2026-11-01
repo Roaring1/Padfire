@@ -66,11 +66,11 @@ def safe_output_path(raw):
     parent = os.path.realpath(os.path.dirname(normalized))
     if parent != safe_root and not parent.startswith(safe_root + os.sep):
         raise ValueError("Screenshot output parent escapes the approved directories")
-    os.makedirs(parent, exist_ok=True)
+    if not os.path.isdir(parent):
+        raise ValueError("Screenshot output directory must already exist")
 
-    # Re-resolve after creating the parent, then validate the exact path passed
-    # to Cairo/ImageMagick. The final prefix check guards traversal and changes
-    # to symlinks between path selection and directory creation.
+    # Re-resolve before returning the exact path passed to Cairo/ImageMagick.
+    # The final prefix check guards traversal and symlink escapes.
     parent = os.path.realpath(parent)
     if parent != safe_root and not parent.startswith(safe_root + os.sep):
         raise ValueError("Screenshot output parent changed outside the approved directories")
@@ -379,7 +379,7 @@ def main():
     ap = argparse.ArgumentParser(prog="padfire-shot",
                                  description="Screenshot the Padfire window.")
     ap.add_argument("-o", "--out", default="/tmp/padfire-shot.png",
-                    help="output PNG under HOME or the temp directory (default: /tmp/padfire-shot.png)")
+                    help="output PNG in an existing directory under HOME or temp (default: /tmp/padfire-shot.png)")
     ap.add_argument("--demo", action="store_true",
                     help="use a throwaway HOME with sample pads covering every "
                          "pad state; never touches your real config")
