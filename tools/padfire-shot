@@ -61,22 +61,26 @@ def safe_output_path(raw):
             "Screenshot output must be directly inside HOME, Pictures, Desktop, or the temp directory"
         )
 
-    if not os.path.basename(absolute).lower().endswith(".png"):
+    # Normalize and prove containment before using this path for filesystem I/O.
+    target = os.path.realpath(absolute)
+    if target == safe_root or not target.startswith(safe_root + os.sep):
+        raise ValueError("Screenshot output escapes the approved directories")
+    if target != absolute:
+        raise ValueError("Screenshot output must not be a symbolic link")
+    if not os.path.basename(target).lower().endswith(".png"):
         raise ValueError("Screenshot output filename must end in .png")
 
     try:
-        info = os.lstat(absolute)
+        info = os.lstat(target)
     except FileNotFoundError:
-        return Path(absolute)
-    if stat.S_ISLNK(info.st_mode):
-        raise ValueError("Screenshot output must not be a symbolic link")
+        return Path(target)
     if not stat.S_ISREG(info.st_mode):
         raise ValueError("Screenshot output must be a regular file")
     if info.st_nlink != 1:
         raise ValueError("Screenshot output must not be hard-linked")
     if hasattr(os, "getuid") and info.st_uid != os.getuid():
         raise PermissionError("Screenshot output is owned by another user")
-    return Path(absolute)
+    return Path(target)
 
 
 def _write_atomically(out, writer):
@@ -86,11 +90,36 @@ def _write_atomically(out, writer):
     it. This closes the check-to-write window if a link appears after the
     initial path validation.
     """
+    # Re-validate locally because static analysis and future callers cannot
+    # assume a path passed across a function boundary was previously checked.
+    absolute = os.path.abspath(os.fspath(out))
+    requested_dir = os.path.dirname(absolute)
+    home = os.path.realpath(Path.home())
+    candidate_roots = (
+        home,
+        os.path.realpath(os.path.join(home, "Pictures")),
+        os.path.realpath(os.path.join(home, "Desktop")),
+        os.path.realpath(tempfile.gettempdir()),
+    )
+    safe_root = next(
+        (root for root in candidate_roots
+         if requested_dir == root and os.path.isdir(root)),
+        None,
+    )
+    if safe_root is None:
+        raise ValueError("Atomic screenshot output is outside approved directories")
+    target = os.path.realpath(absolute)
+    if target == safe_root or not target.startswith(safe_root + os.sep):
+        raise ValueError("Atomic screenshot output escapes approved directories")
+    if target != absolute:
+        raise ValueError("Atomic screenshot output must not be a symbolic link")
+
     fd, temporary_name = tempfile.mkstemp(
-        prefix=".padfire-shot-", suffix=".png", dir=str(out.parent)
+        prefix=".padfire-shot-", suffix=".png", dir=safe_root
     )
     os.close(fd)
     temporary = Path(temporary_name)
+    out = Path(target)
     try:
         if writer(temporary) is False:
             return False

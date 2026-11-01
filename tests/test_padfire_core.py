@@ -90,18 +90,20 @@ class PadfireCoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             helper.safe_output_path(external_parent / "padfire-shot-forbidden.png")
 
-        # A symlink inserted after validation is replaced as a directory entry,
-        # never followed to overwrite its protected target.
+        # A symlink inserted after the helper's own validation (while the
+        # writer is producing the temporary file) is replaced as a directory
+        # entry, never followed to overwrite its protected target.
         race_destination = TEST_HOME / "race.png"
         checked_destination = helper.safe_output_path(race_destination)
         protected_target = TEST_HOME / "protected.png"
         protected_target.write_bytes(b"preserve protected content")
-        race_destination.symlink_to(protected_target)
+
+        def add_destination_symlink(temporary):
+            race_destination.symlink_to(protected_target)
+            temporary.write_bytes(b"new screenshot")
+
         self.assertTrue(
-            helper._write_atomically(
-                checked_destination,
-                lambda temporary: temporary.write_bytes(b"new screenshot"),
-            )
+            helper._write_atomically(checked_destination, add_destination_symlink)
         )
         self.assertFalse(race_destination.is_symlink())
         self.assertEqual(race_destination.read_bytes(), b"new screenshot")
