@@ -2684,8 +2684,8 @@ def install_service():
     svc.write_text(f"""[Unit]
 Description=Padfire Soundboard
 PartOf=graphical-session.target
-After=graphical-session.target pipewire.service wireplumber.service
-Wants=pipewire.service wireplumber.service
+After=graphical-session.target pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
 
 [Service]
 Type=simple
