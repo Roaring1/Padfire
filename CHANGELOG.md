@@ -18,7 +18,9 @@
 - **Portable audio defaults.** Removed the `vm_game` and specific Astro headset
   defaults. New installs use the active PipeWire/PulseAudio default sink; an
   explicit saved sink is kept when available and falls back to the user's
-  default when it is not. Both sink selectors include `System default`.
+  default when it is not. Both sink selectors include `System default`. The
+  user service also orders startup after `pipewire-pulse.service` when present,
+  so `paplay` does not race the PulseAudio compatibility server.
 - **Low idle overhead.** The VU worker sleeps at 250 ms while idle and performs
   no sink discovery or capture subprocess work until Padfire is playing.
   System-default sink discovery is cached for five seconds while active.

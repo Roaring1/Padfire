@@ -603,6 +603,21 @@ class PadfireCoreTests(unittest.TestCase):
             padfire.HOME = original_home
         self.assertFalse(autostart.exists())
 
+    def test_user_service_orders_after_pipewire_pulse(self):
+        required_after = (
+            "After=graphical-session.target pipewire.service "
+            "pipewire-pulse.service wireplumber.service"
+        )
+        required_wants = "Wants=pipewire.service pipewire-pulse.service wireplumber.service"
+        sources = (
+            (ROOT / "packaging" / "padfire.service").read_text(encoding="utf-8"),
+            (ROOT / "padfire.py").read_text(encoding="utf-8"),
+        )
+        for source in sources:
+            with self.subTest(source="service template"):
+                self.assertIn(required_after, source)
+                self.assertIn(required_wants, source)
+
     def test_padfire_has_no_hearth_runtime_coupling_or_footer_widgets(self):
         source = (ROOT / "padfire.py").read_text(encoding="utf-8")
         self.assertNotIn("Hearth", source)
