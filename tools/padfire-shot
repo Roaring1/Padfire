@@ -34,57 +34,55 @@ def safe_output_path(raw):
     """Resolve an explicit screenshot target inside HOME or the temp directory.
 
     The CLI accepts a user-selected destination, but it must not be able to
-    escape these ordinary output roots or overwrite a symlink, hard link,
-    special file, or file owned by another user.
+    escape these ordinary output roots or overwrite a hard link, special file,
+    or file owned by another user.
     """
     value = os.fspath(raw)
     if not value or "\\x00" in value:
         raise ValueError("Screenshot output path is empty or invalid")
 
-    requested = Path(value).expanduser()
-    if not requested.is_absolute():
-        requested = Path.cwd() / requested
-    if requested.name in ("", ".", ".."):
+    expanded = os.path.expanduser(value)
+    absolute = os.path.abspath(expanded)
+    filename = os.path.basename(absolute)
+    if filename in ("", ".", ".."):
         raise ValueError("Screenshot output must name a file")
-    if requested.is_symlink():
-        raise ValueError("Screenshot output must not be a symlink")
 
     roots = (
-        Path.home().resolve(),
-        Path(tempfile.gettempdir()).resolve(),
+        os.path.realpath(Path.home()),
+        os.path.realpath(tempfile.gettempdir()),
     )
 
     def contained(candidate):
-        normalized = os.path.realpath(os.fspath(candidate))
+        # Normalize before any Path construction or filesystem write. This
+        # follows parent symlinks and removes '..' before the root comparison.
+        normalized = os.path.realpath(candidate)
         for root in roots:
             try:
-                if os.path.commonpath((os.fspath(root), normalized)) == os.fspath(root):
-                    return Path(normalized)
+                if os.path.commonpath((root, normalized)) == root:
+                    return normalized
             except ValueError:
                 continue
         raise ValueError("Screenshot output must be inside HOME or the temp directory")
 
-    # realpath removes '..' segments and resolves any existing parent symlinks
-    # before the target is checked against the allow-listed roots.
-    target = contained(requested)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    target = contained(absolute)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
 
     # Re-resolve after creating the parent so a replaced/symlinked parent is
     # checked again before any screenshot or ImageMagick process writes there.
-    target = contained(target.parent.resolve() / target.name)
-    if target.is_symlink():
-        raise ValueError("Screenshot output must not be a symlink")
+    parent = os.path.realpath(os.path.dirname(target))
+    target = contained(os.path.join(parent, filename))
+    info = None
     try:
-        info = target.lstat()
+        info = os.lstat(target)
     except FileNotFoundError:
-        return target
+        return Path(target)
     if not stat.S_ISREG(info.st_mode):
         raise ValueError("Screenshot output must be a regular file")
     if info.st_nlink != 1:
         raise ValueError("Screenshot output must not be hard-linked")
     if hasattr(os, "getuid") and info.st_uid != os.getuid():
         raise PermissionError("Screenshot output is owned by another user")
-    return target
+    return Path(target)
 
 
 # ---------------------------------------------------------------- display

@@ -53,8 +53,13 @@ class PadfireCoreTests(unittest.TestCase):
         target.write_bytes(b"keep existing file")
         symlink = TEST_HOME / "output-symlink.png"
         symlink.symlink_to(target)
+        # A symlink is resolved before containment; an in-root target is safe.
+        self.assertEqual(helper.safe_output_path(symlink), target.resolve())
+
+        outside_target = TEST_HOME / "outside-target"
+        outside_target.symlink_to("/etc/passwd")
         with self.assertRaises(ValueError):
-            helper.safe_output_path(symlink)
+            helper.safe_output_path(outside_target)
 
         hardlink = TEST_HOME / "output-hardlink.png"
         os.link(target, hardlink)

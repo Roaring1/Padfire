@@ -44,8 +44,8 @@
   unlink arbitrary files or another live Padfire instance's socket.
 - **Contained screenshot outputs.** The visual audit tool normalizes output
   paths, restricts writes to the user's home or temp directory, and refuses
-  symlink, hard-link, special-file and foreign-owned targets (including
-  derived crop/scale images).
+  symlink escapes, hard links, special files and foreign-owned targets
+  (including derived crop/scale images).
 - **License and maintainer guidance.** Add the owner-selected MIT license for
   Padfire-authored source/docs, a security policy, contribution and manual
   acceptance guidance, a release checklist, and a deferred device-neutral MIDI
