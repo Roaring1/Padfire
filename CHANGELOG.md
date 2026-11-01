@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Script processes could outlive their pad or Padfire.** Stop, Stop All, retrigger, and Quit now invalidate pending script launches, terminate and reap registered processes, and signal the script's dedicated process group so child commands do not remain orphaned. A stale worker can no longer remove a newer process from the pad registry.
+- **VU capture could outlive Padfire.** The level-meter worker now exits on shutdown, terminates and reaps `parec`, and closes its output pipe on shutdown, EOF, sink changes, and read errors. Partial 16-bit PCM reads retain their trailing byte instead of losing sample alignment.
+- **Background service probes kept running during Quit.** The Hearth polling worker now has an interruptible shutdown wait and is joined during application exit.
+
 ## v2.3
 
 Audit-driven release. Every item below was reproduced before it was changed and

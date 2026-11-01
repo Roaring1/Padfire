@@ -5,7 +5,9 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +70,338 @@ class PadfireCoreTests(unittest.TestCase):
         found = engine._find(["Launchpad Mini MK3 MIDI 1", "Launchpad Mini MIDI 1"])
         self.assertEqual(found, "Launchpad Mini MIDI 1")
         self.assertIsNone(engine._find(["Launchpad Mini MK3 MIDI 1", "Other controller"]))
+
+    def _bare_app(self):
+        app = object.__new__(padfire.PadfireApp)
+
+        class FakeAudio:
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._procs = {}
+                self.stopped = False
+
+            def stop(self, _key):
+                pass
+
+            def stop_all(self):
+                self.stopped = True
+
+        app.audio = FakeAudio()
+        app.midi = None
+        app._shutdown_event = threading.Event()
+        app._script_procs = {}
+        app._script_generations = {}
+        app._script_threads = set()
+        app._proc_lock = threading.Lock()
+        app._led_dirty = False
+        app._vu_level = 0.0
+        app._vu_thread = None
+        app._rac_thread = None
+        app._ipc_ref = []
+        app._test_pad = {"action": "script", "cmd": "test-script"}
+        app._flash = lambda _row, _col: None
+        app._get_pad = lambda _row, _col: app._test_pad
+        app._pad_key = lambda _row, _col: "0:0"
+        app._vu_source = lambda: "vm_game.monitor"
+        return app
+
+    def _fake_process(self, communicate=None):
+        class FakeProcess:
+            def __init__(self):
+                self.returncode = None
+                self.terminated = False
+                self.killed = False
+                self.waited = False
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+
+            def wait(self, timeout=None):
+                self.waited = True
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                return communicate() if communicate else ("", None)
+
+        return FakeProcess()
+
+    def test_stop_cancels_script_still_starting_in_popen(self):
+        app = self._bare_app()
+        entered_popen = threading.Event()
+        release_popen = threading.Event()
+        process = self._fake_process()
+
+        def delayed_popen(*_args, **_kwargs):
+            entered_popen.set()
+            if not release_popen.wait(2):
+                raise TimeoutError("test did not release script Popen")
+            return process
+
+        with patch.object(padfire.subprocess, "Popen", side_effect=delayed_popen):
+            app._trigger_pad(0, 0)
+            self.assertTrue(entered_popen.wait(1), "script worker did not reach Popen")
+            with app._proc_lock:
+                workers = list(app._script_threads)
+            app._stop_key("0:0")
+            release_popen.set()
+            for worker in workers:
+                worker.join(timeout=2)
+
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.waited)
+        self.assertNotIn("0:0", app._script_procs)
+        self.assertFalse(app._script_threads)
+
+    def test_stop_all_cancels_script_still_starting_in_popen(self):
+        app = self._bare_app()
+        entered_popen = threading.Event()
+        release_popen = threading.Event()
+        process = self._fake_process()
+
+        def delayed_popen(*_args, **_kwargs):
+            entered_popen.set()
+            if not release_popen.wait(2):
+                raise TimeoutError("test did not release script Popen")
+            return process
+
+        with patch.object(padfire.subprocess, "Popen", side_effect=delayed_popen):
+            app._trigger_pad(0, 0)
+            self.assertTrue(entered_popen.wait(1), "script worker did not reach Popen")
+            with app._proc_lock:
+                workers = list(app._script_threads)
+            app._stop_script_processes()
+            release_popen.set()
+            for worker in workers:
+                worker.join(timeout=2)
+
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.waited)
+        self.assertNotIn("0:0", app._script_procs)
+        self.assertFalse(app._script_threads)
+
+    def test_quit_during_script_popen_terminates_late_process(self):
+        app = self._bare_app()
+        entered_popen = threading.Event()
+        release_popen = threading.Event()
+        process = self._fake_process()
+
+        def delayed_popen(*_args, **_kwargs):
+            entered_popen.set()
+            if not release_popen.wait(2):
+                raise TimeoutError("test did not release script Popen")
+            return process
+
+        with patch.object(padfire.subprocess, "Popen", side_effect=delayed_popen), patch.object(
+            padfire.Gtk, "main_quit"
+        ):
+            app._trigger_pad(0, 0)
+            self.assertTrue(entered_popen.wait(1), "script worker did not reach Popen")
+
+            def release_when_shutting_down():
+                if app._shutdown_event.wait(1):
+                    release_popen.set()
+
+            releaser = threading.Thread(target=release_when_shutting_down)
+            releaser.start()
+            app._quit()
+            releaser.join(timeout=1)
+
+        self.assertFalse(releaser.is_alive())
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.waited)
+        self.assertFalse(app._script_threads)
+        self.assertNotIn("0:0", app._script_procs)
+
+    def test_script_retrigger_keeps_new_process_registered_when_old_worker_finishes(self):
+        app = self._bare_app()
+        release_old = threading.Event()
+        release_new = threading.Event()
+        old_entered = threading.Event()
+        new_entered = threading.Event()
+
+        old_process = self._fake_process(lambda: (old_entered.set(), release_old.wait(2), ("", None))[-1])
+        new_process = self._fake_process(lambda: (new_entered.set(), release_new.wait(2), ("", None))[-1])
+
+        def open_script(command, **_kwargs):
+            return old_process if command == "old-script" else new_process
+
+        with patch.object(padfire.subprocess, "Popen", side_effect=open_script):
+            app._test_pad = {"action": "script", "cmd": "old-script"}
+            app._trigger_pad(0, 0)
+            self.assertTrue(old_entered.wait(1), "old script did not start")
+            with app._proc_lock:
+                old_workers = list(app._script_threads)
+
+            app._test_pad = {"action": "script", "cmd": "new-script"}
+            app._trigger_pad(0, 0)
+            self.assertTrue(new_entered.wait(1), "new script did not start")
+            self.assertTrue(old_process.terminated)
+            with app._proc_lock:
+                self.assertIs(app._script_procs.get("0:0"), new_process)
+                new_workers = list(app._script_threads)
+
+            release_old.set()
+            for worker in old_workers:
+                worker.join(timeout=1)
+            with app._proc_lock:
+                self.assertIs(
+                    app._script_procs.get("0:0"),
+                    new_process,
+                    "the old worker must not remove the newer process",
+                )
+
+            app._stop_script_processes()
+            release_new.set()
+            for worker in new_workers:
+                worker.join(timeout=1)
+
+        self.assertFalse(app._script_threads)
+        self.assertNotIn("0:0", app._script_procs)
+
+    def test_script_termination_targets_only_its_dedicated_process_group(self):
+        process = self._fake_process()
+        process.pid = 43210
+
+        with patch.object(padfire.os, "killpg") as killpg:
+            padfire._terminate_process(process, process_group=True)
+
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                ((43210, padfire.signal.SIGTERM),),
+                ((43210, padfire.signal.SIGKILL),),
+            ],
+        )
+        self.assertTrue(process.waited)
+
+    def test_script_process_group_kills_descendant_that_ignores_sigterm(self):
+        if os.name != "posix" or not Path("/proc").is_dir():
+            self.skipTest("requires Linux process groups and /proc")
+
+        code = (
+            "import subprocess,sys,time;"
+            "child=subprocess.Popen([sys.executable,'-c',"
+            "\"import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)\"]);"
+            "print(child.pid,flush=True); time.sleep(30)"
+        )
+        process = padfire.subprocess.Popen(
+            [padfire.sys.executable, "-c", code],
+            stdout=padfire.subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            line = process.stdout.readline()
+            self.assertTrue(line.strip(), "child process did not report its PID")
+            child_pid = int(line.strip())
+            padfire._terminate_process(process, timeout=0.5, process_group=True)
+            self.assertIsNotNone(process.poll(), "script process was not reaped")
+
+            state = None
+            for _ in range(40):
+                try:
+                    state = Path(f"/proc/{child_pid}/stat").read_text().split()[2]
+                except FileNotFoundError:
+                    state = None
+                if state is None or state == "Z":
+                    break
+                padfire.time.sleep(0.025)
+            self.assertIn(
+                state, (None, "Z"),
+                "child that ignored SIGTERM survived the process-group SIGKILL",
+            )
+        finally:
+            if process.poll() is None:
+                padfire._terminate_process(process, process_group=True)
+            if process.stdout is not None:
+                process.stdout.close()
+
+    def test_rac_probe_exits_promptly_when_shutdown_is_signalled(self):
+        app = self._bare_app()
+        probed = threading.Event()
+
+        def fake_rac_send(_command):
+            probed.set()
+            return "{}"
+
+        with patch.object(padfire, "rac_send", side_effect=fake_rac_send), patch.object(
+            padfire.GLib, "idle_add"
+        ):
+            app._start_rac_probe()
+            self.assertTrue(probed.wait(1), "Hearth probe did not run")
+            app._shutdown_event.set()
+            app._rac_thread.join(timeout=1)
+
+        self.assertFalse(app._rac_thread.is_alive())
+
+    def test_vu_shutdown_terminates_reaps_and_closes_parec_pipe(self):
+        app = self._bare_app()
+        app.audio._procs = {"0:1": object()}
+        process_started = threading.Event()
+
+        class FakePipe:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        process = self._fake_process()
+        process.stdout = FakePipe()
+
+        def open_parec(*_args, **_kwargs):
+            process_started.set()
+            return process
+
+        def wait_for_shutdown(*_args, **_kwargs):
+            app._shutdown_event.wait(0.01)
+            return [], [], []
+
+        with patch.object(padfire.shutil, "which", return_value="/usr/bin/parec"), patch.object(
+            padfire.subprocess, "Popen", side_effect=open_parec
+        ), patch.object(padfire.select, "select", side_effect=wait_for_shutdown):
+            app._start_vu()
+            self.assertTrue(process_started.wait(1), "VU monitor did not start parec")
+            app._shutdown_event.set()
+            app._vu_thread.join(timeout=2)
+
+        self.assertFalse(app._vu_thread.is_alive())
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.waited)
+        self.assertTrue(process.stdout.closed)
+        self.assertEqual(app._vu_level, 0.0)
+
+    def test_quit_is_idempotent_and_stops_tracked_scripts(self):
+        app = self._bare_app()
+        process = self._fake_process()
+        app._script_procs["0:1"] = process
+
+        class FakeMidi:
+            def __init__(self):
+                self.stopped = False
+
+            def shutdown(self):
+                self.stopped = True
+
+        app.midi = FakeMidi()
+        with patch.object(padfire.Gtk, "main_quit") as main_quit:
+            app._quit()
+            app._quit()
+
+        self.assertTrue(app._shutdown_event.is_set())
+        self.assertTrue(app.audio.stopped)
+        self.assertTrue(app.midi.stopped)
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.waited)
+        main_quit.assert_called_once_with()
 
     def test_vu_source_tracks_selected_monitor_or_default_sink(self):
         app = object.__new__(padfire.PadfireApp)  # method only reads cfg; no UI/thread startup
