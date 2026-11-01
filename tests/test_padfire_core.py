@@ -59,9 +59,9 @@ class PadfireCoreTests(unittest.TestCase):
         target.write_bytes(b"keep existing file")
         symlink = TEST_HOME / "output-symlink.png"
         symlink.symlink_to(target)
-        # Refuse final symlinks, even when their destination appears in-root.
-        with self.assertRaises(ValueError):
-            helper.safe_output_path(symlink)
+        # A final symlink is resolved and accepted only when its target stays
+        # inside the selected fixed output root.
+        self.assertEqual(helper.safe_output_path(symlink), target.resolve())
 
         outside_target = TEST_HOME / "outside-target"
         outside_target.symlink_to("/etc/passwd")
