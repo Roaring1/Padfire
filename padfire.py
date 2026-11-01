@@ -280,6 +280,51 @@ def crosshair_toggle_argv():
     return None
 
 
+def _signal_process(proc, sig, *, process_group=False):
+    """Signal a child, or its dedicated process group when it owns one."""
+    if process_group and os.name == "posix":
+        pid = getattr(proc, "pid", None)
+        if pid:
+            try:
+                os.killpg(pid, sig)
+                return
+            except ProcessLookupError:
+                return
+            except OSError:
+                pass
+    try:
+        if sig == signal.SIGTERM:
+            proc.terminate()
+        else:
+            proc.kill()
+    except Exception:
+        pass
+
+
+def _terminate_process(proc, timeout=0.5, *, process_group=False):
+    """Terminate and reap a tracked child without leaving a zombie behind."""
+    try:
+        if proc.poll() is None:
+            _signal_process(proc, signal.SIGTERM, process_group=process_group)
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _signal_process(proc, signal.SIGKILL, process_group=process_group)
+        try:
+            proc.wait(timeout=timeout)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    else:
+        # The shell may exit on SIGTERM while a child ignores it. The process
+        # group is still ours, so clear any remaining descendants after grace.
+        if process_group:
+            _signal_process(proc, signal.SIGKILL, process_group=True)
+
+
 # audio engine -- paplay subprocess, no PortAudio
 
 class AudioEngine:
@@ -445,6 +490,7 @@ class MidiEngine:
 
     def try_connect(self):
         with self._conn_lock:
+            if not self._running: return False
             if self._connected: return True
             try:
                 inn  = self._find(mido.get_input_names())
@@ -499,7 +545,10 @@ class MidiEngine:
     def _reconnect_loop(self):
         while self._running:
             time.sleep(2)
-            if not self._connected: self.try_connect()
+            if not self._running:
+                break
+            if not self._connected:
+                self.try_connect()
 
     def _read_loop(self):
         while self._running:
@@ -1049,7 +1098,13 @@ class PadfireApp:
         self._vu_level    = 0.0
         self._vu_ok       = True
         self._script_procs: dict = {}
+        self._script_generations: dict[str, int] = {}
+        self._script_threads: set[threading.Thread] = set()
+        self._script_reapers: set[threading.Thread] = set()
         self._proc_lock   = threading.Lock()
+        self._shutdown_event = threading.Event()
+        self._rac_thread: threading.Thread | None = None
+        self._vu_thread: threading.Thread | None = None
         self._pad_labels: dict = {}
         self._pad_state:  dict = {}
         self._file_ok:    dict = {}
@@ -1155,35 +1210,97 @@ class PadfireApp:
     # script state
 
     def _script_on(self, key, pad):
-        with self._proc_lock: proc = self._script_procs.get(key)
+        with self._proc_lock:
+            proc = self._script_procs.get(key)
         if proc is not None:
-            if proc.poll() is None: return True
-            with self._proc_lock: self._script_procs.pop(key, None)
-        pid_file = pad.get("pid_file","").strip()
-        if not pid_file: return False
+            if proc.poll() is None:
+                return True
+            with self._proc_lock:
+                if self._script_procs.get(key) is proc:
+                    self._script_procs.pop(key, None)
+        pid_file = pad.get("pid_file", "").strip()
+        if not pid_file:
+            return False
         try:
             pp = Path(pid_file)
-            if not pp.exists(): return False
+            if not pp.exists():
+                return False
             for pid_s in pp.read_text().split():
                 try:
-                    os.kill(int(pid_s), 0); return True
-                except (ProcessLookupError, ValueError, OSError): pass
-        except Exception: pass
+                    os.kill(int(pid_s), 0)
+                    return True
+                except (ProcessLookupError, ValueError, OSError):
+                    pass
+        except Exception:
+            pass
         return False
+
+    @staticmethod
+    def _reap_script_processes(processes):
+        for proc in processes:
+            _terminate_process(proc, timeout=0.5, process_group=True)
+
+    def _reap_script_processes_async(self, processes):
+        try:
+            self._reap_script_processes(processes)
+        finally:
+            with self._proc_lock:
+                self._script_reapers.discard(threading.current_thread())
+
+    def _stop_script_processes(self, keys=None, *, wait=True):
+        """Invalidate pending launches and stop every tracked script process."""
+        processes = []
+        tokens = {}
+        with self._proc_lock:
+            targets = (
+                set(self._script_generations) | set(self._script_procs)
+                if keys is None else set(keys)
+            )
+            for key in targets:
+                generation = self._script_generations.get(key, 0) + 1
+                self._script_generations[key] = generation
+                tokens[key] = generation
+                proc = self._script_procs.pop(key, None)
+                if proc is not None:
+                    processes.append(proc)
+        # Signal all children first so several scripts do not each consume a
+        # full timeout serially; then reap/force-kill any that ignore SIGTERM.
+        for proc in processes:
+            try:
+                if proc.poll() is None:
+                    _signal_process(proc, signal.SIGTERM, process_group=True)
+            except Exception:
+                pass
+        if processes:
+            if wait:
+                self._reap_script_processes(processes)
+            else:
+                reaper = threading.Thread(
+                    target=self._reap_script_processes_async,
+                    args=(processes,),
+                    daemon=True,
+                    name="padfire-script-reaper",
+                )
+                with self._proc_lock:
+                    self._script_reapers.add(reaper)
+                    try:
+                        reaper.start()
+                    except Exception:
+                        self._script_reapers.discard(reaper)
+                        self._reap_script_processes(processes)
+        return tokens
 
     def _stop_key(self, key):
         self.audio.stop(key)
-        with self._proc_lock: proc = self._script_procs.pop(key, None)
-        if proc is not None and proc.poll() is None:
-            try: proc.terminate(); proc.wait(timeout=2)
-            except Exception:
-                try: proc.kill()
-                except Exception: pass
+        self._stop_script_processes((key,))
         self._led_dirty = True
 
     # pad trigger
 
     def _trigger_pad(self, row, col):
+        shutdown_event = getattr(self, "_shutdown_event", None)
+        if shutdown_event is not None and shutdown_event.is_set():
+            return False
         self._flash(row, col)
         pad = self._get_pad(row, col)
         if not pad: return False
@@ -1197,16 +1314,15 @@ class PadfireApp:
             self._led_dirty = True; return False
 
         if action == "stop_all":
+            # Invalidate script starts synchronously in the callback; process
+            # reaping and audio stop can finish on workers without a new script
+            # slipping in between the pad press and the worker starting.
+            self._stop_script_processes(wait=False)
+
             def _all():
                 self.audio.stop_all()
-                with self._proc_lock: _items = list(self._script_procs.items())
-                for k, proc in _items:
-                    try: proc.terminate(); proc.wait(timeout=2)
-                    except Exception:
-                        try: proc.kill()
-                        except Exception: pass
-                with self._proc_lock: self._script_procs.clear()
                 self._led_dirty = True
+
             threading.Thread(target=_all, daemon=True).start()
             self._led_dirty = True; return False
 
@@ -1243,13 +1359,40 @@ class PadfireApp:
             return False
 
         if action == "script":
-            cmd = pad.get("cmd","").strip()
-            if not cmd: return False
+            cmd = pad.get("cmd", "").strip()
+            if not cmd:
+                return False
+            # A pad owns at most one script. Retriggering stops its previous
+            # process and invalidates a launch that has not registered yet.
+            tokens = self._stop_script_processes((key,), wait=False)
+            generation = tokens[key]
+
             def _run():
+                proc = None
                 try:
-                    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
-                                            stderr=subprocess.STDOUT, text=True, bufsize=1)
-                    with self._proc_lock: self._script_procs[key] = proc
+                    with self._proc_lock:
+                        if (
+                            self._shutdown_event.is_set()
+                            or self._script_generations.get(key) != generation
+                        ):
+                            return
+                    proc = subprocess.Popen(
+                        cmd, shell=True, stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT, text=True, bufsize=1,
+                        start_new_session=(os.name == "posix"),
+                    )
+                    with self._proc_lock:
+                        current = (
+                            not self._shutdown_event.is_set()
+                            and self._script_generations.get(key) == generation
+                        )
+                        if current:
+                            self._script_procs[key] = proc
+                    if not current:
+                        _terminate_process(
+                            proc, process_group=(os.name == "posix")
+                        )
+                        return
                     self._led_dirty = True
                     out, _ = proc.communicate(timeout=600)
                     if out:
@@ -1257,13 +1400,34 @@ class PadfireApp:
                             print(f"[script] {line}")
                 except subprocess.TimeoutExpired:
                     print(f"[script] {key}: timeout")
-                    try: proc.kill()
-                    except Exception: pass
-                except Exception as e: print(f"[script] {key}: {e}")
+                    if proc is not None:
+                        _terminate_process(
+                            proc, process_group=(os.name == "posix")
+                        )
+                except Exception as e:
+                    print(f"[script] {key}: {e}")
                 finally:
-                    with self._proc_lock: self._script_procs.pop(key, None)
+                    with self._proc_lock:
+                        if proc is not None and self._script_procs.get(key) is proc:
+                            self._script_procs.pop(key, None)
+                        self._script_threads.discard(threading.current_thread())
                     self._led_dirty = True
-            threading.Thread(target=_run, daemon=True).start()
+
+            worker = threading.Thread(
+                target=_run, daemon=True, name=f"script-{key}"
+            )
+            with self._proc_lock:
+                if (
+                    self._shutdown_event.is_set()
+                    or self._script_generations.get(key) != generation
+                ):
+                    return False
+                self._script_threads.add(worker)
+                try:
+                    worker.start()
+                except Exception as exc:
+                    self._script_threads.discard(worker)
+                    print(f"[script] {key}: could not start worker: {exc}")
             return False
 
         # play
@@ -1540,8 +1704,10 @@ class PadfireApp:
 
     def _start_rac_probe(self):
         def probe():
-            while True:
+            while not self._shutdown_event.is_set():
                 raw = rac_send("get_sinks")
+                if self._shutdown_event.is_set():
+                    break
                 try:
                     data = json.loads(raw) if raw else None
                 except Exception as e:
@@ -1551,8 +1717,13 @@ class PadfireApp:
                     data = None
                 self._rac_online = data is not None
                 GLib.idle_add(self._update_rac, data)
-                time.sleep(3)
-        threading.Thread(target=probe, daemon=True, name="rac-probe").start()
+                if self._shutdown_event.wait(3):
+                    break
+
+        self._rac_thread = threading.Thread(
+            target=probe, daemon=True, name="rac-probe"
+        )
+        self._rac_thread.start()
 
     # VU monitor
 
@@ -1581,57 +1752,101 @@ class PadfireApp:
             return
 
         def _mon():
-            RATE = 8000; proc = None; src = None; backoff = 0.0
-            while True:
-                playing = bool(self.audio._procs)
-                want = self._vu_source()
-                # tear down when idle, or when the configured sink changed
-                if proc is not None and (not playing or want != src):
-                    try: proc.terminate(); proc.wait(timeout=1)
+            RATE = 8000
+            proc = None
+            src = None
+            backoff = 0.0
+            pending = b""
+
+            def stop_capture():
+                nonlocal proc, src, pending
+                current = proc
+                proc = None
+                src = None
+                pending = b""
+                if current is None:
+                    return
+                _terminate_process(current)
+                pipe = getattr(current, "stdout", None)
+                if pipe is not None:
+                    try:
+                        pipe.close()
                     except Exception:
-                        try: proc.kill()
-                        except Exception: pass
-                    proc = None; src = None; self._vu_level = 0.0
-                if (playing and proc is None and want
-                        and time.monotonic() >= backoff):
-                    try:
-                        proc = subprocess.Popen(
-                            ["parec", f"--device={want}", "--channels=1",
-                             f"--rate={RATE}", "--format=s16le", "--raw",
-                             "--latency-msec=33"],
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            bufsize=0)
-                        src = want
-                    except Exception as e:
-                        proc = None; src = None
+                        pass
+
+            try:
+                while not self._shutdown_event.is_set():
+                    with self.audio._lock:
+                        playing = bool(self.audio._procs)
+                    want = self._vu_source()
+                    # Tear down when idle or when the configured sink changes.
+                    if proc is not None and (not playing or want != src):
+                        stop_capture()
+                        self._vu_level = 0.0
+                    if (
+                        playing and proc is None and want
+                        and time.monotonic() >= backoff
+                    ):
+                        try:
+                            proc = subprocess.Popen(
+                                ["parec", f"--device={want}", "--channels=1",
+                                 f"--rate={RATE}", "--format=s16le", "--raw",
+                                 "--latency-msec=33"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                bufsize=0,
+                            )
+                            src = want
+                            pending = b""
+                        except Exception as e:
+                            proc = None
+                            src = None
+                            backoff = time.monotonic() + 5.0
+                            print(f"[vu] parec failed ({e}) -- retrying in 5s")
+                    if proc is not None and proc.poll() is not None:
+                        # Reap exited processes and close their pipe before retry.
+                        stop_capture()
+                        self._vu_level = 0.0
                         backoff = time.monotonic() + 5.0
-                        print(f"[vu] parec failed ({e}) -- retrying in 5s")
-                if proc is not None and proc.poll() is not None:
-                    # parec exited (usually a sink name that does not exist).
-                    # v2.2 left proc non-None and the bar frozen at its last
-                    # value forever; reap it and zero the level instead.
-                    proc = None; src = None; self._vu_level = 0.0
-                    backoff = time.monotonic() + 5.0
-                if proc is not None:
-                    try:
-                        rdy, _, _ = select.select([proc.stdout], [], [], 0.05)
-                        if rdy:
-                            raw = proc.stdout.read(2048)
-                            if not raw:
-                                proc = None; src = None; self._vu_level = 0.0
-                                backoff = time.monotonic() + 5.0
-                                continue
-                            n = len(raw) // 2
-                            if n:
-                                samples = struct.unpack(f"<{n}h", raw[:n*2])
-                                rms = math.sqrt(sum(s*s for s in samples)/n)/32768.0
-                                db  = 20*math.log10(rms) if rms > 1e-7 else -96
-                                self._vu_level = max(0.0, min(1.0, (db+60)/60))
-                    except Exception: pass
-                else:
-                    self._vu_level = 0.0
-                    time.sleep(0.05)
-        threading.Thread(target=_mon, daemon=True, name="padfire-vu").start()
+                    if proc is not None:
+                        try:
+                            ready, _, _ = select.select([proc.stdout], [], [], 0.05)
+                            if ready:
+                                raw = proc.stdout.read(2048)
+                                if not raw:
+                                    stop_capture()
+                                    self._vu_level = 0.0
+                                    backoff = time.monotonic() + 5.0
+                                    continue
+                                # Keep an odd trailing byte for the next read:
+                                # PCM s16le samples must never lose alignment.
+                                data = pending + raw
+                                if len(data) % 2:
+                                    pending = data[-1:]
+                                    data = data[:-1]
+                                else:
+                                    pending = b""
+                                count = len(data) // 2
+                                if count:
+                                    samples = struct.unpack(f"<{count}h", data)
+                                    rms = math.sqrt(sum(s * s for s in samples) / count) / 32768.0
+                                    db = 20 * math.log10(rms) if rms > 1e-7 else -96
+                                    self._vu_level = max(0.0, min(1.0, (db + 60) / 60))
+                        except Exception as e:
+                            print(f"[vu] capture read failed: {e}")
+                            stop_capture()
+                            self._vu_level = 0.0
+                            backoff = time.monotonic() + 5.0
+                    else:
+                        self._vu_level = 0.0
+                        self._shutdown_event.wait(0.05)
+            finally:
+                stop_capture()
+                self._vu_level = 0.0
+
+        self._vu_thread = threading.Thread(
+            target=_mon, daemon=True, name="padfire-vu"
+        )
+        self._vu_thread.start()
 
     # IPC
 
@@ -2064,13 +2279,56 @@ class PadfireApp:
         return False
 
     def _quit(self, *_):
-        if self.midi: self.midi.shutdown()
+        if self._shutdown_event.is_set():
+            return False
+        self._shutdown_event.set()
+        if self.midi:
+            self.midi.shutdown()
         self.audio.stop_all()
+        self._stop_script_processes()
+
+        # Join script workers that may still be returning from Popen or
+        # communicate(); generation invalidation above makes late Popen
+        # completions terminate their child instead of registering it.
+        with self._proc_lock:
+            script_threads = list(self._script_threads)
+        deadline = time.monotonic() + 1.5
+        for thread in script_threads:
+            if thread is threading.current_thread():
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
+
+        # Retrigger and Stop All use a non-blocking reaper so their input
+        # callbacks stay responsive. Quit owns those workers and waits for
+        # their bounded process-group cleanup before leaving the main loop.
+        with self._proc_lock:
+            reaper_threads = list(self._script_reapers)
+        for thread in reaper_threads:
+            if thread is threading.current_thread():
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
+
+        # The VU worker owns a parec subprocess and the Hearth probe owns a
+        # long-lived polling loop. Both observe _shutdown_event and clean up.
+        for thread in (self._vu_thread, self._rac_thread):
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=1.5)
+
         for srv in self._ipc_ref:
-            try: srv.close()
-            except Exception: pass
-        Path(SOCK).unlink(missing_ok=True); Path(PIDF).unlink(missing_ok=True)
-        Gtk.main_quit(); return False
+            try:
+                srv.close()
+            except Exception:
+                pass
+        Path(SOCK).unlink(missing_ok=True)
+        Path(PIDF).unlink(missing_ok=True)
+        Gtk.main_quit()
+        return False
 
     def run(self):
         signal.signal(signal.SIGTERM, lambda *_: GLib.idle_add(self._quit))
