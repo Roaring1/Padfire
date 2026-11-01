@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fast Padfire v2.3 regression checks; never opens MIDI/audio or real user config."""
+"""Hardware-free Padfire core regressions; never opens real MIDI/audio or user config."""
 import importlib.util
 import json
 import os
@@ -28,6 +28,203 @@ class PadfireCoreTests(unittest.TestCase):
         self.config_dir.mkdir(parents=True, exist_ok=True)
         padfire.CFGDIR = self.config_dir
         padfire.CONF = str(self.config_dir / "padfire.json")
+
+    def test_release_version_changelog_and_license_are_consistent(self):
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertEqual(padfire.VER, "2.4.0")
+        self.assertIn(f"## v{padfire.VER}", changelog)
+        self.assertTrue(license_text.startswith("MIT License\n"))
+        self.assertIn("Copyright (c) 2026 Roaring1", license_text)
+        self.assertIn("[LICENSE](LICENSE)", readme)
+        self.assertTrue((ROOT / "SECURITY.md").is_file())
+        self.assertTrue((ROOT / "ROADMAP.md").is_file())
+        self.assertTrue((ROOT / "CONTRIBUTING.md").is_file())
+        self.assertTrue((ROOT / "RELEASING.md").is_file())
+
+    def test_manual_launchpad_smoke_matches_supported_protocol_and_excludes_mk3(self):
+        import importlib.util
+
+        helper_path = ROOT / "packaging" / "extra-scripts" / "padfire_test.py"
+        helper_spec = importlib.util.spec_from_file_location("padfire_manual_smoke", helper_path)
+        self.assertIsNotNone(helper_spec)
+        helper = importlib.util.module_from_spec(helper_spec)
+        helper_spec.loader.exec_module(helper)
+
+        self.assertTrue(helper.is_supported_port("Launchpad Mini MIDI 1"))
+        self.assertTrue(helper.is_supported_port("Launchpad Mini MK2 MIDI 1"))
+        self.assertFalse(helper.is_supported_port("Launchpad Mini MK3 MIDI 1"))
+        self.assertFalse(helper.is_supported_port("Other MIDI Controller"))
+        for color in (
+            helper.LED_OFF, helper.LED_DIM, helper.LED_GREEN, helper.LED_RED,
+            helper.LED_ORANGE, helper.LED_AMBER,
+        ):
+            self.assertEqual(color & 0x0C, 0x0C)
+
+    def test_manual_launchpad_smoke_refuses_to_compete_with_live_padfire(self):
+        import socket
+        import json
+        import importlib.util
+
+        helper_path = ROOT / "packaging" / "extra-scripts" / "padfire_test.py"
+        helper_spec = importlib.util.spec_from_file_location("padfire_manual_smoke_live", helper_path)
+        helper = importlib.util.module_from_spec(helper_spec)
+        helper_spec.loader.exec_module(helper)
+
+        socket_path = TEST_HOME / "manual-smoke-live.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(socket_path))
+        server.listen(1)
+
+        def respond():
+            conn, _ = server.accept()
+            with conn:
+                self.assertEqual(conn.recv(128), b"status\n")
+                conn.sendall(json.dumps({"connected": True, "version": "2.4.0"}).encode() + b"\n")
+
+        worker = threading.Thread(target=respond, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(helper.padfire_is_running(socket_path))
+        finally:
+            server.close()
+            worker.join(timeout=1)
+
+    def test_manual_launchpad_smoke_refuses_non_socket_ipc_path(self):
+        import importlib.util
+
+        helper_path = ROOT / "packaging" / "extra-scripts" / "padfire_test.py"
+        helper_spec = importlib.util.spec_from_file_location("padfire_manual_smoke_bad_path", helper_path)
+        helper = importlib.util.module_from_spec(helper_spec)
+        helper_spec.loader.exec_module(helper)
+
+        path = TEST_HOME / "manual-smoke-not-a-socket"
+        path.write_text("do not open or replace")
+        self.assertIsNone(helper.padfire_is_running(path))
+        self.assertEqual(path.read_text(), "do not open or replace")
+
+    def test_restart_helper_gracefully_restarts_only_its_own_instance(self):
+        import subprocess
+        import tempfile
+        import signal
+
+        helper = ROOT / "packaging" / "extra-scripts" / "padfire-restart.sh"
+        with tempfile.TemporaryDirectory(prefix="padfire-restart-test-") as raw_dir:
+            temp_dir = Path(raw_dir)
+            state_file = temp_dir / "dummy.pid"
+            dummy_python = temp_dir / "dummy_padfire.py"
+            dummy_launcher = temp_dir / "dummy_padfire-launch"
+            log_file = temp_dir / "padfire.log"
+
+            dummy_python.write_text(
+                """import signal, sys, time
+from pathlib import Path
+state = Path(sys.argv[1])
+state.write_text(str(__import__('os').getpid()))
+def stop(*_):
+    state.unlink(missing_ok=True)
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, stop)
+while True:
+    time.sleep(0.1)
+""",
+                encoding="utf-8",
+            )
+            dummy_launcher.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+state="$PADFIRE_TEST_STATE"
+case "${1:-}" in
+  --status)
+    if [[ -f "$state" ]]; then
+      pid="$(cat "$state")"
+      if kill -0 "$pid" 2>/dev/null; then
+        echo '{"connected":false,"version":"test"}'
+        exit 0
+      fi
+    fi
+    echo '{"running":false}'
+    ;;
+  --quit)
+    if [[ -f "$state" ]]; then kill "$(cat "$state")" 2>/dev/null || true; fi
+    echo "ok"
+    ;;
+  *) exec python3 "$PADFIRE_PY" "$state" ;;
+esac
+""",
+                encoding="utf-8",
+            )
+            dummy_launcher.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(temp_dir),
+                "PADFIRE_PY": str(dummy_python),
+                "PADFIRE_LAUNCH": str(dummy_launcher),
+                "PADFIRE_LOG": str(log_file),
+                "PADFIRE_TEST_STATE": str(state_file),
+            })
+            sentinel = subprocess.Popen(["sleep", "30"])
+            first = subprocess.Popen(
+                [str(dummy_launcher)], env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            restarted_pid = None
+            try:
+                deadline = padfire.time.monotonic() + 3
+                while not state_file.exists() and padfire.time.monotonic() < deadline:
+                    padfire.time.sleep(0.01)
+                self.assertTrue(state_file.exists(), "dummy Padfire failed to start")
+
+                result = subprocess.run(
+                    ["bash", str(helper)], env=env, capture_output=True,
+                    text=True, timeout=8, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Padfire is running.", result.stdout)
+                self.assertTrue(state_file.exists(), "restart helper did not relaunch Padfire")
+                restarted_pid = int(state_file.read_text())
+                self.assertNotEqual(restarted_pid, first.pid)
+                self.assertIsNone(sentinel.poll(), "restart helper affected an unrelated process")
+                self.assertEqual(padfire.stat.S_IMODE(log_file.stat().st_mode), 0o600)
+
+            finally:
+                if state_file.exists():
+                    try:
+                        subprocess.run(
+                            [str(dummy_launcher), "--quit"], env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            timeout=2, check=False,
+                        )
+                    except subprocess.TimeoutExpired:
+                        pass
+                try:
+                    first.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    first.terminate()
+                    first.wait(timeout=2)
+                if restarted_pid is not None:
+                    try:
+                        os.kill(restarted_pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                if sentinel.poll() is None:
+                    sentinel.terminate()
+                    sentinel.wait(timeout=2)
+
+    def test_restart_helper_never_uses_broad_kill_or_unlinks_ipc_socket(self):
+        helper = (ROOT / "packaging" / "extra-scripts" / "padfire-restart.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--quit", helper)
+        self.assertIn("is_running", helper)
+        self.assertIn("refusing to force-kill", helper)
+        self.assertIn("refusing to start a duplicate", helper)
+        self.assertNotIn("pkill -f", helper)
+        self.assertNotIn('rm -f "$SOCK"', helper)
+        self.assertIn('chmod 600 "$LOG"', helper)
 
     def test_migration_normalizes_legacy_config_and_preserves_toggle(self):
         old = {
@@ -91,6 +288,176 @@ class PadfireCoreTests(unittest.TestCase):
         self.assertEqual(json.loads(Path(padfire.CONF + ".bak").read_text()), first)
         self.assertFalse(Path(padfire.CONF + ".tmp").exists())
 
+    def test_config_and_backup_are_private_after_save(self):
+        first = {"version": 5, "command": "example --argument"}
+        second = {"version": 5, "command": "updated --argument"}
+        Path(padfire.CONF).write_text(json.dumps(first), encoding="utf-8")
+        Path(padfire.CONF).chmod(0o644)
+        padfire.CFGDIR.chmod(0o755)
+
+        padfire.save_config(second)
+
+        self.assertEqual(padfire.stat.S_IMODE(padfire.CFGDIR.stat().st_mode), 0o700)
+        self.assertEqual(padfire.stat.S_IMODE(Path(padfire.CONF).stat().st_mode), 0o600)
+        self.assertEqual(
+            padfire.stat.S_IMODE(Path(padfire.CONF + ".bak").stat().st_mode), 0o600
+        )
+        self.assertEqual(json.loads(Path(padfire.CONF).read_text()), second)
+        self.assertEqual(json.loads(Path(padfire.CONF + ".bak").read_text()), first)
+        self.assertEqual(padfire.load_config()["command"], "updated --argument")
+
+    def test_config_directory_refuses_symlinked_directory(self):
+        target = self.config_dir / "real-config"
+        target.mkdir()
+        link = self.config_dir / "linked-config"
+        link.symlink_to(target, target_is_directory=True)
+
+        with patch.object(padfire, "CFGDIR", link):
+            with self.assertRaises(PermissionError):
+                padfire._ensure_private_config_dir()
+
+        self.assertTrue(target.is_dir())
+        self.assertTrue(link.is_symlink())
+
+    def test_config_file_size_is_bounded(self):
+        path = Path(padfire.CONF)
+        with open(path, "wb") as stream:
+            stream.truncate(padfire.MAX_CONFIG_BYTES + 1)
+
+        config = padfire.load_config()
+
+        self.assertEqual(config["version"], padfire.CONFIG_VERSION)
+        self.assertEqual(path.stat().st_size, padfire.MAX_CONFIG_BYTES + 1)
+
+    def test_save_refuses_oversized_config_without_replacing_valid_file(self):
+        valid = {"version": 5, "label": "valid config"}
+        padfire.save_config(valid)
+        previous = Path(padfire.CONF).read_bytes()
+        too_large = {
+            "version": 5,
+            "pages": [{} for _ in range(8)],
+            "notes": "x" * (padfire.MAX_CONFIG_BYTES + 1),
+        }
+
+        with self.assertRaises(ValueError):
+            padfire.save_config(too_large)
+
+        self.assertEqual(Path(padfire.CONF).read_bytes(), previous)
+
+    def test_load_config_refuses_special_files_without_blocking(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("FIFO security check is POSIX-only")
+        os.mkfifo(padfire.CONF)
+        config = padfire.load_config()
+        self.assertEqual(config["version"], padfire.CONFIG_VERSION)
+        self.assertTrue(Path(padfire.CONF).is_fifo())
+
+    def test_load_config_refuses_hardlinked_config_without_chmodding_other_path(self):
+        target = self.config_dir / "shared.json"
+        target.write_text(json.dumps({"version": 5, "label": "shared"}), encoding="utf-8")
+        target.chmod(0o644)
+        os.link(target, Path(padfire.CONF))
+
+        config = padfire.load_config()
+
+        self.assertEqual(config["version"], padfire.CONFIG_VERSION)
+        self.assertEqual(padfire.stat.S_IMODE(target.stat().st_mode), 0o644)
+        self.assertEqual(target.stat().st_nlink, 2)
+        self.assertEqual(json.loads(target.read_text())["label"], "shared")
+
+    def test_load_config_refuses_symlinked_config_file(self):
+        target = self.config_dir / "outside.json"
+        target.write_text(json.dumps({"version": 5, "secret": "must not load"}))
+        Path(padfire.CONF).symlink_to(target)
+
+        config = padfire.load_config()
+
+        self.assertEqual(config["version"], padfire.CONFIG_VERSION)
+        self.assertNotIn("secret", config)
+        self.assertTrue(Path(padfire.CONF).is_symlink())
+        self.assertIn("secret", json.loads(target.read_text()))
+
+    def test_save_config_replaces_symlink_without_modifying_target(self):
+        target = self.config_dir / "outside.json"
+        original = {"version": 5, "secret": "keep this untouched"}
+        target.write_text(json.dumps(original))
+        Path(padfire.CONF).symlink_to(target)
+        replacement = {"version": 5, "pages": [{} for _ in range(8)]}
+
+        padfire.save_config(replacement)
+
+        self.assertFalse(Path(padfire.CONF).is_symlink())
+        self.assertEqual(json.loads(Path(padfire.CONF).read_text()), replacement)
+        self.assertEqual(json.loads(target.read_text()), original)
+        self.assertEqual(padfire.stat.S_IMODE(Path(padfire.CONF).stat().st_mode), 0o600)
+
+    def test_ipc_request_reader_accepts_bounded_newline_command(self):
+        left, right = padfire.socket.socketpair()
+        try:
+            command = "x" * padfire.IPC_MAX_REQUEST
+            right.sendall((command + "\n").encode())
+            self.assertEqual(padfire._read_ipc_request(left), command)
+        finally:
+            left.close()
+            right.close()
+
+    def test_ipc_request_reader_rejects_oversized_or_unterminated_input(self):
+        left, right = padfire.socket.socketpair()
+        try:
+            right.sendall(b"x" * (padfire.IPC_MAX_REQUEST + 1))
+            self.assertIsNone(padfire._read_ipc_request(left))
+        finally:
+            left.close()
+            right.close()
+
+        left, right = padfire.socket.socketpair()
+        try:
+            right.sendall(b"status")
+            right.shutdown(padfire.socket.SHUT_WR)
+            self.assertIsNone(padfire._read_ipc_request(left))
+        finally:
+            left.close()
+            right.close()
+
+    def test_ipc_server_uses_private_socket_and_does_not_evict_live_instance(self):
+        socket_path = TEST_HOME / "ipc-live.sock"
+        refs = []
+        second_refs = []
+        with patch.object(padfire, "SOCK", str(socket_path)):
+            server = threading.Thread(
+                target=padfire.ipc_serve, args=(lambda cmd: "reply:" + cmd, refs),
+                daemon=True,
+            )
+            server.start()
+            deadline = padfire.time.monotonic() + 2
+            while not socket_path.exists() and padfire.time.monotonic() < deadline:
+                padfire.time.sleep(0.01)
+            self.assertTrue(socket_path.exists())
+            self.assertEqual(padfire.stat.S_IMODE(socket_path.stat().st_mode), 0o600)
+
+            second = threading.Thread(
+                target=padfire.ipc_serve, args=(lambda cmd: "wrong", second_refs),
+                daemon=True,
+            )
+            second.start()
+            second.join(timeout=0.5)
+            self.assertFalse(second.is_alive())
+            self.assertEqual(second_refs, [])
+            self.assertEqual(padfire.ipc_send("status", str(socket_path)), "reply:status")
+
+            refs[0].close()
+            server.join(timeout=2)
+            self.assertFalse(server.is_alive())
+
+    def test_ipc_server_never_unlinks_a_regular_file_at_socket_path(self):
+        socket_path = TEST_HOME / "ipc.sock"
+        socket_path.write_text("preserve this file")
+        refs = []
+        with patch.object(padfire, "SOCK", str(socket_path)):
+            padfire.ipc_serve(lambda _cmd: "ok", refs)
+        self.assertEqual(socket_path.read_text(), "preserve this file")
+        self.assertEqual(refs, [])
+
     def test_corrupt_config_falls_back_to_safe_defaults(self):
         Path(padfire.CONF).write_text("{ broken json", encoding="utf-8")
         fallback = padfire.load_config()
@@ -103,6 +470,69 @@ class PadfireCoreTests(unittest.TestCase):
         found = engine._find(["Launchpad Mini MK3 MIDI 1", "Launchpad Mini MIDI 1"])
         self.assertEqual(found, "Launchpad Mini MIDI 1")
         self.assertIsNone(engine._find(["Launchpad Mini MK3 MIDI 1", "Other controller"]))
+
+    def test_system_default_selection_is_distinct_from_global_sink(self):
+        choices = [None, "output.main", "output.headphones"]
+        self.assertEqual(padfire._sink_from_selection(choices, 0), "")
+        self.assertEqual(padfire._sink_from_selection(choices, 1), "output.main")
+        self.assertEqual(padfire._sink_from_selection(choices, 2), "output.headphones")
+        self.assertEqual(padfire._sink_from_selection(choices, -1), "")
+        self.assertEqual(padfire._sink_from_selection(choices, 99), "")
+
+    def test_new_install_defaults_to_audio_server_output(self):
+        self.assertEqual(padfire.DEFAULT_CONFIG["default_sink"], "")
+        self.assertEqual(padfire.DEFAULT_CONFIG["monitor_sink"], "")
+
+    def test_audio_sink_resolution_falls_back_when_saved_sink_is_missing(self):
+        engine = object.__new__(padfire.AudioEngine)
+        engine._sinks = ["output.main", "output.secondary"]
+        self.assertEqual(engine._find_sink(""), "")
+        self.assertEqual(engine._find_sink("missing.saved.device"), "")
+        self.assertEqual(engine._find_sink("output.secondary"), "output.secondary")
+
+    def test_paplay_uses_server_default_without_empty_device_argument(self):
+        self.assertEqual(
+            padfire.AudioEngine._paplay_argv("", 32768, "/tmp/test.wav"),
+            ["paplay", "--volume=32768", "/tmp/test.wav"],
+        )
+        self.assertEqual(
+            padfire.AudioEngine._paplay_argv("output.main", 32768, "/tmp/test.wav"),
+            ["paplay", "--device=output.main", "--volume=32768", "/tmp/test.wav"],
+        )
+
+    def test_system_default_monitor_mirrors_only_when_route_differs(self):
+        class DeferredThread:
+            def __init__(self, target, args=(), daemon=None, name=None):
+                self.target = target
+                self.args = args
+                self.name = name
+
+            def start(self):
+                workers.append(self)
+
+        for pad_sink, monitor_sink, expected_workers in (
+            ("output.main", "", 2),
+            ("", "", 1),
+            ("output.main", None, 1),
+        ):
+            with self.subTest(
+                pad_sink=pad_sink, monitor_sink=monitor_sink
+            ):
+                engine = object.__new__(padfire.AudioEngine)
+                engine._procs = {}
+                engine._generations = {}
+                engine._lock = threading.Lock()
+                engine._sinks = ["output.main", "output.headphones"]
+                workers = []
+                with patch.object(padfire.threading, "Thread", DeferredThread):
+                    engine.play(
+                        "0:9", "/tmp/test.wav", pad_sink, 80, False,
+                        monitor_sink=monitor_sink,
+                    )
+                self.assertEqual(len(workers), expected_workers)
+                if expected_workers == 2:
+                    self.assertEqual(workers[1].args[0], "__mon__0:9")
+                    self.assertEqual(workers[1].args[1], "")
 
     def test_audio_stop_and_stop_all_invalidate_workers_not_started_yet(self):
         class DeferredThread:
@@ -122,11 +552,11 @@ class PadfireCoreTests(unittest.TestCase):
                 engine._procs = {}
                 engine._generations = {}
                 engine._lock = threading.Lock()
-                engine._sinks = ["vm_game"]
+                engine._sinks = ["test_sink"]
                 workers = []
                 with patch.object(padfire.threading, "Thread", DeferredThread):
                     with patch.object(padfire.subprocess, "Popen") as popen:
-                        engine.play("0:1", "/tmp/sound.wav", "vm_game", 80, False)
+                        engine.play("0:1", "/tmp/sound.wav", "test_sink", 80, False)
                         if stop_all:
                             engine.stop_all()
                         else:
@@ -166,11 +596,11 @@ class PadfireCoreTests(unittest.TestCase):
         engine._procs = {}
         engine._generations = {}
         engine._lock = threading.Lock()
-        engine._sinks = ["vm_game"]
+        engine._sinks = ["test_sink"]
         workers = []
         with patch.object(padfire.threading, "Thread", DeferredThread):
-            engine.play("0:2", "/tmp/old.wav", "vm_game", 80, False)
-            engine.play("0:2", "/tmp/new.wav", "vm_game", 80, False)
+            engine.play("0:2", "/tmp/old.wav", "test_sink", 80, False)
+            engine.play("0:2", "/tmp/new.wav", "test_sink", 80, False)
         self.assertEqual(len(workers), 2)
 
         with patch.object(padfire.subprocess, "Popen", return_value=FinishedProcess()) as popen:
@@ -203,7 +633,7 @@ class PadfireCoreTests(unittest.TestCase):
         engine._procs = {}
         engine._generations = {}
         engine._lock = threading.Lock()
-        engine._sinks = ["vm_game"]
+        engine._sinks = ["test_sink"]
         entered_popen = threading.Event()
         release_popen = threading.Event()
         process = PendingProcess()
@@ -222,7 +652,7 @@ class PadfireCoreTests(unittest.TestCase):
 
         with patch.object(padfire.threading, "Thread", side_effect=tracked_thread):
             with patch.object(padfire.subprocess, "Popen", side_effect=delayed_popen):
-                engine.play("0:3", "/tmp/racing.wav", "vm_game", 80, False)
+                engine.play("0:3", "/tmp/racing.wav", "test_sink", 80, False)
                 self.assertTrue(entered_popen.wait(1), "playback worker never reached Popen")
                 engine.stop("0:3")
                 release_popen.set()
@@ -233,6 +663,8 @@ class PadfireCoreTests(unittest.TestCase):
     def _bare_midi_engine(self):
         engine = object.__new__(padfire.MidiEngine)
         engine._in = engine._out = None
+        engine._input_name = engine._output_name = None
+        engine._last_presence_error = 0.0
         engine._out_lock = threading.Lock()
         engine._conn_lock = threading.Lock()
         engine._connected = False
@@ -292,6 +724,215 @@ class PadfireCoreTests(unittest.TestCase):
         engine._disconnect()
         self.assertTrue(output.closed)
         self.assertTrue(input_port.closed)
+
+    def test_midi_presence_check_disconnects_when_usb_ports_disappear(self):
+        class FakePort:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        engine = self._bare_midi_engine()
+        input_port = FakePort()
+        output_port = FakePort()
+        engine._in = input_port
+        engine._out = output_port
+        engine._input_name = "Launchpad Mini MIDI 1"
+        engine._output_name = "Launchpad Mini MIDI 1"
+        engine._connected = True
+        disconnect_events = []
+        engine._on_disconnect = lambda: disconnect_events.append(True)
+
+        with patch.object(padfire.mido, "get_input_names", return_value=[]), patch.object(
+            padfire.mido, "get_output_names", return_value=[]
+        ):
+            engine._check_connected_device()
+
+        self.assertFalse(engine.is_connected())
+        self.assertTrue(input_port.closed)
+        self.assertTrue(output_port.closed)
+        self.assertIsNone(engine._input_name)
+        self.assertIsNone(engine._output_name)
+        self.assertEqual(disconnect_events, [True])
+
+    def test_midi_presence_check_keeps_connection_on_transient_scan_error(self):
+        class FakePort:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        engine = self._bare_midi_engine()
+        input_port = FakePort()
+        output_port = FakePort()
+        engine._in = input_port
+        engine._out = output_port
+        engine._input_name = "Launchpad Mini MIDI 1"
+        engine._output_name = "Launchpad Mini MIDI 1"
+        engine._connected = True
+
+        with patch.object(
+            padfire.mido, "get_input_names", side_effect=OSError("ALSA restarting")
+        ):
+            engine._check_connected_device()
+
+        self.assertTrue(engine.is_connected())
+        self.assertFalse(input_port.closed)
+        self.assertFalse(output_port.closed)
+
+    def test_midi_reader_disconnects_when_input_iterator_ends_normally(self):
+        engine = self._bare_midi_engine()
+        input_port = type("EndedInput", (), {
+            "closed": False,
+            "__iter__": lambda _self: iter(()),
+            "close": lambda self: setattr(self, "closed", True),
+        })()
+        output_port = type("FakeOutput", (), {
+            "closed": False,
+            "close": lambda self: setattr(self, "closed", True),
+        })()
+        engine._in = input_port
+        engine._out = output_port
+        engine._input_name = engine._output_name = "Launchpad Mini MIDI 1"
+        engine._connected = True
+        engine._on_disconnect = lambda: engine._stop_event.set()
+
+        engine._read_loop()
+
+        self.assertFalse(engine.is_connected())
+        self.assertTrue(input_port.closed)
+        self.assertTrue(output_port.closed)
+
+    def test_midi_reconnect_watcher_checks_presence_while_connected(self):
+        engine = self._bare_midi_engine()
+        engine._connected = True
+
+        class ContinueUntilReconnect:
+            def __init__(self):
+                self.waits = []
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+                return False
+
+        stop = ContinueUntilReconnect()
+        engine._stop_event = stop
+
+        def device_went_away():
+            engine._connected = False
+
+        def reconnect_attempt():
+            engine._running = False
+
+        with patch.object(
+            engine, "_check_connected_device", side_effect=device_went_away
+        ) as check, patch.object(
+            engine, "try_connect", side_effect=reconnect_attempt
+        ) as reconnect:
+            engine._reconnect_loop()
+
+        self.assertEqual(stop.waits, [1.0, 1.0])
+        check.assert_called_once()
+        reconnect.assert_called_once()
+
+    def test_midi_watcher_reconnects_after_simulated_usb_unplug_and_replug(self):
+        class FakePort:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        engine = self._bare_midi_engine()
+        old_input = FakePort()
+        old_output = FakePort()
+        new_input = FakePort()
+        new_output = FakePort()
+        engine._in = old_input
+        engine._out = old_output
+        engine._input_name = engine._output_name = "Launchpad Mini MIDI 1"
+        engine._connected = True
+
+        events = []
+        engine._on_disconnect = lambda: events.append("disconnected")
+
+        def reconnected():
+            events.append("connected")
+            engine._running = False
+
+        engine._on_connect = reconnected
+        stop = type("Continue", (), {"wait": lambda _self, _seconds: False})()
+        engine._stop_event = stop
+
+        with patch.object(
+            padfire.mido, "get_input_names",
+            side_effect=[[], ["Launchpad Mini MIDI 2"]],
+        ), patch.object(
+            padfire.mido, "get_output_names",
+            side_effect=[[], ["Launchpad Mini MIDI 2"]],
+        ), patch.object(
+            padfire.mido, "open_output", return_value=new_output
+        ), patch.object(
+            padfire.mido, "open_input", return_value=new_input
+        ):
+            engine._reconnect_loop()
+
+        self.assertTrue(old_input.closed)
+        self.assertTrue(old_output.closed)
+        self.assertTrue(engine.is_connected())
+        self.assertIs(engine._in, new_input)
+        self.assertIs(engine._out, new_output)
+        self.assertEqual(engine._input_name, "Launchpad Mini MIDI 2")
+        self.assertEqual(engine._output_name, "Launchpad Mini MIDI 2")
+        self.assertEqual(events, ["disconnected", "connected"])
+
+    def test_midi_status_label_says_connected_or_disconnected(self):
+        class FakeStyleContext:
+            def __init__(self):
+                self.classes = set()
+
+            def remove_class(self, name):
+                self.classes.discard(name)
+
+            def add_class(self, name):
+                self.classes.add(name)
+
+        class FakeLabel:
+            def __init__(self):
+                self.text = ""
+                self.tooltip = ""
+                self.context = FakeStyleContext()
+
+            def set_text(self, value):
+                self.text = value
+
+            def set_tooltip_text(self, value):
+                self.tooltip = value
+
+            def get_style_context(self):
+                return self.context
+
+        class FakeMidi:
+            connected = True
+
+            def is_connected(self):
+                return self.connected
+
+        app = object.__new__(padfire.PadfireApp)
+        app.midi = FakeMidi()
+        app._midi_lbl = FakeLabel()
+
+        app._update_midi_lbl()
+        self.assertEqual(app._midi_lbl.text, "● Connected")
+        self.assertIn("connected", app._midi_lbl.tooltip.lower())
+        self.assertIn("midi-ok", app._midi_lbl.context.classes)
+
+        app.midi.connected = False
+        app._update_midi_lbl()
+        self.assertEqual(app._midi_lbl.text, "○ Disconnected")
+        self.assertIn("disconnected", app._midi_lbl.tooltip.lower())
+        self.assertIn("midi-bad", app._midi_lbl.context.classes)
 
     def test_midi_disconnect_closes_partial_handle_even_when_not_connected(self):
         class FakePort:
@@ -408,7 +1049,7 @@ class PadfireCoreTests(unittest.TestCase):
         generation = [3]
 
         self.assertFalse(padfire._play_editor_preview(
-            audio, "__test__", "clip.wav", "vm_game", 80, False,
+            audio, "__test__", "clip.wav", "test_sink", 80, False,
             cancelled, lock, 3, generation, stop_pending,
         ))
         audio.play.assert_not_called()
@@ -421,7 +1062,7 @@ class PadfireCoreTests(unittest.TestCase):
         generation = [4]
 
         self.assertFalse(padfire._play_editor_preview(
-            audio, "__test__", "clip.wav", "vm_game", 80, False,
+            audio, "__test__", "clip.wav", "test_sink", 80, False,
             cancelled, lock, 3, generation, stop_pending,
         ))
         audio.play.assert_not_called()
@@ -434,11 +1075,11 @@ class PadfireCoreTests(unittest.TestCase):
         generation = [3]
 
         self.assertTrue(padfire._play_editor_preview(
-            audio, "__test__", "clip.wav", "vm_music", 72, True,
+            audio, "__test__", "clip.wav", "monitor_output", 72, True,
             cancelled, lock, 3, generation, stop_pending,
         ))
         audio.play.assert_called_once_with(
-            "__test__", "clip.wav", "vm_music", 72, True
+            "__test__", "clip.wav", "monitor_output", 72, True
         )
 
     def test_editor_preview_cancel_waits_for_pending_worker_lock(self):
@@ -453,7 +1094,7 @@ class PadfireCoreTests(unittest.TestCase):
             target=lambda: (
                 entered.set(),
                 padfire._play_editor_preview(
-                    audio, "__test__", "clip.wav", "vm_game", 80, False,
+                    audio, "__test__", "clip.wav", "test_sink", 80, False,
                     cancelled, lock, 1, generation, stop_pending,
                 ),
             )
@@ -467,6 +1108,103 @@ class PadfireCoreTests(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
         audio.play.assert_not_called()
+
+    def test_executable_path_is_quoted_only_when_needed(self):
+        self.assertEqual(
+            padfire._quote_executable("/home/user/bin/padfire-launch"),
+            "/home/user/bin/padfire-launch",
+        )
+        self.assertEqual(
+            padfire._quote_executable("/home/user name/bin/padfire-launch"),
+            '"/home/user name/bin/padfire-launch"',
+        )
+
+    def test_desktop_installer_bundles_icon_and_rewrites_launcher_paths(self):
+        home = TEST_HOME / self._testMethodName
+        launcher = home / "bin dir" / "padfire-launch"
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o755)
+
+        autostart = home / ".config" / "autostart" / "padfire.desktop"
+        autostart.parent.mkdir(parents=True, exist_ok=True)
+        autostart.write_text(
+            "[Desktop Entry]\n"
+            "Exec=/old/home/bin/padfire-launch\n"
+            "Icon=/old/home/padfire.png\n"
+            "[Desktop Action quit]\n"
+            "Exec=/old/home/bin/padfire-launch --quit\n",
+            encoding="utf-8",
+        )
+
+        original_home = padfire.HOME
+        try:
+            padfire.HOME = home
+            with patch.object(padfire.shutil, "which", return_value=None):
+                desktop = padfire.install_desktop_integration(launcher)
+        finally:
+            padfire.HOME = original_home
+
+        self.assertEqual(desktop, home / ".local/share/applications/padfire.desktop")
+        installed = desktop.read_text(encoding="utf-8")
+        quoted_launcher = f'"{launcher}"'
+        self.assertIn(f"Exec={quoted_launcher}\n", installed)
+        self.assertIn(f"TryExec={quoted_launcher}\n", installed)
+        self.assertIn("Icon=padfire\n", installed)
+        self.assertIn(f"Exec={quoted_launcher} --quit\n", installed)
+        self.assertNotIn("/old/home", installed)
+
+        icon = home / ".local/share/icons/hicolor/scalable/apps/padfire.svg"
+        self.assertEqual(
+            icon.read_bytes(),
+            (ROOT / "packaging/icons/hicolor/scalable/apps/padfire.svg").read_bytes(),
+        )
+        autostart_text = autostart.read_text(encoding="utf-8")
+        self.assertIn(f"Exec={quoted_launcher} --quit\n", autostart_text)
+        self.assertIn("Icon=padfire\n", autostart_text)
+        self.assertFalse(desktop.with_name("padfire.desktop.tmp").exists())
+        self.assertFalse(icon.with_name("padfire.svg.tmp").exists())
+
+    def test_desktop_installer_does_not_create_autostart(self):
+        home = TEST_HOME / self._testMethodName
+        launcher = home / "bin" / "padfire-launch"
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        autostart = home / ".config" / "autostart" / "padfire.desktop"
+        original_home = padfire.HOME
+        try:
+            padfire.HOME = home
+            with patch.object(padfire.shutil, "which", return_value=None):
+                self.assertIsNotNone(padfire.install_desktop_integration(launcher))
+        finally:
+            padfire.HOME = original_home
+        self.assertFalse(autostart.exists())
+
+    def test_user_service_orders_after_pipewire_pulse(self):
+        required_after = (
+            "After=graphical-session.target pipewire.service "
+            "pipewire-pulse.service wireplumber.service"
+        )
+        required_wants = "Wants=pipewire.service pipewire-pulse.service wireplumber.service"
+        sources = (
+            (ROOT / "packaging" / "padfire.service").read_text(encoding="utf-8"),
+            (ROOT / "padfire.py").read_text(encoding="utf-8"),
+        )
+        for source in sources:
+            with self.subTest(source="service template"):
+                self.assertIn(required_after, source)
+                self.assertIn(required_wants, source)
+
+    def test_padfire_has_no_hearth_runtime_coupling_or_footer_widgets(self):
+        source = (ROOT / "padfire.py").read_text(encoding="utf-8")
+        self.assertNotIn("Hearth", source)
+        self.assertNotIn("rac.sock", source)
+        self.assertNotIn("_start_rac_probe", source)
+        self.assertNotIn("_rac_thread", source)
+        self.assertNotIn("statusbar", source)
+        self.assertLess(source.index('brand.pack_start(logo'), source.index('brand.pack_start(self._vu_bar, '))
+        self.assertLess(source.index('topbar.pack_start(brand'), source.index('topbar.pack_start(self._play_lbl,'))
 
     def _bare_app(self):
         app = object.__new__(padfire.PadfireApp)
@@ -494,13 +1232,12 @@ class PadfireCoreTests(unittest.TestCase):
         app._led_dirty = False
         app._vu_level = 0.0
         app._vu_thread = None
-        app._rac_thread = None
         app._ipc_ref = []
         app._test_pad = {"action": "script", "cmd": "test-script"}
         app._flash = lambda _row, _col: None
         app._get_pad = lambda _row, _col: app._test_pad
         app._pad_key = lambda _row, _col: "0:0"
-        app._vu_source = lambda: "vm_game.monitor"
+        app._vu_source = lambda: "test_sink.monitor"
         return app
 
     def _fake_process(self, communicate=None):
@@ -725,24 +1462,6 @@ class PadfireCoreTests(unittest.TestCase):
                 padfire._terminate_process(process, process_group=True)
             if process.stdout is not None:
                 process.stdout.close()
-
-    def test_rac_probe_exits_promptly_when_shutdown_is_signalled(self):
-        app = self._bare_app()
-        probed = threading.Event()
-
-        def fake_rac_send(_command):
-            probed.set()
-            return "{}"
-
-        with patch.object(padfire, "rac_send", side_effect=fake_rac_send), patch.object(
-            padfire.GLib, "idle_add"
-        ):
-            app._start_rac_probe()
-            self.assertTrue(probed.wait(1), "Hearth probe did not run")
-            app._shutdown_event.set()
-            app._rac_thread.join(timeout=1)
-
-        self.assertFalse(app._rac_thread.is_alive())
 
     def test_vu_shutdown_terminates_reaps_and_closes_parec_pipe(self):
         app = self._bare_app()
@@ -1056,14 +1775,103 @@ class PadfireCoreTests(unittest.TestCase):
 
     def test_vu_source_tracks_selected_monitor_or_default_sink(self):
         app = object.__new__(padfire.PadfireApp)  # method only reads cfg; no UI/thread startup
-        app.cfg = {"monitor_enabled": True, "monitor_sink": "vm_music", "default_sink": "vm_game"}
-        self.assertEqual(app._vu_source(), "vm_music.monitor")
+        class FakeAudio:
+            available = {"monitor_output", "test_sink", "alsa_output.example"}
+
+            def _find_sink(self, name):
+                return name if name in self.available else ""
+
+        app.audio = FakeAudio()
+        app._system_default_sink_cache = ""
+        app._system_default_sink_checked = 0.0
+        app.cfg = {"monitor_enabled": True, "monitor_sink": "monitor_output", "default_sink": "test_sink"}
+        self.assertEqual(app._vu_source(), "monitor_output.monitor")
         app.cfg["monitor_enabled"] = False
-        self.assertEqual(app._vu_source(), "vm_game.monitor")
+        self.assertEqual(app._vu_source(), "test_sink.monitor")
         app.cfg["default_sink"] = "alsa_output.example.monitor"
         self.assertEqual(app._vu_source(), "alsa_output.example.monitor")
         app.cfg["default_sink"] = ""
-        self.assertIsNone(app._vu_source())
+        with patch.object(
+            padfire.subprocess, "check_output", return_value=b"output.from.server.default"
+        ) as check_output:
+            self.assertEqual(app._vu_source(), "output.from.server.default.monitor")
+        check_output.assert_called_once_with(
+            ["pactl", "get-default-sink"],
+            stderr=padfire.subprocess.DEVNULL,
+            timeout=3,
+        )
+        with patch.object(padfire.subprocess, "check_output") as cached_lookup:
+            self.assertEqual(app._vu_source(), "output.from.server.default.monitor")
+        cached_lookup.assert_not_called()
+
+        app._system_default_sink_checked -= 6.0
+        with patch.object(padfire.subprocess, "check_output", side_effect=OSError):
+            self.assertIsNone(app._vu_source())
+
+        app.cfg["monitor_enabled"] = True
+        app.cfg["monitor_sink"] = "missing.monitor"
+        app._system_default_sink_cache = ""
+        app._system_default_sink_checked = 0.0
+        with patch.object(
+            padfire.subprocess, "check_output", return_value=b"current.system.output"
+        ):
+            self.assertEqual(app._vu_source(), "current.system.output.monitor")
+
+    def test_first_default_sink_lookup_is_not_delayed_by_boot_uptime(self):
+        app = object.__new__(padfire.PadfireApp)
+        app.cfg = {"monitor_enabled": False, "default_sink": ""}
+        app.audio = type("Audio", (), {"_find_sink": lambda _self, _name: ""})()
+        app._system_default_sink_cache = ""
+        app._system_default_sink_checked = None
+        with patch.object(padfire.time, "monotonic", return_value=2.0):
+            with patch.object(
+                padfire.subprocess, "check_output", return_value=b"fresh.default.output"
+            ) as check_output:
+                self.assertEqual(
+                    app._vu_source(), "fresh.default.output.monitor"
+                )
+        check_output.assert_called_once()
+        self.assertEqual(app._system_default_sink_checked, 2.0)
+
+    def test_idle_vu_worker_does_not_probe_or_spawn_audio_processes(self):
+        app = object.__new__(padfire.PadfireApp)
+
+        class FakeAudio:
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._procs = {}
+
+        class StopAfterOneIdleWait:
+            def __init__(self):
+                self.checks = 0
+                self.wait_timeouts = []
+
+            def is_set(self):
+                self.checks += 1
+                return self.checks > 1
+
+            def wait(self, timeout):
+                self.wait_timeouts.append(timeout)
+                return False
+
+        class ImmediateThread:
+            def __init__(self, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        app.audio = FakeAudio()
+        app._shutdown_event = StopAfterOneIdleWait()
+        app._vu_level = 0.0
+        app._vu_source = lambda: self.fail("idle VU worker probed pactl")
+        with patch.object(padfire.shutil, "which", return_value="/usr/bin/parec"):
+            with patch.object(padfire.threading, "Thread", ImmediateThread):
+                with patch.object(padfire.subprocess, "Popen") as popen:
+                    app._start_vu()
+        popen.assert_not_called()
+        self.assertEqual(app._vu_level, 0.0)
+        self.assertEqual(app._shutdown_event.wait_timeouts, [0.25])
 
     def test_all_led_states_keep_required_double_buffer_bits(self):
         for name in ("LED_OFF", "LED_DIM", "LED_GREEN", "LED_RED", "LED_ORANGE", "LED_AMBER", "LED_PG_HAS"):

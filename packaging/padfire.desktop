@@ -1,9 +1,26 @@
 [Desktop Entry]
 Name=Padfire
-Comment=Launchpad Mini soundboard
+GenericName=Soundboard and pad controller
+Comment=Play sounds and run actions from a configurable MIDI pad grid
 Exec=padfire-launch
-Icon=audio-x-generic
+TryExec=padfire-launch
+Icon=padfire
 Type=Application
 Terminal=false
+StartupNotify=true
 StartupWMClass=padfire
 Categories=AudioVideo;Audio;
+Keywords=soundboard;midi;launchpad;audio;pads;controller;
+Actions=show;stop;quit;
+
+[Desktop Action show]
+Name=Show Padfire
+Exec=padfire-launch --show
+
+[Desktop Action stop]
+Name=Stop All Audio
+Exec=padfire-launch --stop
+
+[Desktop Action quit]
+Name=Quit Padfire
+Exec=padfire-launch --quit

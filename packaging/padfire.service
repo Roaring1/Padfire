@@ -1,5 +1,6 @@
 [Unit]
 Description=Padfire Soundboard
+PartOf=graphical-session.target
 After=graphical-session.target pipewire.service pipewire-pulse.service wireplumber.service
 Wants=pipewire.service pipewire-pulse.service wireplumber.service
 

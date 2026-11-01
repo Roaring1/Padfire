@@ -7,7 +7,7 @@
 # - LED: velocity=(green&3)<<4|(red&3)|0x0C  (0x0C = double-buffer, no CC 0 reset)
 # - audio: paplay subprocess -> PipeWire, no PortAudio/JACK
 
-import os, sys, json, time, math, shutil, struct, select, signal, socket, threading, argparse, subprocess
+import os, sys, json, time, math, shutil, struct, select, signal, socket, threading, argparse, subprocess, stat, tempfile
 sys.stdout.reconfigure(line_buffering=True)
 
 import mido
@@ -26,24 +26,98 @@ try:
 except Exception:
     AI = None
 
-VER      = "2.3"
+VER      = "2.4.0"
 HOME     = Path.home()
 CFGDIR   = HOME / ".config" / "padfire"
 SOCK     = str(CFGDIR / "padfire.sock")
 PIDF     = str(CFGDIR / "padfire.pid")
 CONF     = str(CFGDIR / "padfire.json")
-HEARTH_SOCK = str(HOME / ".config" / "hearth" / "rac.sock")
-RAC_SOCK = HEARTH_SOCK  # alias -- where hearth's IPC socket lives
 
-# One-time migration: move config from old ~/.config/roaring/ location
+IPC_MAX_REQUEST = 256
+IPC_MAX_CLIENTS = 8
+IPC_MAX_RESPONSE = 64 * 1024
+MAX_CONFIG_BYTES = 4 * 1024 * 1024
+
+
+def _ensure_private_config_dir():
+    """Create the per-user state directory and restrict it to its owner."""
+    CFGDIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = CFGDIR.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise PermissionError(f"Padfire config path is not a real directory: {CFGDIR}")
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise PermissionError(f"Padfire config directory is owned by another user: {CFGDIR}")
+    if os.name == "posix":
+        os.chmod(CFGDIR, 0o700)
+
+
+def _read_private_file(path, max_bytes=MAX_CONFIG_BYTES):
+    """Read a bounded regular file owned by this user, refusing links/special files."""
+    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    fd = os.open(str(path), flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise PermissionError(f"Not a regular file: {path}")
+        if info.st_nlink != 1:
+            raise PermissionError(f"Hard-linked files are not accepted: {path}")
+        if hasattr(os, "getuid") and info.st_uid != os.getuid():
+            raise PermissionError(f"File is owned by another user: {path}")
+        if info.st_size > max_bytes:
+            raise ValueError(f"File exceeds the {max_bytes}-byte size limit: {path}")
+        if os.name == "posix":
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "rb") as stream:
+            fd = -1
+            payload = stream.read(max_bytes + 1)
+        if len(payload) > max_bytes:
+            raise ValueError(f"File exceeds the {max_bytes}-byte size limit: {path}")
+        return payload
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _atomic_private_write(path, content):
+    """Atomically write bytes to a same-directory 0600 temporary file."""
+    path = Path(path)
+    _ensure_private_config_dir()
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        if os.name == "posix":
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            fd = -1
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+_ensure_private_config_dir()
+
+# One-time migration: move config from old ~/.config/roaring/ location.
+# Treat the old file as data: do not follow symlinks or copy its permissions.
 _OLD_CFGDIR = HOME / ".config" / "roaring"
-for _old, _new in [
-    (_OLD_CFGDIR / "padfire.json", CFGDIR / "padfire.json"),
-]:
-    if _old.exists() and not _new.exists():
-        CFGDIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(_old), str(_new))
-        print(f"[config] migrated {_old} -> {_new}")
+_old_config = _OLD_CFGDIR / "padfire.json"
+_new_config = CFGDIR / "padfire.json"
+if _old_config.exists() and not _new_config.exists():
+    try:
+        _atomic_private_write(_new_config, _read_private_file(_old_config))
+        print(f"[config] migrated {_old_config} -> {_new_config}")
+    except (OSError, ValueError) as exc:
+        print(f"[config] legacy migration skipped: {exc}")
 
 # The old dir also held a socket + pid file nothing reads any more; leaving
 # them behind made it look like another instance was live.
@@ -102,14 +176,14 @@ button { transition: background 120ms ease, border-color 120ms ease, box-shadow 
 .topbar {
     background: #232325;
     border-bottom: 1px solid rgba(255,255,255,0.06);
-    padding: 2px 6px;
-    min-height: 28px;
+    padding: 3px 8px;
+    min-height: 32px;
 }
 .app-logo { font-size: 10px; font-weight: 800; letter-spacing: 4px; color: #0a84ff; }
-.midi-ok  { color: #30d158; font-size: 8px; font-weight: 700; padding: 2px 7px;
-            border-radius: 8px; background: rgba(48,209,88,0.12); }
-.midi-bad { color: rgba(255,255,255,0.30); font-size: 8px; padding: 2px 7px;
-            border-radius: 8px; background: rgba(255,255,255,0.05); }
+.midi-ok  { color: #30d158; font-size: 10px; font-weight: 700; padding: 3px 8px;
+            border-radius: 8px; background: rgba(48,209,88,0.14); }
+.midi-bad { color: #ffb454; font-size: 10px; font-weight: 700; padding: 3px 8px;
+            border-radius: 8px; background: rgba(255,159,10,0.13); }
 
 .grid-wrap { padding: 6px; }
 
@@ -158,18 +232,12 @@ button { transition: background 120ms ease, border-color 120ms ease, box-shadow 
 .page-active      { background: rgba(10,70,180,0.32); border-color: rgba(10,132,255,0.55); color: #4db0ff; }
 .page-has         { border-color: rgba(10,132,255,0.22); color: rgba(77,176,255,0.50); }
 
-.statusbar {
-    background: #171719;
-    border-top: 1px solid rgba(255,255,255,0.05);
-    padding: 2px 8px; min-height: 20px;
-}
-.stat-ok  { color: #30d158; font-size: 8px; }
-.stat-dim { color: rgba(255,255,255,0.24); font-size: 8px; }
-.stat-val { color: rgba(255,255,255,0.55); font-size: 8px; }
 .stat-warn { color: #ff9f0a; font-size: 8px; font-weight: 700; }
 .stat-play { color: #30d158; font-size: 8px; font-weight: 700; }
 
-.lbl { color: rgba(255,255,255,0.32); font-size: 9px; }
+.lbl { color: #c2c7d0; font-size: 10px; }
+.dialog-section { color: #f0f2f5; font-size: 10px; font-weight: 700; }
+.volume-value { color: #e0e4ea; font-size: 10px; font-weight: 600; min-width: 34px; }
 
 button.act {
     background: rgba(255,255,255,0.06);
@@ -201,7 +269,7 @@ button.act-on:hover { background: rgba(48,209,88,0.28); }
 .btn-ok:hover { background: #2a9aff; }
 .btn-sm { padding: 2px 7px; font-size: 8px; min-width: 0; border-radius: 5px; }
 
-#vu trough { background: rgba(255,255,255,0.07); border-radius: 2px; min-height: 4px; }
+#vu trough { background: rgba(255,255,255,0.07); border-radius: 2px; min-height: 3px; }
 #vu progress { background: linear-gradient(to right,#30d158,#ff9f0a 65%,#ff453a); border-radius: 2px; }
 """
 
@@ -209,11 +277,11 @@ CONFIG_VERSION = 5
 
 DEFAULT_CONFIG = {
     "version":             CONFIG_VERSION,
-    "default_sink":        "vm_game",
+    "default_sink":        "",
     "stop_on_page_change": False,
     "retrigger":           "restart",
     "monitor_enabled":     False,
-    "monitor_sink":        "alsa_output.usb-Astro_Gaming_Astro_A50-00.stereo-game",
+    "monitor_sink":        "",
     "pages":               [{} for _ in range(NUM_PAGES)],
 }
 
@@ -242,31 +310,39 @@ def _migrate(c):
 
 def load_config():
     try:
-        c = json.loads(Path(CONF).read_text())
+        raw = _read_private_file(Path(CONF))
+        c = json.loads(raw.decode("utf-8"))
         return _migrate(c)
-    except Exception:
+    except Exception as exc:
+        if not isinstance(exc, FileNotFoundError):
+            print(f"[config] could not load config safely; using defaults: {exc}")
         return json.loads(json.dumps(DEFAULT_CONFIG))
 
+
 def save_config(cfg):
-    # atomic write + single rolling backup so a crash mid-save can't corrupt
-    # the file that holds every pad assignment
-    CFGDIR.mkdir(parents=True, exist_ok=True)
+    # Keep every pad assignment private: config may contain local file paths
+    # and shell commands entered by the user. The rolling backup has the same
+    # 0600 permissions and is atomically replaced too.
+    _ensure_private_config_dir()
+    payload = json.dumps(cfg, indent=2).encode("utf-8")
+    if len(payload) > MAX_CONFIG_BYTES:
+        raise ValueError(f"Config exceeds the {MAX_CONFIG_BYTES}-byte size limit")
     dst = Path(CONF)
-    tmp = Path(str(dst) + ".tmp")
-    # flush + fsync before the rename: without it, power loss between write()
-    # and rename() can leave a 0-byte config, losing every pad assignment
-    with open(tmp, "w") as fh:
-        fh.write(json.dumps(cfg, indent=2))
-        fh.flush(); os.fsync(fh.fileno())
-    # copy (not move) the old file to .bak so CONF never stops existing --
-    # between the two os.replace calls there was a window with no config
-    if dst.exists():
-        try: shutil.copy2(str(dst), str(dst) + ".bak")
-        except Exception as e: print(f"[config] backup failed: {e}")
-    os.replace(str(tmp), str(dst))
+    backup = Path(str(dst) + ".bak")
+    if dst.exists() or dst.is_symlink():
+        try:
+            _atomic_private_write(backup, _read_private_file(dst))
+        except Exception as exc:
+            print(f"[config] backup skipped: {exc}")
+    _atomic_private_write(dst, payload)
     try:
-        _dfd = os.open(str(CFGDIR), os.O_RDONLY); os.fsync(_dfd); os.close(_dfd)
-    except Exception: pass
+        dir_fd = os.open(str(CFGDIR), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
 
 
 def crosshair_toggle_argv():
@@ -378,14 +454,30 @@ class AudioEngine:
             print(f"[audio] pactl failed: {e}")
 
     def _find_sink(self, name):
-        lo = str(name or "").lower()
-        for s in self._sinks:
-            if s == name: return s
-        for s in self._sinks:
-            if s.lower().startswith(lo): return s
-        for s in self._sinks:
-            if lo and lo in s.lower(): return s
-        return self._sinks[0] if self._sinks else "vm_game"
+        """Resolve an explicit sink, or return empty for the server default."""
+        if not name:
+            return ""
+        lo = str(name).lower()
+        for sink in self._sinks:
+            if sink == name:
+                return sink
+        for sink in self._sinks:
+            if sink.lower().startswith(lo):
+                return sink
+        for sink in self._sinks:
+            if lo in sink.lower():
+                return sink
+        # A saved sink may not exist on another computer. Let PipeWire/Pulse
+        # route to that user's default instead of forcing an unrelated sink.
+        return ""
+
+    @staticmethod
+    def _paplay_argv(sink, volume, filepath):
+        command = ["paplay"]
+        if sink:
+            command.append(f"--device={sink}")
+        command.extend((f"--volume={volume}", filepath))
+        return command
 
     @staticmethod
     def _stop_process(proc):
@@ -433,7 +525,7 @@ class AudioEngine:
                 proc = None
                 try:
                     proc = subprocess.Popen(
-                        ["paplay", f"--device={sink}", f"--volume={pa_vol}", filepath],
+                        self._paplay_argv(sink, pa_vol, filepath),
                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
                     with self._lock:
                         current = self._generations.get(tkey) == token
@@ -467,12 +559,14 @@ class AudioEngine:
 
         threading.Thread(target=_run, args=(key, resolved, tokens[key]),
                          daemon=True, name=f"audio-{key}").start()
-        if monitor_sink and monitor_sink != sink_name:
-            threading.Thread(
-                target=_run,
-                args=(monitor_key, self._find_sink(monitor_sink), tokens[monitor_key]),
-                daemon=True, name=f"audio-monitor-{key}"
-            ).start()
+        if monitor_sink is not None:
+            monitor_resolved = self._find_sink(monitor_sink)
+            if monitor_resolved != resolved:
+                threading.Thread(
+                    target=_run,
+                    args=(monitor_key, monitor_resolved, tokens[monitor_key]),
+                    daemon=True, name=f"audio-monitor-{key}"
+                ).start()
 
     def stop(self, key):
         self._cancel((key, f"__mon__{key}"))
@@ -507,10 +601,13 @@ class MidiEngine:
         self._on_pad = on_pad; self._on_top = on_top; self._on_side = on_side
         self._on_connect = on_connect; self._on_disconnect = on_disconnect
         self._in = self._out = None
+        self._input_name: str | None = None
+        self._output_name: str | None = None
         self._out_lock  = threading.Lock()
         self._conn_lock = threading.Lock()
         self._connected = False
         self._running = True
+        self._last_presence_error = 0.0
         self._stop_event = threading.Event()
         self._read_thread = threading.Thread(
             target=self._read_loop, daemon=True, name="midi-read"
@@ -548,6 +645,8 @@ class MidiEngine:
                 in_port = mido.open_input(inn)
                 self._out = out_port
                 self._in = in_port
+                self._input_name = inn
+                self._output_name = outn
                 self._connected = True
                 print(f"[midi] connected: {inn}")
                 self._on_connect()
@@ -566,28 +665,72 @@ class MidiEngine:
                 print(f"[midi] connect failed: {e}")
                 return False
 
+    def _disconnect_locked(self):
+        """Close the current ports while the connection lock is held."""
+        was_connected = self._connected
+        self._connected = False
+        in_port, out_port = self._in, self._out
+        self._in = self._out = None
+        self._input_name = self._output_name = None
+        # Serialize output-port close with LED sends; cleanup also runs
+        # after a partial connection failure, even when _connected=False.
+        with self._out_lock:
+            for port in (in_port, out_port):
+                try:
+                    if port: port.close()
+                except Exception:
+                    pass
+        return was_connected
+
     def _disconnect(self):
         with self._conn_lock:
-            was_connected = self._connected
-            self._connected = False
-            in_port, out_port = self._in, self._out
-            self._in = self._out = None
-            # Serialize output-port close with LED sends; cleanup also runs
-            # after a partial connection failure, even when _connected=False.
-            with self._out_lock:
-                for port in (in_port, out_port):
-                    try:
-                        if port: port.close()
-                    except Exception:
-                        pass
+            was_connected = self._disconnect_locked()
+        if was_connected:
+            self._on_disconnect()
+
+    def _check_connected_device(self):
+        """Detect USB removal even when the MIDI backend leaves receive blocked."""
+        with self._conn_lock:
+            if not self._running or not self._connected:
+                return
+            input_name, output_name = self._input_name, self._output_name
+            try:
+                input_names = mido.get_input_names()
+                output_names = mido.get_output_names()
+            except Exception as exc:
+                # Enumeration can fail briefly while ALSA/RtMidi restarts.
+                # Do not drop an otherwise live connection on one scan error.
+                now = time.monotonic()
+                if now - self._last_presence_error >= 10.0:
+                    print(f"[midi] device check failed; keeping current connection: {exc}")
+                    self._last_presence_error = now
+                return
+
+            if input_name in input_names and output_name in output_names:
+                self._last_presence_error = 0.0
+                return
+
+            missing = []
+            if input_name not in input_names:
+                missing.append("input")
+            if output_name not in output_names:
+                missing.append("output")
+            print(
+                f"[midi] Launchpad disappeared ({'/'.join(missing)} port missing); "
+                "waiting to reconnect"
+            )
+            was_connected = self._disconnect_locked()
+
         if was_connected:
             self._on_disconnect()
 
     def _reconnect_loop(self):
-        while self._running and not self._stop_event.wait(2):
+        while self._running and not self._stop_event.wait(1.0):
             if not self._running:
                 break
-            if not self._connected:
+            if self._connected:
+                self._check_connected_device()
+            else:
                 self.try_connect()
 
     def _read_loop(self):
@@ -602,8 +745,18 @@ class MidiEngine:
                     if not self._running or self._stop_event.is_set():
                         break
                     self._dispatch(msg)
-            except Exception:
-                if self._connected and self._running:
+                # Mido's input iterator returns normally when its backend
+                # closes the port on USB removal. Treat that as a disconnect
+                # instead of repeatedly iterating a dead handle.
+                if (
+                    self._running and not self._stop_event.is_set()
+                    and self._connected and self._in is port
+                ):
+                    print("[midi] input stream ended; waiting to reconnect")
+                    self._disconnect()
+            except Exception as exc:
+                if self._connected and self._running and self._in is port:
+                    print(f"[midi] input lost: {exc}")
                     self._disconnect()
 
     def _dispatch(self, msg):
@@ -655,56 +808,149 @@ class MidiEngine:
 
 # IPC
 
+def _read_ipc_request(conn, max_bytes=IPC_MAX_REQUEST):
+    """Read one bounded newline-delimited local IPC command."""
+    buf = bytearray()
+    while True:
+        chunk = conn.recv(min(256, max_bytes - len(buf) + 1))
+        if not chunk:
+            # Require the framing delimiter so a truncated command is never
+            # dispatched merely because the client closed its write side.
+            return None
+        newline = chunk.find(b"\n")
+        if newline >= 0:
+            if len(buf) + newline > max_bytes:
+                return None
+            return (bytes(buf) + chunk[:newline]).decode(errors="replace").strip()
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            return None
+
+
 def ipc_send(cmd, sock_path=None, timeout=1.0):
     path = sock_path or SOCK
-    if not Path(path).exists(): return None
+    if not Path(path).exists():
+        return None
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(timeout); s.connect(path)
-        s.sendall((cmd + "\n").encode())
-        # one recv() can return a partial line once the status payload grows,
-        # which truncated the JSON that Hearth parses
-        buf = b""
-        while b"\n" not in buf:
-            chunk = s.recv(4096)
-            if not chunk: break
-            buf += chunk
-        s.close()
-        return buf.decode(errors="replace").strip()
-    except Exception: return None
+        payload = (cmd + "\n").encode("utf-8")
+        if len(payload) > IPC_MAX_REQUEST + 1:
+            return None
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(timeout)
+            conn.connect(path)
+            conn.sendall(payload)
+            # Responses are newline-delimited and capped defensively.
+            buf = bytearray()
+            while b"\n" not in buf:
+                chunk = conn.recv(min(4096, IPC_MAX_RESPONSE + 1 - len(buf)))
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                if len(buf) > IPC_MAX_RESPONSE:
+                    return None
+            return buf.decode(errors="replace").strip()
+    except (OSError, UnicodeError):
+        return None
 
-def rac_send(cmd): return ipc_send(cmd, RAC_SOCK)
 
 def ipc_serve(handler, srv_ref):
-    sp = Path(SOCK); sp.parent.mkdir(parents=True, exist_ok=True)
-    if sp.exists():
-        try: sp.unlink()
-        except Exception: pass
+    _ensure_private_config_dir()
+    sp = Path(SOCK)
+
+    # Never unlink an arbitrary file/symlink at the socket path, and never
+    # evict another live Padfire instance if two launches race.
+    if sp.exists() or sp.is_symlink():
+        try:
+            info = sp.lstat()
+            if not stat.S_ISSOCK(info.st_mode):
+                print(f"[ipc] refusing to replace non-socket path: {sp}")
+                return
+            if hasattr(os, "getuid") and info.st_uid != os.getuid():
+                print(f"[ipc] refusing socket owned by another user: {sp}")
+                return
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.25)
+                try:
+                    probe.connect(str(sp))
+                except (ConnectionRefusedError, FileNotFoundError):
+                    # Re-check the inode: another launch may have replaced
+                    # this stale path with a new live socket during the probe.
+                    current = sp.lstat()
+                    if (
+                        not stat.S_ISSOCK(current.st_mode)
+                        or current.st_dev != info.st_dev
+                        or current.st_ino != info.st_ino
+                    ):
+                        print("[ipc] socket path changed during stale-socket check")
+                        return
+                    sp.unlink()
+                except OSError as exc:
+                    print(f"[ipc] cannot safely inspect existing socket: {exc}")
+                    return
+                else:
+                    print("[ipc] another Padfire instance already owns the socket")
+                    return
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"[ipc] cannot inspect existing socket: {exc}")
+            return
+
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try: srv.bind(str(sp)); srv.listen(4); os.chmod(str(sp), 0o600)
-    except Exception: return
-    srv_ref.append(srv); srv.settimeout(1.0)
+    try:
+        srv.bind(str(sp))
+        os.chmod(sp, 0o600)
+        srv.listen(IPC_MAX_CLIENTS)
+        srv.settimeout(1.0)
+    except OSError as exc:
+        print(f"[ipc] could not create local socket: {exc}")
+        srv.close()
+        return
+    srv_ref.append(srv)
+    client_slots = threading.BoundedSemaphore(IPC_MAX_CLIENTS)
 
     def _handle(conn):
         try:
-            conn.settimeout(2.0); buf = b""
-            while b"\n" not in buf:
-                chunk = conn.recv(256)
-                if not chunk: break
-                buf += chunk
-            resp = (handler(buf.decode(errors="replace").strip()) or "ok") + "\n"
-            conn.sendall(resp.encode())
-        except Exception: pass
+            conn.settimeout(2.0)
+            command = _read_ipc_request(conn)
+            if command is None:
+                response = "error: request too long"
+            else:
+                response = handler(command) or "ok"
+            payload = (str(response) + "\n").encode("utf-8", errors="replace")
+            if len(payload) > IPC_MAX_RESPONSE:
+                payload = b"error: response too large\n"
+            conn.sendall(payload)
+        except (OSError, UnicodeError):
+            pass
+        except Exception as exc:
+            print(f"[ipc] request handler failed: {exc}")
         finally:
-            try: conn.close()
-            except Exception: pass
+            try:
+                conn.close()
+            except OSError:
+                pass
+            client_slots.release()
 
     while True:
         try:
-            c, _ = srv.accept()
-            threading.Thread(target=_handle, args=(c,), daemon=True).start()
-        except socket.timeout: continue
-        except Exception: break
+            conn, _ = srv.accept()
+            if not client_slots.acquire(blocking=False):
+                conn.close()
+                continue
+            worker = threading.Thread(
+                target=_handle, args=(conn,), daemon=True, name="padfire-ipc-client"
+            )
+            try:
+                worker.start()
+            except Exception as exc:
+                print(f"[ipc] could not start client handler: {exc}")
+                client_slots.release()
+                conn.close()
+        except socket.timeout:
+            continue
+        except OSError:
+            break
 
 
 # LUFS analysis via ffmpeg
@@ -791,11 +1037,27 @@ def _play_editor_preview(
 # pad edit dialog
 # principle: show only what the user needs. advanced stuff is collapsed.
 
+def _sink_from_selection(sinks, index):
+    """Return an explicit sink name, or empty to use the audio-server default."""
+    if 0 <= index < len(sinks):
+        return sinks[index] or ""
+    return ""
+
+
+def _compact_combo(combo, max_chars=22, width_chars=16):
+    """Bound long device/action names in dropdowns without truncating values."""
+    for renderer in combo.get_cells():
+        if isinstance(renderer, Gtk.CellRendererText):
+            renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
+            renderer.set_property("width-chars", min(width_chars, max_chars))
+            renderer.set_property("max-width-chars", max_chars)
+
+
 def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     dlg = Gtk.Dialog(title="Edit Pad", transient_for=parent, modal=True)
     _dialog_cancel = threading.Event()
     _analysis_thread: list[threading.Thread | None] = [None]
-    dlg.set_default_size(400, -1)
+    dlg.set_default_size(380, -1)
     dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
     dlg.get_widget_for_response(Gtk.ResponseType.OK).get_style_context().add_class("btn-ok")
     dlg.set_default_response(Gtk.ResponseType.OK)
@@ -804,11 +1066,12 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     box.set_spacing(8); box.set_margin_start(14); box.set_margin_end(14)
     box.set_margin_top(10); box.set_margin_bottom(10)
 
-    def row(label, widget, parent_box=None):
+    def row(label, widget, parent_box=None, expand=True):
         hb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         lb = Gtk.Label(label=label); lb.set_xalign(0); lb.set_width_chars(9)
         lb.get_style_context().add_class("lbl")
-        hb.pack_start(lb, False, False, 0); hb.pack_start(widget, True, True, 0)
+        hb.pack_start(lb, False, False, 0)
+        hb.pack_start(widget, expand, expand, 0)
         (parent_box or box).pack_start(hb, False, False, 0)
 
     action = (pad_cfg.get("action", "play") if pad_cfg else "play")
@@ -818,15 +1081,18 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     for txt in ["Play a sound", "Run a script", "Stop SFX", "Stop everything",
                 "Stop a specific pad", "Toggle Crosshair"]:
         act_c.append_text(txt)
+    _compact_combo(act_c, 22, 16)
     act_map = {"play":0, "script":1, "stop_sfx":2, "stop_all":3,
                "stop_key":4, "crosshair_toggle":5}
     act_c.set_active(act_map.get(action, 0))
-    row("Does", act_c)
+    row("Action", act_c)
 
     # label
     lbl_e = Gtk.Entry()
     lbl_e.set_text(pad_cfg.get("label","") if pad_cfg else "")
     lbl_e.set_placeholder_text("Name shown on the pad")
+    lbl_e.set_width_chars(18)
+    lbl_e.set_max_width_chars(24)
     lbl_e.set_activates_default(True)
     row("Name", lbl_e)
 
@@ -835,19 +1101,24 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     col_c = Gtk.ComboBoxText()
     swatch = Gtk.Label(label=" ● ")
     for cn in color_names: col_c.append_text(cn)
+    _compact_combo(col_c, 14, 10)
     stored = (pad_cfg.get("color") if pad_cfg else None) or "default"
     if stored not in PAD_COLORS: stored = "default"
     col_c.set_active(color_names.index(stored))
 
     def _swatch(*_):
         idx = col_c.get_active()
-        cn  = color_names[idx] if idx >= 0 else "default"
-        _, bg, border, fg = PAD_COLORS.get(cn, PAD_COLORS["default"])
+        cn = color_names[idx] if idx >= 0 else "default"
+        _, _bg, _border, fg = PAD_COLORS.get(cn, PAD_COLORS["default"])
         if fg:
-            solid = fg.replace("rgba","rgb").rsplit(",",1)[0] + ")"
-            try: swatch.set_markup(f'<span foreground="{solid}"> ● </span>')
-            except Exception: swatch.set_text(" ● ")
-        else: swatch.set_text(" ● ")
+            try:
+                channels = [int(float(part.strip())) for part in fg[5:].split(",")[:3]]
+                color = "#" + "".join(f"{max(0, min(255, value)):02x}" for value in channels)
+                swatch.set_markup(f'<span foreground="{color}"> ● </span>')
+            except (TypeError, ValueError):
+                swatch.set_text(" ● ")
+        else:
+            swatch.set_text(" ● ")
     col_c.connect("changed", _swatch); _swatch()
     cbox = Gtk.Box(spacing=4)
     cbox.pack_start(col_c, True, True, 0); cbox.pack_start(swatch, False, False, 0)
@@ -861,7 +1132,6 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     notes_view.get_style_context().add_class("lbl")
     ns = Gtk.ScrolledWindow(); ns.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
     ns.set_size_request(-1, 44); ns.add(notes_view)
-    row("Notes", ns)
 
     sep1 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
     sep1.set_margin_top(2); sep1.set_margin_bottom(2)
@@ -870,46 +1140,82 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     # play section
     play_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     box.pack_start(play_box, False, False, 0)
-    def prow(l, w): row(l, w, play_box)
+    def prow(l, w, expand=True): row(l, w, play_box, expand)
 
-    file_btn = Gtk.FileChooserButton(title="Pick audio file", action=Gtk.FileChooserAction.OPEN)
-    ff = Gtk.FileFilter(); ff.set_name("Audio")
-    for p in ["*.wav","*.flac","*.ogg","*.mp3","*.aiff","*.opus"]: ff.add_pattern(p)
-    file_btn.add_filter(ff)
-    if pad_cfg and pad_cfg.get("file") and Path(pad_cfg["file"]).exists():
-        file_btn.set_filename(pad_cfg["file"])
-    prow("File", file_btn)
+    # A path entry plus a small chooser button stays compact even when a
+    # selected filename is very long. Paths can also be pasted directly.
+    file_row = Gtk.Box(spacing=6)
+    file_e = Gtk.Entry()
+    file_e.set_placeholder_text("Choose an audio file…")
+    file_e.set_width_chars(16)
+    file_e.set_max_width_chars(22)
+    file_e.set_hexpand(True)
+    if pad_cfg and pad_cfg.get("file") and Path(pad_cfg["file"]).is_file():
+        file_e.set_text(pad_cfg["file"])
+    browse_audio_btn = Gtk.Button(label="Browse")
+    browse_audio_btn.get_style_context().add_class("act btn-sm")
+    file_row.pack_start(file_e, True, True, 0)
+    file_row.pack_start(browse_audio_btn, False, False, 0)
+    prow("Sound", file_row)
 
-    # sink picker -- group virtual sinks first
-    _priority = ("vm_", "astro", "scarlett", "b1", "b2", "laptop", "loopback")
-    def _sort_sinks(sl):
-        virt = [s for s in sl if any(k in s.lower() for k in _priority)]
-        hw   = [s for s in sl if s not in virt]
-        return virt, hw
-    virt, hw = _sort_sinks(sinks)
+    def get_audio_file():
+        value = file_e.get_text().strip()
+        if not value:
+            return None
+        candidate = Path(value).expanduser()
+        return str(candidate) if candidate.is_file() else None
+
+    ff = Gtk.FileFilter(); ff.set_name("Audio files")
+    for p in ["*.wav", "*.flac", "*.ogg", "*.mp3", "*.aiff", "*.opus"]:
+        ff.add_pattern(p)
+
+    def _browse_audio(*_):
+        chooser = Gtk.FileChooserDialog(
+            title="Choose audio file", transient_for=dlg,
+            action=Gtk.FileChooserAction.OPEN,
+        )
+        chooser.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                            "Select", Gtk.ResponseType.OK)
+        chooser.add_filter(ff)
+        current = get_audio_file()
+        if current:
+            chooser.set_filename(current)
+        if chooser.run() == Gtk.ResponseType.OK:
+            selected = chooser.get_filename()
+            if selected:
+                file_e.set_text(selected)
+        chooser.destroy()
+
+    browse_audio_btn.connect("clicked", _browse_audio)
+
+    # Keep the system default first, then offer this machine's actual sinks.
     sink_c = Gtk.ComboBoxText()
     cur_sink = (pad_cfg.get("sink", default_sink) if pad_cfg else default_sink)
-    combo_sinks = []
-    for s in virt:
+    sink_c.append_text("System default")
+    combo_sinks = [None]
+    for s in sorted(set(sinks), key=str.casefold):
         sink_c.append_text(s); combo_sinks.append(s)
-    if hw:
-        sink_c.append_text("-- hardware --"); combo_sinks.append(None)
-        for s in hw:
-            sink_c.append_text(s); combo_sinks.append(s)
-    try: sink_c.set_active(combo_sinks.index(cur_sink))
-    except ValueError: sink_c.set_active(next((i for i, v in enumerate(combo_sinks) if v), 0))
+    _compact_combo(sink_c, 22, 16)
+    try: sink_c.set_active(combo_sinks.index(cur_sink or None))
+    except ValueError: sink_c.set_active(0)
     prow("Output", sink_c)
 
     def get_sink():
-        idx = sink_c.get_active()
-        if 0 <= idx < len(combo_sinks) and combo_sinks[idx]: return combo_sinks[idx]
-        return default_sink
+        return _sink_from_selection(combo_sinks, sink_c.get_active())
 
     vol_adj = Gtk.Adjustment(value=pad_cfg.get("vol",80) if pad_cfg else 80,
                              lower=0, upper=150, step_increment=1)
-    vol_sl  = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=vol_adj)
-    vol_sl.set_value_pos(Gtk.PositionType.RIGHT); vol_sl.set_digits(0)
-    prow("Volume", vol_sl)
+    vol_sl = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=vol_adj)
+    vol_sl.set_draw_value(False)
+    vol_sl.set_size_request(156, -1)
+    vol_sl.set_hexpand(False)
+    vol_value = Gtk.Label(label=f"{int(vol_adj.get_value())}%")
+    vol_value.get_style_context().add_class("volume-value")
+    vol_adj.connect("value-changed", lambda adj: vol_value.set_text(f"{int(adj.get_value())}%"))
+    vol_row = Gtk.Box(spacing=8)
+    vol_row.pack_start(vol_sl, False, False, 0)
+    vol_row.pack_start(vol_value, False, False, 0)
+    prow("Volume", vol_row, expand=False)
 
     # LUFS / loudness suggestion
     lufs_row = Gtk.Box(spacing=6)
@@ -922,7 +1228,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     _lufs  = [None]
 
     def _analyze(*_):
-        f = file_btn.get_filename()
+        f = get_audio_file()
         if not f or _dialog_cancel.is_set():
             return
         current = _analysis_thread[0]
@@ -986,6 +1292,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
 
     rt_c = Gtk.ComboBoxText()
     rt_c.append_text("Restart from start"); rt_c.append_text("Stop on 2nd press"); rt_c.append_text("Use global setting")
+    _compact_combo(rt_c, 22, 16)
     rt_c.set_active({"restart":0,"toggle":1,"global":2}.get(pad_cfg.get("retrigger","global") if pad_cfg else "global", 2))
     arow("2nd press", rt_c)
 
@@ -1030,7 +1337,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
             _preview_worker_done()
 
     def _test(*_):
-        filepath = file_btn.get_filename()
+        filepath = get_audio_file()
         if not filepath:
             return
         # Snapshot GTK widget values here, on the main thread.
@@ -1148,6 +1455,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     # pad at whatever happened to be first in the list.
     sk_raw = [k.split("  (")[0] if "  (" in k else k for k in all_pad_keys]
     for k in all_pad_keys: sk_c.append_text(k)
+    _compact_combo(sk_c, 22, 16)
     have_targets = all_pad_keys != ["(none)"]
     cur_sk  = (pad_cfg.get("stop_key","") if pad_cfg else "")
     cur_raw = cur_sk.split("  (")[0] if "  (" in cur_sk else cur_sk
@@ -1163,12 +1471,30 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
         _nt.set_xalign(0); _nt.get_style_context().add_class("lbl")
         stop_box.pack_start(_nt, False, False, 0)
 
+    # Notes are useful but optional; keep them out of the everyday form while
+    # making them available for every pad action type.
+    notes_exp = Gtk.Expander(label="Notes (optional)")
+    notes_exp.get_style_context().add_class("lbl")
+    notes_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    notes_box.set_margin_top(4)
+    notes_exp.add(notes_box)
+    row("Notes", ns, notes_box)
+    box.pack_start(notes_exp, False, False, 0)
+
+    def _fit_dialog_to_content():
+        _minimum, natural = dlg.get_preferred_size()
+        dlg.resize(380, natural.height + 12)
+        return False
+
     def _show_hide(_=None):
         idx = act_c.get_active()
         play_box.set_visible(idx == 0)
         script_box.set_visible(idx == 1)
         stop_box.set_visible(idx == 4)
         crosshair_box.set_visible(idx == 5)
+        # Recompute after GTK has allocated the newly visible mode, so script
+        # and stop pads get short dialogs instead of inheriting Play's height.
+        GLib.idle_add(_fit_dialog_to_content)
 
     act_c.connect("changed", _show_hide)
     _show_hide(); dlg.show_all(); _show_hide()
@@ -1205,7 +1531,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
         idx = act_c.get_active()
         color = _color(); notes = _notes(); label = lbl_e.get_text().strip()
         if idx == 0:
-            fname = file_btn.get_filename()
+            fname = get_audio_file()
             if fname:
                 result = {"action":"play","file":fname,"sink":get_sink(),
                           "vol":int(vol_adj.get_value()),"loop":loop_sw.get_active(),
@@ -1243,67 +1569,68 @@ def settings_dialog(parent, cfg, sinks):
     dlg.get_widget_for_response(Gtk.ResponseType.OK).get_style_context().add_class("btn-ok")
 
     box = dlg.get_content_area()
-    box.set_spacing(10); box.set_margin_start(14); box.set_margin_end(14)
+    box.set_spacing(8); box.set_margin_start(14); box.set_margin_end(14)
     box.set_margin_top(10); box.set_margin_bottom(10)
 
-    def row(lbl, w):
+    def row(lbl, w, expand=True):
         hb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        lb = Gtk.Label(label=lbl); lb.set_xalign(0); lb.set_width_chars(18)
+        lb = Gtk.Label(label=lbl); lb.set_xalign(0); lb.set_width_chars(14)
         lb.get_style_context().add_class("lbl")
-        hb.pack_start(lb, False, False, 0); hb.pack_start(w, True, True, 0)
+        hb.pack_start(lb, False, False, 0); hb.pack_start(w, expand, expand, 0)
         box.pack_start(hb, False, False, 0)
 
-    # default sink
+    # System default first, followed by sinks discovered on this computer.
     sink_c = Gtk.ComboBoxText()
-    _priority = ("vm_", "astro", "scarlett", "b1", "b2", "laptop", "loopback")
-    virt = [s for s in sinks if any(k in s.lower() for k in _priority)]
-    hw   = [s for s in sinks if s not in virt]
-    combo_sinks = []
-    for s in virt:
-        sink_c.append_text(s); combo_sinks.append(s)
-    if hw:
-        sink_c.append_text("-- hardware --"); combo_sinks.append(None)
-        for s in hw:
-            sink_c.append_text(s); combo_sinks.append(s)
-    cur = cfg.get("default_sink", "vm_game")
+    sink_c.append_text("System default")
+    combo_sinks = [None]
+    for sink in sorted(set(sinks), key=str.casefold):
+        sink_c.append_text(sink)
+        combo_sinks.append(sink)
+    _compact_combo(sink_c, 20, 14)
+    cur = cfg.get("default_sink", "")
     try: sink_c.set_active(combo_sinks.index(cur))
-    except ValueError: sink_c.set_active(next((i for i, v in enumerate(combo_sinks) if v), 0))
+    except ValueError: sink_c.set_active(0)
     row("Default output", sink_c)
 
     def get_sink():
-        idx = sink_c.get_active()
-        if 0 <= idx < len(combo_sinks) and combo_sinks[idx]: return combo_sinks[idx]
-        return "vm_game"
-
-    sop_sw = Gtk.Switch(); sop_sw.set_active(cfg.get("stop_on_page_change", False))
-    sb = Gtk.Box(); sb.pack_start(sop_sw, False, False, 0)
-    row("Stop on page change", sb)
+        return _sink_from_selection(combo_sinks, sink_c.get_active())
 
     rt_c = Gtk.ComboBoxText()
     rt_c.append_text("Restart from start"); rt_c.append_text("Stop on 2nd press")
+    _compact_combo(rt_c, 20, 16)
     rt_c.set_active(0 if cfg.get("retrigger","restart") == "restart" else 1)
-    row("2nd press (default)", rt_c)
+    row("Press again", rt_c)
+
+    sop_sw = Gtk.Switch(); sop_sw.set_active(cfg.get("stop_on_page_change", False))
+    sb = Gtk.Box(); sb.pack_start(sop_sw, False, False, 0)
+    row("Stop on page", sb)
 
     # monitor section
     sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL); sep.set_margin_top(4); sep.set_margin_bottom(2)
     box.pack_start(sep, False, False, 0)
-    mon_title = Gtk.Label(label="Monitor / hear what you're sending")
-    mon_title.set_xalign(0); mon_title.get_style_context().add_class("lbl")
+    mon_title = Gtk.Label(label="MONITORING")
+    mon_title.set_xalign(0)
+    mon_title.get_style_context().add_class("dialog-section")
     box.pack_start(mon_title, False, False, 0)
 
     mon_sw = Gtk.Switch(); mon_sw.set_active(cfg.get("monitor_enabled", False))
-    msb = Gtk.Box(); msb.pack_start(mon_sw, False, False, 0)
-    row("Monitor on", msb)
+    row("Monitor audio", mon_sw, expand=False)
 
     mon_c = Gtk.ComboBoxText()
-    for s in sinks: mon_c.append_text(s)
+    mon_c.append_text("System default")
+    monitor_sinks = [None]
+    for sink in sorted(set(sinks), key=str.casefold):
+        mon_c.append_text(sink)
+        monitor_sinks.append(sink)
+    _compact_combo(mon_c, 20, 14)
     cur_mon = cfg.get("monitor_sink", "")
-    if cur_mon in sinks: mon_c.set_active(sinks.index(cur_mon))
-    elif sinks: mon_c.set_active(0)
-    row("Monitor output", mon_c)
+    try: mon_c.set_active(monitor_sinks.index(cur_mon or None))
+    except ValueError: mon_c.set_active(0)
+    row("Mirror output", mon_c)
 
-    hint = Gtk.Label()
-    hint.set_markup("<small>When on, sound plays on both the pad's output and this sink —\nso you hear what's being sent (e.g. to B1 / mic).</small>")
+    hint = Gtk.Label(
+        label="Duplicates pad audio to this output while monitoring is enabled."
+    )
     hint.set_xalign(0); hint.set_line_wrap(True); hint.get_style_context().add_class("lbl")
     box.pack_start(hint, False, False, 0)
 
@@ -1316,7 +1643,9 @@ def settings_dialog(parent, cfg, sinks):
         result["stop_on_page_change"] = sop_sw.get_active()
         result["retrigger"]           = "restart" if rt_c.get_active() == 0 else "toggle"
         result["monitor_enabled"]     = mon_sw.get_active()
-        result["monitor_sink"]        = mon_c.get_active_text() or ""
+        result["monitor_sink"] = _sink_from_selection(
+            monitor_sinks, mon_c.get_active()
+        )
     dlg.destroy()
     return result
 
@@ -1332,25 +1661,23 @@ class PadfireApp:
 
         self._win:      Gtk.Window | None = None
         self._midi_lbl: Gtk.Label  | None = None
-        self._rac_lbl:  Gtk.Label  | None = None
         self._mon_btn:  Gtk.ToggleButton | None = None
-        self._rac_vols: dict = {}
         self._pad_btns: dict = {}
         self._pad_css:  dict = {}
         self._page_btns: list = []
-        self._rac_online  = False
         self._ipc_ref     = []
         self._led_dirty   = True
         self._prev_leds   = {}
         self._vu_level    = 0.0
         self._vu_ok       = True
+        self._system_default_sink_cache = ""
+        self._system_default_sink_checked = None
         self._script_procs: dict = {}
         self._script_generations: dict[str, int] = {}
         self._script_threads: set[threading.Thread] = set()
         self._script_reapers: set[threading.Thread] = set()
         self._proc_lock   = threading.Lock()
         self._shutdown_event = threading.Event()
-        self._rac_thread: threading.Thread | None = None
         self._vu_thread: threading.Thread | None = None
         self._pad_labels: dict = {}
         self._pad_state:  dict = {}
@@ -1362,7 +1689,6 @@ class PadfireApp:
         self._build_ui()
         self._start_midi()
         self._start_ipc()
-        self._start_rac_probe()
         self._start_vu()
         GLib.timeout_add(200, self._tick)
 
@@ -1906,7 +2232,12 @@ class PadfireApp:
     def _update_midi_lbl(self):
         conn = self.midi and self.midi.is_connected()
         if self._midi_lbl:
-            self._midi_lbl.set_text("● MIDI" if conn else "○ MIDI")
+            self._midi_lbl.set_text("● Connected" if conn else "○ Disconnected")
+            self._midi_lbl.set_tooltip_text(
+                "Launchpad Mini connected; pad input and LED output are ready."
+                if conn else
+                "Launchpad Mini disconnected; reconnect it to resume pad input."
+            )
             ctx = self._midi_lbl.get_style_context()
             ctx.remove_class("midi-ok"); ctx.remove_class("midi-bad")
             ctx.add_class("midi-ok" if conn else "midi-bad")
@@ -1947,42 +2278,41 @@ class PadfireApp:
         if len(keys) > 2: txt += f"  +{len(keys)-2}"
         if lbl.get_text() != txt: lbl.set_text(txt)
 
-    # RAC probe
-
-    def _start_rac_probe(self):
-        def probe():
-            while not self._shutdown_event.is_set():
-                raw = rac_send("get_sinks")
-                if self._shutdown_event.is_set():
-                    break
-                try:
-                    data = json.loads(raw) if raw else None
-                except Exception as e:
-                    # a malformed reply used to be indistinguishable from
-                    # "Hearth is not running"
-                    print(f"[rac] bad reply: {e}")
-                    data = None
-                self._rac_online = data is not None
-                GLib.idle_add(self._update_rac, data)
-                if self._shutdown_event.wait(3):
-                    break
-
-        self._rac_thread = threading.Thread(
-            target=probe, daemon=True, name="rac-probe"
-        )
-        self._rac_thread.start()
-
     # VU monitor
 
     def _vu_source(self):
         """Monitor source for the level meter, from config.
 
-        v2.2 hardcoded "vm_game.monitor", so the meter was permanently dead
-        for anyone whose sinks are named anything else.
+        The current default sink is resolved from the active audio server
+        when no explicit output has been selected.
         """
         sink = (self.cfg.get("monitor_sink") if self.cfg.get("monitor_enabled")
                 else None) or self.cfg.get("default_sink") or ""
         sink = str(sink).strip()
+        if sink:
+            is_monitor = sink.endswith(".monitor")
+            base_sink = sink[:-8] if is_monitor else sink
+            try:
+                resolved = self.audio._find_sink(base_sink)
+            except Exception:
+                resolved = ""
+            sink = resolved + (".monitor" if is_monitor else "") if resolved else ""
+
+        if not sink:
+            now = time.monotonic()
+            checked = getattr(self, "_system_default_sink_checked", None)
+            if checked is None or now - checked >= 5.0:
+                try:
+                    resolved = subprocess.check_output(
+                        ["pactl", "get-default-sink"],
+                        stderr=subprocess.DEVNULL,
+                        timeout=3,
+                    ).decode("utf-8", errors="replace").strip()
+                except Exception:
+                    resolved = ""
+                self._system_default_sink_cache = resolved
+                self._system_default_sink_checked = now
+            sink = getattr(self, "_system_default_sink_cache", "")
         if not sink: return None
         return sink if sink.endswith(".monitor") else sink + ".monitor"
 
@@ -2025,13 +2355,23 @@ class PadfireApp:
                 while not self._shutdown_event.is_set():
                     with self.audio._lock:
                         playing = bool(self.audio._procs)
+                    if not playing:
+                        if proc is not None:
+                            stop_capture()
+                        self._vu_level = 0.0
+                        self._shutdown_event.wait(0.25)
+                        continue
+
+                    # Resolve sources only while Padfire is playing. The
+                    # system-default lookup is cached, so an idle app launches
+                    # no pactl subprocess and an active one checks at most
+                    # once every five seconds.
                     want = self._vu_source()
-                    # Tear down when idle or when the configured sink changes.
-                    if proc is not None and (not playing or want != src):
+                    if proc is not None and want != src:
                         stop_capture()
                         self._vu_level = 0.0
                     if (
-                        playing and proc is None and want
+                        proc is None and want
                         and time.monotonic() >= backoff
                     ):
                         try:
@@ -2085,7 +2425,7 @@ class PadfireApp:
                             backoff = time.monotonic() + 5.0
                     else:
                         self._vu_level = 0.0
-                        self._shutdown_event.wait(0.05)
+                        self._shutdown_event.wait(0.25)
             finally:
                 stop_capture()
                 self._vu_level = 0.0
@@ -2149,29 +2489,78 @@ class PadfireApp:
 
         win = Gtk.Window(title=f"Padfire {VER}")
         win.set_resizable(True); win.set_default_size(-1, -1)
-        # without an icon name the taskbar/alt-tab entry was a generic square
+        # Match the desktop-file icon name and set a direct file fallback for
+        # desktops whose icon cache has not been refreshed yet.
         try:
             _theme = Gtk.IconTheme.get_default()
-            for _nm in ("padfire", "audio-x-generic"):
-                if _theme.has_icon(_nm):
-                    win.set_icon_name(_nm)
-                    Gtk.Window.set_default_icon_name(_nm)
-                    break
-        except Exception: pass
+            _icon_root = HOME / ".local" / "share" / "icons"
+            _theme.append_search_path(str(_icon_root))
+            _theme.append_search_path(
+                str(Path(__file__).resolve().parent / "packaging" / "icons")
+            )
+            _theme.rescan_if_needed()
+            if _theme.has_icon("padfire"):
+                win.set_icon_name("padfire")
+                Gtk.Window.set_default_icon_name("padfire")
+            else:
+                _icon_file = _icon_root / "hicolor" / "scalable" / "apps" / "padfire.svg"
+                if not _icon_file.is_file():
+                    _icon_file = (
+                        Path(__file__).resolve().parent / "packaging" / "icons"
+                        / "hicolor" / "scalable" / "apps" / "padfire.svg"
+                    )
+                if _icon_file.is_file():
+                    win.set_icon_from_file(str(_icon_file))
+                    Gtk.Window.set_default_icon_name("padfire")
+                else:
+                    win.set_icon_name("audio-x-generic")
+                    Gtk.Window.set_default_icon_name("audio-x-generic")
+        except Exception as e:
+            print(f"[icon] could not set Padfire window icon: {e}")
         win.connect("delete-event", self._on_close)
         win.connect("key-press-event", self._on_key)
         self._win = win
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         win.add(root)
 
-        # top bar -- logo, MIDI status, stop, monitor, settings
+        # One compact utility row: identity + meter, live feedback, controls.
         topbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
         topbar.get_style_context().add_class("topbar")
-        logo = Gtk.Label(label="PADFIRE"); logo.get_style_context().add_class("app-logo")
-        topbar.pack_start(logo, False, False, 0)
-        topbar.pack_start(Gtk.Box(), True, True, 0)
 
-        self._midi_lbl = Gtk.Label(label="○ MIDI"); self._midi_lbl.get_style_context().add_class("midi-bad")
+        brand = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        logo = Gtk.Label(label="PADFIRE")
+        logo.get_style_context().add_class("app-logo")
+        logo.set_halign(Gtk.Align.START)
+        brand.pack_start(logo, False, False, 0)
+
+        self._vu_bar = Gtk.ProgressBar()
+        self._vu_bar.set_name("vu")
+        self._vu_bar.set_size_request(84, 4)
+        self._vu_bar.set_valign(Gtk.Align.CENTER)
+        self._vu_bar.set_halign(Gtk.Align.START)
+        self._vu_bar.set_tooltip_text("Output level for the configured audio sink")
+        brand.pack_start(self._vu_bar, False, False, 0)
+        topbar.pack_start(brand, False, False, 0)
+
+        self._play_lbl = Gtk.Label(label="")
+        self._play_lbl.set_xalign(0)
+        self._play_lbl.get_style_context().add_class("stat-play")
+        self._play_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        topbar.pack_start(self._play_lbl, True, True, 10)
+
+        self._msg_lbl = Gtk.Label(label="")
+        self._msg_lbl.set_xalign(1)
+        self._msg_lbl.get_style_context().add_class("stat-warn")
+        self._msg_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        self._msg_lbl.set_no_show_all(True)
+        self._msg_lbl.set_visible(False)
+        topbar.pack_start(self._msg_lbl, False, False, 4)
+
+        self._midi_lbl = Gtk.Label(label="○ Disconnected")
+        self._midi_lbl.set_tooltip_text(
+            "Launchpad Mini disconnected; reconnect it to resume pad input."
+        )
+        self._midi_lbl.get_style_context().add_class("midi-bad")
         topbar.pack_start(self._midi_lbl, False, False, 0)
 
         btn_stop = Gtk.Button(label="Stop")
@@ -2285,57 +2674,6 @@ class PadfireApp:
         wrap.pack_start(grid, False, False, 0)
         root.pack_start(wrap, True, False, 0)
 
-        # status bar -- compact, only what matters
-        status = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        status.get_style_context().add_class("statusbar")
-
-        self._vu_bar = Gtk.ProgressBar(); self._vu_bar.set_name("vu")
-        self._vu_bar.set_size_request(54, 4); self._vu_bar.set_valign(Gtk.Align.CENTER)
-        status.pack_start(self._vu_bar, False, False, 0)
-
-        self._rac_lbl = Gtk.Label(label="○ Hearth"); self._rac_lbl.get_style_context().add_class("stat-dim")
-        status.pack_start(self._rac_lbl, False, False, 2)
-
-        # hearth volumes -- only shown when connected, hidden otherwise
-        self._rac_vol_box = Gtk.Box(spacing=5)
-        for sink, tag in [("vm_game","G"),("vm_chat","C"),("vm_music","M")]:
-            tl = Gtk.Label(label=tag); tl.get_style_context().add_class("stat-dim")
-            self._rac_vol_box.pack_start(tl, False, False, 0)
-            vl = Gtk.Label(label=""); vl.get_style_context().add_class("stat-val")
-            self._rac_vol_box.pack_start(vl, False, False, 0)
-            self._rac_vols[sink] = vl
-        # set_visible(False) alone is undone by win.show_all(), so "G C M"
-        # used to show with no values whenever Hearth was offline
-        self._rac_vol_box.set_no_show_all(True)
-        self._rac_vol_box.set_visible(False)
-        status.pack_start(self._rac_vol_box, False, False, 0)
-
-        # what is playing right now
-        self._play_lbl = Gtk.Label(label=""); self._play_lbl.set_xalign(0)
-        self._play_lbl.get_style_context().add_class("stat-play")
-        self._play_lbl.set_ellipsize(Pango.EllipsizeMode.END)
-        status.pack_start(self._play_lbl, True, True, 6)
-
-        # transient errors (missing file, etc) instead of stdout-only
-        self._msg_lbl = Gtk.Label(label=""); self._msg_lbl.set_xalign(1)
-        self._msg_lbl.get_style_context().add_class("stat-warn")
-        self._msg_lbl.set_ellipsize(Pango.EllipsizeMode.END)
-        self._msg_lbl.set_no_show_all(True); self._msg_lbl.set_visible(False)
-        status.pack_start(self._msg_lbl, False, False, 4)
-
-        # The Hearth button only exists when Hearth does, and rac_send runs off
-        # the main thread: it has a 1s socket timeout, which was enough to
-        # visibly freeze the window when Hearth was not installed.
-        self._hrth_btn = Gtk.Button(label="Hearth")
-        self._hrth_btn.get_style_context().add_class("act")
-        self._hrth_btn.get_style_context().add_class("btn-sm")
-        self._hrth_btn.set_tooltip_text("Bring the Hearth window to the front")
-        self._hrth_btn.connect("clicked", lambda *_: threading.Thread(
-            target=lambda: rac_send("show"), daemon=True).start())
-        self._hrth_btn.set_no_show_all(True); self._hrth_btn.set_visible(False)
-        status.pack_end(self._hrth_btn, False, False, 0)
-        root.pack_start(status, False, False, 0)
-
         self._setup_tray()
         self._refresh_all()
         win.show_all()
@@ -2357,7 +2695,7 @@ class PadfireApp:
     def _edit(self, row, col):
         result = pad_edit_dialog(self._win, self._get_pad(row, col),
                                  self.audio.list_sinks(refresh=True),
-                                 self.cfg.get("default_sink","vm_game"),
+                                 self.cfg.get("default_sink",""),
                                  self.audio, self._all_pad_keys())
         if result is not None: self._set_pad(row, col, result)
 
@@ -2407,7 +2745,7 @@ class PadfireApp:
         if not pad.get("label"): pad["label"] = Path(path).stem
         pad.setdefault("action","play")
         result = pad_edit_dialog(self._win, pad, self.audio.list_sinks(refresh=True),
-                                 self.cfg.get("default_sink","vm_game"),
+                                 self.cfg.get("default_sink",""),
                                  self.audio, self._all_pad_keys())
         if result is not None: self._set_pad(row, col, result)
         Gtk.drag_finish(ctx, True, False, timestamp)
@@ -2442,31 +2780,23 @@ class PadfireApp:
             f"Monitor ON -> {sink}\nRight-click for settings" if on
             else "Monitor off\nRight-click for settings")
 
-    def _update_rac(self, data):
-        if self._rac_lbl:
-            ctx = self._rac_lbl.get_style_context()
-            ctx.remove_class("stat-ok"); ctx.remove_class("stat-dim")
-            if self._rac_online:
-                self._rac_lbl.set_text("● Hearth"); ctx.add_class("stat-ok")
-                self._rac_vol_box.show_all()
-                if getattr(self, "_hrth_btn", None) is not None: self._hrth_btn.show()
-            else:
-                self._rac_lbl.set_text("○ Hearth"); ctx.add_class("stat-dim")
-                self._rac_vol_box.hide()
-                if getattr(self, "_hrth_btn", None) is not None: self._hrth_btn.hide()
-        if data:
-            for sink, lbl in self._rac_vols.items():
-                info = data.get(sink,{}); mute=info.get("mute",False); vol=info.get("vol","?")
-                lbl.set_text(f"{'M ' if mute else ''}{vol}%")
-        return False
-
     def _setup_tray(self):
         if not (HAVE_IND and AI):
             print("[tray] libappindicator3 unavailable -- closing the window "
                   "will quit instead of hiding")
             return
-        icon = str(HOME/".local/share/icons/hicolor/48x48/apps/padfire.png")
-        if not Path(icon).exists(): icon = "audio-x-generic"
+        icon = "audio-x-generic"
+        try:
+            theme = Gtk.IconTheme.get_default()
+            theme.append_search_path(str(HOME / ".local" / "share" / "icons"))
+            theme.append_search_path(
+                str(Path(__file__).resolve().parent / "packaging" / "icons")
+            )
+            theme.rescan_if_needed()
+            if theme.has_icon("padfire"):
+                icon = "padfire"
+        except Exception:
+            pass
         ind = AI.Indicator.new("padfire", icon, AI.IndicatorCategory.APPLICATION_STATUS)
         ind.set_status(AI.IndicatorStatus.ACTIVE); ind.set_title("Padfire")
         self._indicator = ind
@@ -2561,9 +2891,8 @@ class PadfireApp:
                 break
             thread.join(timeout=remaining)
 
-        # The VU worker owns a parec subprocess and the Hearth probe owns a
-        # long-lived polling loop. Both observe _shutdown_event and clean up.
-        for thread in (self._vu_thread, self._rac_thread):
+        # The VU worker owns a parec subprocess and observes _shutdown_event.
+        for thread in (self._vu_thread,):
             if thread is not None and thread is not threading.current_thread():
                 thread.join(timeout=1.5)
 
@@ -2580,9 +2909,99 @@ class PadfireApp:
     def run(self):
         signal.signal(signal.SIGTERM, lambda *_: GLib.idle_add(self._quit))
         signal.signal(signal.SIGINT,  lambda *_: GLib.idle_add(self._quit))
-        CFGDIR.mkdir(parents=True, exist_ok=True)
-        Path(PIDF).write_text(str(os.getpid()))
+        _ensure_private_config_dir()
+        _atomic_private_write(Path(PIDF), f"{os.getpid()}\n".encode("ascii"))
         Gtk.main()
+
+
+def _quote_executable(path):
+    """Quote an executable path for desktop-file and systemd command fields."""
+    value = str(path)
+    if any(char.isspace() or char in '\\"' for char in value):
+        value = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{value}"'
+    return value
+
+
+def install_desktop_integration(launcher):
+    """Install a portable KDE/GNOME launcher and the bundled hicolor icon."""
+    launcher = Path(launcher).expanduser().resolve()
+    if not launcher.is_file():
+        print(f"error: Padfire launcher does not exist: {launcher}")
+        return None
+
+    package_dir = Path(__file__).resolve().parent / "packaging"
+    desktop_source = package_dir / "padfire.desktop"
+    icon_source = (
+        package_dir / "icons" / "hicolor" / "scalable" / "apps" / "padfire.svg"
+    )
+    if not desktop_source.is_file() or not icon_source.is_file():
+        print("error: packaged Padfire desktop entry or SVG icon is missing")
+        return None
+
+    icon_root = HOME / ".local" / "share" / "icons" / "hicolor"
+    icon_target = icon_root / "scalable" / "apps" / "padfire.svg"
+    applications = HOME / ".local" / "share" / "applications"
+    desktop_target = applications / "padfire.desktop"
+    icon_target.parent.mkdir(parents=True, exist_ok=True)
+    applications.mkdir(parents=True, exist_ok=True)
+
+    # Use temporary siblings + replace so KDE never sees a half-written icon
+    # or desktop entry while its cache is being refreshed.
+    icon_tmp = icon_target.with_name(icon_target.name + ".tmp")
+    icon_tmp.write_bytes(icon_source.read_bytes())
+    os.replace(icon_tmp, icon_target)
+
+    exec_path = _quote_executable(launcher)
+    desktop_text = desktop_source.read_text(encoding="utf-8")
+    desktop_text = desktop_text.replace("padfire-launch", exec_path)
+    desktop_tmp = desktop_target.with_name(desktop_target.name + ".tmp")
+    desktop_tmp.write_text(desktop_text, encoding="utf-8")
+    os.replace(desktop_tmp, desktop_target)
+
+    # Update an existing XDG autostart entry in place, but never create one:
+    # installation must not silently opt users into background startup.
+    autostart = HOME / ".config" / "autostart" / "padfire.desktop"
+    if autostart.is_file():
+        import re
+        current = autostart.read_text(encoding="utf-8")
+        current, exec_count = re.subn(
+            r'(?m)^Exec=(?:"(?:[^"\\]|\\.)*"|[^\s]+)',
+            lambda match: "Exec=" + exec_path,
+            current,
+        )
+        current, icon_count = re.subn(r"(?m)^Icon=.*$", "Icon=padfire", current)
+        if exec_count or icon_count:
+            tmp = autostart.with_name(autostart.name + ".tmp")
+            tmp.write_text(current, encoding="utf-8")
+            os.replace(tmp, autostart)
+
+    # Refresh the KDE application database when running under Plasma. GTK
+    # resolves the scalable SVG directly from the hicolor theme search path;
+    # do not force gtk-update-icon-cache on user themes whose index.theme is
+    # symlinked to the system hicolor theme.
+    update_kde = shutil.which("kbuildsycoca6")
+    if update_kde:
+        result = subprocess.run(
+            [update_kde, "--noincremental"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode:
+            print(f"[install] KDE cache refresh warning: {result.stderr.strip()}")
+
+    update_db = shutil.which("update-desktop-database")
+    if update_db:
+        result = subprocess.run(
+            [update_db, str(applications)], capture_output=True, text=True
+        )
+        if result.returncode:
+            print(f"[install] desktop database refresh warning: {result.stderr.strip()}")
+
+    print(f"installed icon: {icon_target}")
+    print(f"installed desktop entry: {desktop_target}")
+    return desktop_target
 
 
 def install_service():
@@ -2595,17 +3014,19 @@ def install_service():
               f"(looked in {_here.parent} and {Path.home()/'bin'})")
         return 1
     svc.parent.mkdir(parents=True, exist_ok=True)
-    # No hardcoded WAYLAND_DISPLAY: it broke X11 sessions and any Wayland
-    # socket not named wayland-0. graphical-session.target already carries the
-    # session environment. This now matches packaging/padfire.service.
+    # Keep display and PipeWire endpoints session-derived. Import the current
+    # desktop environment into the user manager instead of hardcoding :0 or
+    # wayland-0, which breaks other machines and non-default Wayland sockets.
+    service_exec = _quote_executable(launcher)
     svc.write_text(f"""[Unit]
 Description=Padfire Soundboard
 PartOf=graphical-session.target
-After=graphical-session.target pipewire.service wireplumber.service
+After=graphical-session.target pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
 
 [Service]
 Type=simple
-ExecStart={launcher}
+ExecStart={service_exec}
 Restart=on-failure
 RestartSec=4
 
@@ -2613,11 +3034,17 @@ RestartSec=4
 WantedBy=graphical-session.target
 """)
     print(f"wrote {svc}")
+    if install_desktop_integration(launcher) is None:
+        return 1
     rc = 0
     # v2.2 used os.system and ignored both exit codes, so a failed enable
     # still printed nothing and looked like success
-    for cmd in (["systemctl", "--user", "daemon-reload"],
-                ["systemctl", "--user", "enable", "padfire.service"]):
+    for cmd in (
+        ["systemctl", "--user", "import-environment",
+         "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR"],
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", "padfire.service"],
+    ):
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             rc = r.returncode
@@ -2629,6 +3056,7 @@ WantedBy=graphical-session.target
 
 def main():
     GLib.set_prgname("padfire")
+    Gdk.set_program_class("padfire")
     ap = argparse.ArgumentParser(description=f"Padfire {VER}")
     ap.add_argument("--version", action="version", version=f"Padfire {VER}")
     ap.add_argument("--quit",    action="store_true",
@@ -2640,9 +3068,9 @@ def main():
     ap.add_argument("--stop",    action="store_true",
                     help="stop all audio")
     ap.add_argument("--status",  action="store_true",
-                    help="print JSON status (for Hearth and scripts)")
+                    help="print JSON status for scripts and external tools")
     ap.add_argument("--install", action="store_true",
-                    help="write and enable the systemd --user service")
+                    help="install the desktop icon/launcher and enable the user service")
     args = ap.parse_args()
     if args.install: raise SystemExit(install_service() or 0)
     # Order preserved from the original: action flags win over --status.
@@ -2655,7 +3083,7 @@ def main():
             # systemd unit can tell "done" from "no instance answered".
             sys.exit(0 if _resp else 1)
     if args.status:
-        # --status is a machine contract ("JSON status for Hearth/tools"),
+        # --status is a stable machine-readable contract for external tools.
         # so it must stay parseable with no instance running. The old code
         # printed the bare text "not running" and still exited 0, which
         # made every JSON consumer raise on the first character.

@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#252530"/>
+      <stop offset="100%" stop-color="#111115"/>
+    </radialGradient>
+    <radialGradient id="glow_g" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#80ffaa"/>
+      <stop offset="100%" stop-color="#00c850"/>
+    </radialGradient>
+    <radialGradient id="glow_a" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ffee80"/>
+      <stop offset="100%" stop-color="#e8a800"/>
+    </radialGradient>
+    <radialGradient id="glow_r" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff8080"/>
+      <stop offset="100%" stop-color="#cc2200"/>
+    </radialGradient>
+    <filter id="bloom">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="40" fill="url(#bg)"/>
+  <rect x="2" y="2" width="252" height="252" rx="39" fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="2"/>
+  <!-- Row 0 -->
+  <rect x="18" y="18" width="24" height="24" rx="5" fill="url(#glow_g)" stroke="#30d158" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="46" y="18" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="74" y="18" width="24" height="24" rx="5" fill="url(#glow_a)" stroke="#ffd60a" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="102" y="18" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="130" y="18" width="24" height="24" rx="5" fill="url(#glow_a)" stroke="#ffd60a" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="158" y="18" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="186" y="18" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="214" y="18" width="24" height="24" rx="5" fill="url(#glow_g)" stroke="#30d158" stroke-width="0.8" filter="url(#bloom)"/>
+  <!-- Row 1 -->
+  <rect x="18" y="46" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="46" y="46" width="24" height="24" rx="5" fill="url(#glow_g)" stroke="#30d158" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="74" y="46" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="102" y="46" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="130" y="46" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="158" y="46" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="186" y="46" width="24" height="24" rx="5" fill="url(#glow_g)" stroke="#30d158" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="214" y="46" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <!-- Row 2 -->
+  <rect x="18" y="74" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="46" y="74" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="74" y="74" width="24" height="24" rx="5" fill="url(#glow_g)" stroke="#30d158" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="102" y="74" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="130" y="74" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="158" y="74" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="186" y="74" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="214" y="74" width="24" height="24" rx="5" fill="url(#glow_a)" stroke="#ffd60a" stroke-width="0.8" filter="url(#bloom)"/>
+  <!-- Row 3 -->
+  <rect x="18" y="102" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="46" y="102" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="74" y="102" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="102" y="102" width="24" height="24" rx="5" fill="url(#glow_g)" stroke="#30d158" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="130" y="102" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="158" y="102" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="186" y="102" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="214" y="102" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <!-- Row 4 -->
+  <rect x="18" y="130" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="46" y="130" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="74" y="130" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="102" y="130" width="24" height="24" rx="5" fill="url(#glow_a)" stroke="#ffd60a" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="130" y="130" width="24" height="24" rx="5" fill="url(#glow_g)" stroke="#30d158" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="158" y="130" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="186" y="130" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="214" y="130" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <!-- Row 5 -->
+  <rect x="18" y="158" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="46" y="158" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="74" y="158" width="24" height="24" rx="5" fill="url(#glow_g)" stroke="#30d158" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="102" y="158" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="130" y="158" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="158" y="158" width="24" height="24" rx="5" fill="url(#glow_g)" stroke="#30d158" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="186" y="158" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="214" y="158" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <!-- Row 6 -->
+  <rect x="18" y="186" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="46" y="186" width="24" height="24" rx="5" fill="url(#glow_g)" stroke="#30d158" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="74" y="186" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="102" y="186" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="130" y="186" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="158" y="186" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="186" y="186" width="24" height="24" rx="5" fill="url(#glow_a)" stroke="#ffd60a" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="214" y="186" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <!-- Row 7 -->
+  <rect x="18" y="214" width="24" height="24" rx="5" fill="url(#glow_g)" stroke="#30d158" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="46" y="214" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="74" y="214" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="102" y="214" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="130" y="214" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="158" y="214" width="24" height="24" rx="5" fill="url(#glow_a)" stroke="#ffd60a" stroke-width="0.8" filter="url(#bloom)"/>
+  <rect x="186" y="214" width="24" height="24" rx="5" fill="rgba(40,40,50,0.9)" stroke="rgba(255,255,255,0.07)" stroke-width="0.8"/>
+  <rect x="214" y="214" width="24" height="24" rx="5" fill="url(#glow_r)" stroke="#ff453a" stroke-width="0.8" filter="url(#bloom)"/>
+</svg>
