@@ -7,6 +7,7 @@ for UI review, regression screenshots, and automated inspection.
 
     tools/padfire-shot                     # -> /tmp/padfire-shot.png
     tools/padfire-shot -o /tmp/ui.png
+    tools/padfire-shot -o ~/Pictures/ui.png
     tools/padfire-shot --demo              # throwaway HOME with sample pads
     tools/padfire-shot --crop 60           # also write a 60% centre crop
     tools/padfire-shot --scale 250         # also write a 2.5x point-scaled copy
@@ -16,7 +17,7 @@ cannot be answered by reading source. This makes a screenshot one command.
 
 Exit status: 0 on success, 1 if no usable display could be opened.
 """
-import argparse, glob, hashlib, importlib.util, json, os, shutil, subprocess, sys, tempfile, wave
+import argparse, glob, hashlib, importlib.util, json, os, shutil, stat, subprocess, sys, tempfile, wave
 from pathlib import Path
 
 HERE      = Path(__file__).resolve().parent
@@ -27,6 +28,63 @@ READY_ENV = "PADFIRE_SHOT_READY"
 
 def log(msg):
     print(f"[shot] {msg}", flush=True)
+
+
+def safe_output_path(raw):
+    """Resolve an explicit screenshot target inside HOME or the temp directory.
+
+    The CLI accepts a user-selected destination, but it must not be able to
+    escape these ordinary output roots or overwrite a symlink, hard link,
+    special file, or file owned by another user.
+    """
+    value = os.fspath(raw)
+    if not value or "\\x00" in value:
+        raise ValueError("Screenshot output path is empty or invalid")
+
+    requested = Path(value).expanduser()
+    if not requested.is_absolute():
+        requested = Path.cwd() / requested
+    if requested.name in ("", ".", ".."):
+        raise ValueError("Screenshot output must name a file")
+    if requested.is_symlink():
+        raise ValueError("Screenshot output must not be a symlink")
+
+    roots = (
+        Path.home().resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+    )
+
+    def contained(candidate):
+        normalized = os.path.realpath(os.fspath(candidate))
+        for root in roots:
+            try:
+                if os.path.commonpath((os.fspath(root), normalized)) == os.fspath(root):
+                    return Path(normalized)
+            except ValueError:
+                continue
+        raise ValueError("Screenshot output must be inside HOME or the temp directory")
+
+    # realpath removes '..' segments and resolves any existing parent symlinks
+    # before the target is checked against the allow-listed roots.
+    target = contained(requested)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    # Re-resolve after creating the parent so a replaced/symlinked parent is
+    # checked again before any screenshot or ImageMagick process writes there.
+    target = contained(target.parent.resolve() / target.name)
+    if target.is_symlink():
+        raise ValueError("Screenshot output must not be a symlink")
+    try:
+        info = target.lstat()
+    except FileNotFoundError:
+        return target
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("Screenshot output must be a regular file")
+    if info.st_nlink != 1:
+        raise ValueError("Screenshot output must not be hard-linked")
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise PermissionError("Screenshot output is owned by another user")
+    return target
 
 
 # ---------------------------------------------------------------- display
@@ -296,12 +354,12 @@ def post(out, scale=None, crop=None):
         return made
     if crop:
         pct = str(crop).strip().rstrip("%")
-        c = out.with_name(out.stem + f"-crop{pct}.png")
+        c = safe_output_path(out.with_name(out.stem + f"-crop{pct}.png"))
         subprocess.run([magick, str(out), "-gravity", "center",
                         "-crop", f"{pct}%x{pct}%+0+0", "+repage", str(c)], check=False)
         if c.exists(): made.append(c)
     if scale:
-        s = out.with_name(out.stem + f"-{scale}pct.png")
+        s = safe_output_path(out.with_name(out.stem + f"-{scale}pct.png"))
         subprocess.run([magick, str(out), "-filter", "point",
                         "-resize", f"{scale}%", str(s)], check=False)
         if s.exists(): made.append(s)
@@ -317,7 +375,7 @@ def main():
     ap = argparse.ArgumentParser(prog="padfire-shot",
                                  description="Screenshot the Padfire window.")
     ap.add_argument("-o", "--out", default="/tmp/padfire-shot.png",
-                    help="output PNG (default: /tmp/padfire-shot.png)")
+                    help="output PNG under HOME or the temp directory (default: /tmp/padfire-shot.png)")
     ap.add_argument("--demo", action="store_true",
                     help="use a throwaway HOME with sample pads covering every "
                          "pad state; never touches your real config")
@@ -335,8 +393,10 @@ def main():
     if not ensure_display():
         return 1
 
-    out = Path(args.out).expanduser().resolve()
-    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        out = safe_output_path(args.out)
+    except (OSError, ValueError) as exc:
+        ap.error(str(exc))
 
     tmp_home = None
     try:
