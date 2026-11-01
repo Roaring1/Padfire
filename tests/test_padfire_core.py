@@ -113,6 +113,118 @@ class PadfireCoreTests(unittest.TestCase):
         )
         self.assertTrue(process.waited)
 
+    def test_lufs_analysis_skips_process_creation_after_cancellation(self):
+        cancelled = threading.Event()
+        cancelled.set()
+        with patch.object(padfire.subprocess, "Popen") as popen:
+            self.assertIsNone(padfire.analyze_lufs("unused.wav", cancelled))
+        popen.assert_not_called()
+
+    def test_lufs_analysis_terminates_ffmpeg_if_dialog_closes_during_startup(self):
+        cancelled = threading.Event()
+        process = self._fake_process()
+
+        def spawn(*_args, **_kwargs):
+            cancelled.set()
+            return process
+
+        with patch.object(padfire.subprocess, "Popen", side_effect=spawn):
+            self.assertIsNone(padfire.analyze_lufs("unused.wav", cancelled))
+
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.waited)
+        if os.name == "posix":
+            self.assertTrue(process.killed)
+
+    def test_lufs_analysis_timeout_reaps_ffmpeg(self):
+        process = self._fake_process()
+        with patch.object(padfire.subprocess, "Popen", return_value=process):
+            self.assertIsNone(padfire.analyze_lufs("unused.wav", timeout=0))
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.waited)
+
+    def test_lufs_analysis_parses_ffmpeg_measurement(self):
+        stderr = (
+            "noise before json\\n"
+            '{"input_i":"-20.0","input_tp":"-1.0"}'
+        )
+        process = self._fake_process(lambda: ("", stderr))
+        with patch.object(padfire.subprocess, "Popen", return_value=process):
+            result = padfire.analyze_lufs("unused.wav")
+        self.assertEqual(result["input_i"], -20.0)
+        self.assertEqual(result["input_tp"], -1.0)
+        self.assertGreaterEqual(result["suggested_vol"], 1)
+        self.assertLessEqual(result["suggested_vol"], 150)
+
+    def test_editor_preview_rejects_cancelled_dialog(self):
+        audio = unittest.mock.Mock()
+        cancelled = threading.Event()
+        cancelled.set()
+        lock = threading.Lock()
+        stop_pending = threading.Event()
+        generation = [3]
+
+        self.assertFalse(padfire._play_editor_preview(
+            audio, "__test__", "clip.wav", "vm_game", 80, False,
+            cancelled, lock, 3, generation, stop_pending,
+        ))
+        audio.play.assert_not_called()
+
+    def test_editor_preview_rejects_stale_generation_after_stop(self):
+        audio = unittest.mock.Mock()
+        cancelled = threading.Event()
+        lock = threading.Lock()
+        stop_pending = threading.Event()
+        generation = [4]
+
+        self.assertFalse(padfire._play_editor_preview(
+            audio, "__test__", "clip.wav", "vm_game", 80, False,
+            cancelled, lock, 3, generation, stop_pending,
+        ))
+        audio.play.assert_not_called()
+
+    def test_editor_preview_snapshots_and_passes_values_when_current(self):
+        audio = unittest.mock.Mock()
+        cancelled = threading.Event()
+        lock = threading.Lock()
+        stop_pending = threading.Event()
+        generation = [3]
+
+        self.assertTrue(padfire._play_editor_preview(
+            audio, "__test__", "clip.wav", "vm_music", 72, True,
+            cancelled, lock, 3, generation, stop_pending,
+        ))
+        audio.play.assert_called_once_with(
+            "__test__", "clip.wav", "vm_music", 72, True
+        )
+
+    def test_editor_preview_cancel_waits_for_pending_worker_lock(self):
+        audio = unittest.mock.Mock()
+        cancelled = threading.Event()
+        lock = threading.Lock()
+        stop_pending = threading.Event()
+        generation = [1]
+        entered = threading.Event()
+        lock.acquire()
+        worker = threading.Thread(
+            target=lambda: (
+                entered.set(),
+                padfire._play_editor_preview(
+                    audio, "__test__", "clip.wav", "vm_game", 80, False,
+                    cancelled, lock, 1, generation, stop_pending,
+                ),
+            )
+        )
+        worker.start()
+        self.assertTrue(entered.wait(1))
+        cancelled.set()
+        generation[0] += 1
+        lock.release()
+        worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        audio.play.assert_not_called()
+
     def _bare_app(self):
         app = object.__new__(padfire.PadfireApp)
 
@@ -496,15 +608,115 @@ class PadfireCoreTests(unittest.TestCase):
         engine._running = True
         engine._connected = False
 
-        def shutdown_during_wait(_seconds):
-            engine._running = False
+        class StopDuringWait:
+            def wait(self, _seconds):
+                engine._running = False
+                return True
 
-        with patch.object(
-            padfire.time, "sleep", side_effect=shutdown_during_wait
-        ), patch.object(engine, "try_connect") as try_connect:
+        engine._stop_event = StopDuringWait()
+        with patch.object(engine, "try_connect") as try_connect:
             engine._reconnect_loop()
 
         try_connect.assert_not_called()
+
+    def test_midi_reader_exits_when_idle_stop_event_is_set(self):
+        engine = object.__new__(padfire.MidiEngine)
+        engine._running = True
+        engine._connected = False
+        engine._in = None
+
+        class StopImmediately:
+            def __init__(self):
+                self.waited = []
+
+            def is_set(self):
+                return False
+
+            def wait(self, timeout):
+                self.waited.append(timeout)
+                return True
+
+        stop = StopImmediately()
+        engine._stop_event = stop
+        engine._read_loop()
+        self.assertEqual(stop.waited, [0.05])
+
+    def test_midi_shutdown_closes_port_and_unblocks_reader_thread(self):
+        engine = object.__new__(padfire.MidiEngine)
+        engine._running = True
+        engine._connected = True
+        engine._stop_event = threading.Event()
+        engine._conn_lock = threading.Lock()
+        engine._out_lock = threading.Lock()
+        iterator_started = threading.Event()
+        release_iterator = threading.Event()
+
+        class BlockingInput:
+            closed = False
+
+            def __iter__(self):
+                iterator_started.set()
+                release_iterator.wait(2)
+                return iter(())
+
+            def close(self):
+                self.closed = True
+                release_iterator.set()
+
+        class FakeOutput:
+            closed = False
+
+            def send(self, _message):
+                pass
+
+            def close(self):
+                self.closed = True
+
+        input_port = BlockingInput()
+        output_port = FakeOutput()
+        engine._in = input_port
+        engine._out = output_port
+        engine._on_disconnect = lambda: None
+        engine._read_thread = threading.Thread(target=engine._read_loop)
+        engine._reconnect_thread = threading.Thread(target=engine._reconnect_loop)
+        engine._read_thread.start()
+        engine._reconnect_thread.start()
+
+        self.assertTrue(iterator_started.wait(1), "MIDI reader did not enter port iteration")
+        engine.shutdown()
+
+        self.assertTrue(input_port.closed)
+        self.assertTrue(output_port.closed)
+        self.assertFalse(engine._read_thread.is_alive())
+        self.assertFalse(engine._reconnect_thread.is_alive())
+
+    def test_midi_shutdown_wakes_and_joins_both_workers(self):
+        engine = object.__new__(padfire.MidiEngine)
+        engine._running = True
+        engine._connected = False
+        engine._in = engine._out = None
+        engine._out_lock = threading.Lock()
+        engine._conn_lock = threading.Lock()
+        engine._stop_event = threading.Event()
+        engine._on_disconnect = lambda: None
+
+        class FakeThread:
+            def __init__(self):
+                self.join_timeouts = []
+
+            def join(self, timeout=None):
+                self.join_timeouts.append(timeout)
+
+        reader = FakeThread()
+        watcher = FakeThread()
+        engine._read_thread = reader
+        engine._reconnect_thread = watcher
+        engine.shutdown()
+
+        self.assertFalse(engine._running)
+        self.assertTrue(engine._stop_event.is_set())
+        self.assertEqual(reader.join_timeouts, [1.0])
+        self.assertEqual(watcher.join_timeouts, [1.0])
 
     def test_vu_source_tracks_selected_monitor_or_default_sink(self):
         app = object.__new__(padfire.PadfireApp)  # method only reads cfg; no UI/thread startup

@@ -437,9 +437,17 @@ class MidiEngine:
         self._in = self._out = None
         self._out_lock  = threading.Lock()
         self._conn_lock = threading.Lock()
-        self._connected = False; self._running = True
-        threading.Thread(target=self._read_loop,      daemon=True, name="midi-read").start()
-        threading.Thread(target=self._reconnect_loop, daemon=True, name="midi-watch").start()
+        self._connected = False
+        self._running = True
+        self._stop_event = threading.Event()
+        self._read_thread = threading.Thread(
+            target=self._read_loop, daemon=True, name="midi-read"
+        )
+        self._reconnect_thread = threading.Thread(
+            target=self._reconnect_loop, daemon=True, name="midi-watch"
+        )
+        self._read_thread.start()
+        self._reconnect_thread.start()
 
     def _find(self, names):
         for n in names:
@@ -479,23 +487,27 @@ class MidiEngine:
         self._on_disconnect()
 
     def _reconnect_loop(self):
-        while self._running:
-            time.sleep(2)
+        while self._running and not self._stop_event.wait(2):
             if not self._running:
                 break
             if not self._connected:
                 self.try_connect()
 
     def _read_loop(self):
-        while self._running:
-            if not self._connected or not self._in:
-                time.sleep(0.05); continue
+        while self._running and not self._stop_event.is_set():
+            port = self._in if self._connected else None
+            if port is None:
+                if self._stop_event.wait(0.05):
+                    break
+                continue
             try:
-                for msg in self._in:
-                    if not self._running: break
+                for msg in port:
+                    if not self._running or self._stop_event.is_set():
+                        break
                     self._dispatch(msg)
             except Exception:
-                if self._connected: self._disconnect()
+                if self._connected and self._running:
+                    self._disconnect()
 
     def _dispatch(self, msg):
         if msg.type == 'note_on':
@@ -532,10 +544,16 @@ class MidiEngine:
 
     def shutdown(self):
         self._running = False
+        self._stop_event.set()
         if self._connected:
-            try: self.clear_all()
-            except Exception: pass
+            try:
+                self.clear_all()
+            except Exception:
+                pass
         self._disconnect()
+        for thread in (self._read_thread, self._reconnect_thread):
+            if thread is not threading.current_thread():
+                thread.join(timeout=1.0)
 
 
 # IPC
@@ -594,31 +612,83 @@ def ipc_serve(handler, srv_ref):
 
 # LUFS analysis via ffmpeg
 
-def analyze_lufs(filepath):
+def analyze_lufs(filepath, cancel_event=None, timeout=30.0):
+    if cancel_event is not None and cancel_event.is_set():
+        return None
+    proc = None
+    process_group = os.name == "posix"
+    command = [
+        "ffmpeg", "-hide_banner", "-t", "120", "-i", filepath,
+        "-filter:a", "loudnorm=print_format=json", "-f", "null", "-",
+    ]
     try:
-        # -t 120 caps analysis: a long file blew the 30s timeout and was
-        # reported to the user as "Could not read file"
-        result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-t", "120", "-i", filepath,
-             "-filter:a", "loudnorm=print_format=json", "-f", "null", "-"],
-            capture_output=True, text=True, timeout=30)
-        raw = result.stderr
-        start = raw.rfind("{"); end = raw.rfind("}") + 1
-        if start == -1 or end == 0: return None
-        data     = json.loads(raw[start:end])
+        # Use Popen rather than subprocess.run so closing the modal can cancel
+        # analysis and reap the complete ffmpeg process group.
+        proc = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, start_new_session=process_group,
+        )
+        if cancel_event is not None and cancel_event.is_set():
+            _terminate_process(proc, process_group=process_group)
+            return None
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                _terminate_process(proc, process_group=process_group)
+                return None
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            try:
+                _stdout, raw = proc.communicate(timeout=min(0.1, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+
+        start = raw.rfind("{")
+        end = raw.rfind("}") + 1
+        if start == -1 or end == 0:
+            return None
+        data = json.loads(raw[start:end])
         measured = float(data["input_i"])
-        tp       = float(data["input_tp"])
-        # a silent file reports "-inf", which raised OverflowError below and
-        # surfaced as the same misleading "could not read" message
+        tp = float(data["input_tp"])
+        # A silent file reports "-inf"; do not attempt a gain conversion.
         if not (math.isfinite(measured) and math.isfinite(tp)):
             return {"silent": True}
         gain_lin = 10 ** ((TARGET_LUFS - measured) / 20.0)
         suggested = max(1, min(150, int(round(100.0 * gain_lin))))
-        return {"input_i": measured, "input_tp": tp, "suggested_vol": suggested}
+        return {
+            "input_i": measured,
+            "input_tp": tp,
+            "suggested_vol": suggested,
+        }
     except subprocess.TimeoutExpired:
-        print("[lufs] ffmpeg timed out"); return None
+        if proc is not None:
+            _terminate_process(proc, process_group=process_group)
+        if cancel_event is None or not cancel_event.is_set():
+            print("[lufs] ffmpeg timed out")
+        return None
     except Exception as e:
-        print(f"[lufs] {e}"); return None
+        if proc is not None and proc.poll() is None:
+            _terminate_process(proc, process_group=process_group)
+        print(f"[lufs] {e}")
+        return None
+
+
+def _play_editor_preview(
+    audio, key, filepath, sink, volume, loop, cancel_event, preview_lock,
+    generation, current_generation, stop_pending,
+):
+    """Start a preview only while its dialog request is still current."""
+    with preview_lock:
+        if (
+            cancel_event.is_set()
+            or stop_pending.is_set()
+            or generation != current_generation[0]
+        ):
+            return False
+        audio.play(key, filepath, sink, volume, loop)
+        return True
 
 
 # pad edit dialog
@@ -626,6 +696,8 @@ def analyze_lufs(filepath):
 
 def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     dlg = Gtk.Dialog(title="Edit Pad", transient_for=parent, modal=True)
+    _dialog_cancel = threading.Event()
+    _analysis_thread: list[threading.Thread | None] = [None]
     dlg.set_default_size(400, -1)
     dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
     dlg.get_widget_for_response(Gtk.ResponseType.OK).get_style_context().add_class("btn-ok")
@@ -752,19 +824,46 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
 
     def _analyze(*_):
         f = file_btn.get_filename()
-        if not f: return
-        la_btn.set_sensitive(False); la_btn.set_label("Analyzing...")
+        if not f or _dialog_cancel.is_set():
+            return
+        current = _analysis_thread[0]
+        if current is not None and current.is_alive():
+            return
+        la_btn.set_sensitive(False)
+        la_btn.set_label("Analyzing...")
+
+        def _done(result):
+            # Runs on GTK's main thread; never touch widgets after the modal
+            # has closed and its cancellation event has been set.
+            if _dialog_cancel.is_set():
+                return False
+            la_btn.set_sensitive(True)
+            la_btn.set_label("Check loudness")
+            if not result:
+                la_lbl.set_text("Could not read file")
+                return False
+            if result.get("silent"):
+                la_lbl.set_text("File is silent -- nothing to measure")
+                return False
+            _lufs[0] = result
+            la_lbl.set_markup(
+                f"<b>{result['input_i']:.1f} LUFS</b>  peak "
+                f"{result['input_tp']:.1f} dBFS  -> suggested "
+                f"<b>{result['suggested_vol']}%</b>"
+            )
+            ap_btn.set_visible(True)
+            return False
+
         def _bg():
-            r = analyze_lufs(f); GLib.idle_add(_done, r)
-        def _done(r):
-            la_btn.set_sensitive(True); la_btn.set_label("Check loudness")
-            if not r: la_lbl.set_text("Could not read file"); return False
-            if r.get("silent"):
-                la_lbl.set_text("File is silent -- nothing to measure"); return False
-            _lufs[0] = r
-            la_lbl.set_markup(f"<b>{r['input_i']:.1f} LUFS</b>  peak {r['input_tp']:.1f} dBFS  -> suggested <b>{r['suggested_vol']}%</b>")
-            ap_btn.set_visible(True); return False
-        threading.Thread(target=_bg, daemon=True).start()
+            result = analyze_lufs(f, _dialog_cancel)
+            if not _dialog_cancel.is_set():
+                GLib.idle_add(_done, result)
+
+        worker = threading.Thread(
+            target=_bg, daemon=True, name="padfire-lufs"
+        )
+        _analysis_thread[0] = worker
+        worker.start()
 
     la_btn.connect("clicked", _analyze)
     ap_btn.connect("clicked", lambda *_: _lufs[0] and vol_adj.set_value(_lufs[0]["suggested_vol"]))
@@ -791,16 +890,91 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     rt_c.set_active({"restart":0,"toggle":1,"global":2}.get(pad_cfg.get("retrigger","global") if pad_cfg else "global", 2))
     arow("2nd press", rt_c)
 
-    # test buttons
+    # Preview workers never read GTK controls off the main thread. Every
+    # request carries a generation so Stop and close can invalidate pending
+    # starts before the worker reaches AudioEngine.play().
     tr = Gtk.Box(spacing=6)
     TK = "__test__"
     tb = Gtk.Button(label="Play"); tb.get_style_context().add_class("act")
     sb2 = Gtk.Button(label="Stop"); sb2.get_style_context().add_class("act")
+    _preview_lock = threading.Lock()
+    _preview_generation = [0]
+    _preview_stopping = threading.Event()
+    _preview_workers: set[threading.Thread] = set()
+
+    def _preview_worker_done():
+        with _preview_lock:
+            _preview_workers.discard(threading.current_thread())
+
+    def _play_preview(generation, filepath, sink, volume, loop):
+        try:
+            _play_editor_preview(
+                audio, TK, filepath, sink, volume, loop, _dialog_cancel,
+                _preview_lock, generation, _preview_generation,
+                _preview_stopping,
+            )
+        except Exception as exc:
+            print(f"[padfire] preview failed: {exc}")
+        finally:
+            _preview_worker_done()
+
+    def _stop_preview():
+        try:
+            with _preview_lock:
+                try:
+                    audio.stop(TK)
+                finally:
+                    _preview_stopping.clear()
+        except Exception as exc:
+            print(f"[padfire] preview stop failed: {exc}")
+        finally:
+            _preview_worker_done()
+
     def _test(*_):
-        f = file_btn.get_filename()
-        if f: threading.Thread(target=lambda: audio.play(TK, f, get_sink(), int(vol_adj.get_value()), loop_sw.get_active()), daemon=True).start()
+        filepath = file_btn.get_filename()
+        if not filepath:
+            return
+        # Snapshot GTK widget values here, on the main thread.
+        sink = get_sink()
+        volume = int(vol_adj.get_value())
+        loop = loop_sw.get_active()
+        with _preview_lock:
+            if _dialog_cancel.is_set() or _preview_stopping.is_set():
+                return
+            _preview_generation[0] += 1
+            generation = _preview_generation[0]
+            worker = threading.Thread(
+                target=_play_preview,
+                args=(generation, filepath, sink, volume, loop),
+                daemon=True,
+                name="padfire-preview",
+            )
+            _preview_workers.add(worker)
+            try:
+                worker.start()
+            except Exception as exc:
+                _preview_workers.discard(worker)
+                print(f"[padfire] could not start preview: {exc}")
+
+    def _stop_test_preview(*_):
+        with _preview_lock:
+            if _dialog_cancel.is_set():
+                return
+            _preview_generation[0] += 1
+            _preview_stopping.set()
+            worker = threading.Thread(
+                target=_stop_preview, daemon=True, name="padfire-preview-stop"
+            )
+            _preview_workers.add(worker)
+            try:
+                worker.start()
+            except Exception as exc:
+                _preview_workers.discard(worker)
+                _preview_stopping.clear()
+                print(f"[padfire] could not stop preview: {exc}")
+
     tb.connect("clicked", _test)
-    sb2.connect("clicked", lambda *_: threading.Thread(target=lambda: audio.stop(TK), daemon=True).start())
+    sb2.connect("clicked", _stop_test_preview)
     tr.pack_start(tb, False, False, 0); tr.pack_start(sb2, False, False, 0)
     play_box.pack_start(tr, False, False, 0)
 
@@ -824,7 +998,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
         if d2.run() == Gtk.ResponseType.OK: cmd_e.set_text(d2.get_filename())
         d2.destroy()
     bb.connect("clicked", _browse)
-    _test_cancel = threading.Event()
+    _test_cancel = _dialog_cancel
     _test_thread: list[threading.Thread | None] = [None]
 
     def _test_run(*_):
@@ -888,11 +1062,28 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     _show_hide(); dlg.show_all(); _show_hide()
 
     resp = dlg.run()
-    _test_cancel.set()
-    test_worker = _test_thread[0]
-    if test_worker is not None and test_worker is not threading.current_thread():
-        test_worker.join(timeout=1.5)
-    audio.stop(TK)
+    # Serialize close against preview startup: either the worker starts before
+    # this lock and is immediately stopped below, or it sees cancellation and
+    # never starts audio after the dialog has gone away.
+    with _preview_lock:
+        _dialog_cancel.set()
+        _preview_generation[0] += 1
+        _preview_stopping.set()
+        try:
+            audio.stop(TK)
+        except Exception as exc:
+            print(f"[padfire] preview close stop failed: {exc}")
+        finally:
+            _preview_stopping.clear()
+        preview_workers = list(_preview_workers)
+
+    for worker in preview_workers:
+        if worker is not threading.current_thread():
+            worker.join(timeout=1.0)
+
+    for worker in (_test_thread[0], _analysis_thread[0]):
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=1.5)
 
     def _color(): return color_names[col_c.get_active()] if col_c.get_active() >= 0 else "default"
     def _notes(): return notes_buf.get_text(notes_buf.get_start_iter(), notes_buf.get_end_iter(), False).strip()
