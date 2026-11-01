@@ -6,6 +6,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -80,6 +81,44 @@ class PadfireCoreTests(unittest.TestCase):
     def test_crosshair_toggle_command_reports_missing_cli(self):
         with patch.object(padfire.shutil, "which", return_value=None):
             self.assertIsNone(padfire.crosshair_toggle_argv())
+
+    def test_crosshair_pad_trigger_runs_cli_off_callback_thread_without_shell(self):
+        app = object.__new__(padfire.PadfireApp)
+        app._flash = lambda _row, _col: None
+        app._get_pad = lambda _row, _col: {"action": "crosshair_toggle"}
+        app._pad_key = lambda _row, _col: "0:17"
+        workers = []
+
+        class DeferredThread:
+            def __init__(self, target, daemon=False):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                workers.append(self)
+
+            def run(self):
+                self.target()
+
+        with patch.object(padfire.threading, "Thread", DeferredThread), patch.object(
+            padfire, "crosshair_toggle_argv",
+            return_value=["/usr/bin/crosshair", "--toggle"],
+        ), patch.object(
+            padfire.subprocess, "run",
+            return_value=SimpleNamespace(returncode=0, stderr="", stdout=""),
+        ) as run:
+            self.assertFalse(app._trigger_pad(1, 1))
+            run.assert_not_called()
+            self.assertEqual(len(workers), 1)
+            self.assertTrue(workers[0].daemon)
+            workers[0].run()
+            run.assert_called_once_with(
+                ["/usr/bin/crosshair", "--toggle"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
 
     def test_save_keeps_previous_generation_as_backup(self):
         first = {"version": 5, "label": "prior"}
