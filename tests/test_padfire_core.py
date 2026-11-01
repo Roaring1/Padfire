@@ -30,6 +30,56 @@ class PadfireCoreTests(unittest.TestCase):
         padfire.CFGDIR = self.config_dir
         padfire.CONF = str(self.config_dir / "padfire.json")
 
+    def test_padfire_shot_output_path_is_contained_and_rejects_unsafe_targets(self):
+        from importlib.machinery import SourceFileLoader
+
+        helper_path = ROOT / "tools" / "padfire-shot"
+        loader = SourceFileLoader("padfire_shot_under_test", str(helper_path))
+        helper_spec = importlib.util.spec_from_loader(loader.name, loader)
+        self.assertIsNotNone(helper_spec)
+        helper = importlib.util.module_from_spec(helper_spec)
+        helper_spec.loader.exec_module(helper)
+
+        screenshot_dir = TEST_HOME / "Pictures"
+        screenshot_dir.mkdir()
+        safe = helper.safe_output_path(screenshot_dir / "main.png")
+        self.assertEqual(safe.parent, screenshot_dir)
+        self.assertTrue(safe.parent.is_dir())
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(TEST_HOME / "screenshots" / "main.png")
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(screenshot_dir / "not-a-png.txt")
+
+        with self.assertRaises(ValueError):
+            helper.safe_output_path("/etc/padfire-shot-forbidden.png")
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(TEST_HOME / ".." / ".." / "etc" / "padfire-shot-forbidden.png")
+
+        target = TEST_HOME / "existing-target.png"
+        target.write_bytes(b"keep existing file")
+        symlink = TEST_HOME / "output-symlink.png"
+        symlink.symlink_to(target)
+        # A final symlink is resolved and accepted only when its target stays
+        # inside the selected fixed output root.
+        self.assertEqual(helper.safe_output_path(symlink), target.resolve())
+
+        outside_target = TEST_HOME / "outside-target"
+        outside_target.symlink_to("/etc/passwd")
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(outside_target)
+
+        hardlink = TEST_HOME / "output-hardlink.png"
+        os.link(target, hardlink)
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(hardlink)
+
+        external_parent = TEST_HOME / "external-parent"
+        external_parent.symlink_to("/etc", target_is_directory=True)
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(external_parent / "padfire-shot-forbidden.png")
+
+        self.assertEqual(target.read_bytes(), b"keep existing file")
+
     def test_release_version_changelog_and_license_are_consistent(self):
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
         license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
