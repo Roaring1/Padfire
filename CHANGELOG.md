@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v2.4.0 — 2026-10-31
+## v2.4.0 — 2026-11-01
 
 - **Standalone, denser main window.** Removed the permanent bottom status bar
   and all Hearth-specific status widgets/polling. The VU meter now sits
@@ -43,9 +43,12 @@
   server caps request/response sizes and concurrent clients, and refuses to
   unlink arbitrary files or another live Padfire instance's socket.
 - **Contained screenshot outputs.** The visual audit tool accepts PNG
-  filenames only in the existing home, Pictures, Desktop or temp directories.
-  It builds destinations from that fixed allow-list and refuses symlinks, hard
-  links, special files and foreign-owned targets (including crop/scale images).
+  files only directly inside the existing home, Pictures, Desktop or temp
+  directories. It rejects parent/final symlinks, nested paths, hard links,
+  special files and foreign-owned targets, including crop/scale outputs.
+  Captures and derived images use private sibling temporary files plus atomic
+  replacement, so a destination symlink introduced after validation is
+  replaced as a link rather than followed to its target.
 - **License and maintainer guidance.** Add the owner-selected MIT license for
   Padfire-authored source/docs, a security policy, contribution and manual
   acceptance guidance, a release checklist, and a deferred device-neutral MIDI
@@ -82,6 +85,10 @@
 - **Modal workers outlived the pad editor.** LUFS analysis now cancels and reaps
   its `ffmpeg` process group; preview playback snapshots UI values on the GTK
   thread and cannot start after Stop or dialog close.
+- **Legacy config backups could retain broad permissions after an upgrade.**
+  Startup now validates an existing `padfire.json.bak` as a user-owned regular
+  single-link file within the size limit, then tightens it to `0600` even when
+  no later save occurs.
 
 ## v2.3
 
