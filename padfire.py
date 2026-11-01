@@ -159,7 +159,9 @@ button { transition: background 120ms ease, border-color 120ms ease, box-shadow 
 .stat-warn { color: #ff9f0a; font-size: 8px; font-weight: 700; }
 .stat-play { color: #30d158; font-size: 8px; font-weight: 700; }
 
-.lbl { color: rgba(255,255,255,0.32); font-size: 9px; }
+.lbl { color: #c2c7d0; font-size: 10px; }
+.dialog-section { color: #f0f2f5; font-size: 10px; font-weight: 700; }
+.volume-value { color: #e0e4ea; font-size: 10px; font-weight: 600; min-width: 34px; }
 
 button.act {
     background: rgba(255,255,255,0.06);
@@ -803,11 +805,20 @@ def _sink_from_selection(sinks, index):
     return ""
 
 
+def _compact_combo(combo, max_chars=22, width_chars=16):
+    """Bound long device/action names in dropdowns without truncating values."""
+    for renderer in combo.get_cells():
+        if isinstance(renderer, Gtk.CellRendererText):
+            renderer.set_property("ellipsize", Pango.EllipsizeMode.END)
+            renderer.set_property("width-chars", min(width_chars, max_chars))
+            renderer.set_property("max-width-chars", max_chars)
+
+
 def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     dlg = Gtk.Dialog(title="Edit Pad", transient_for=parent, modal=True)
     _dialog_cancel = threading.Event()
     _analysis_thread: list[threading.Thread | None] = [None]
-    dlg.set_default_size(400, -1)
+    dlg.set_default_size(380, -1)
     dlg.add_buttons("Cancel", Gtk.ResponseType.CANCEL, "Save", Gtk.ResponseType.OK)
     dlg.get_widget_for_response(Gtk.ResponseType.OK).get_style_context().add_class("btn-ok")
     dlg.set_default_response(Gtk.ResponseType.OK)
@@ -816,11 +827,12 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     box.set_spacing(8); box.set_margin_start(14); box.set_margin_end(14)
     box.set_margin_top(10); box.set_margin_bottom(10)
 
-    def row(label, widget, parent_box=None):
+    def row(label, widget, parent_box=None, expand=True):
         hb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         lb = Gtk.Label(label=label); lb.set_xalign(0); lb.set_width_chars(9)
         lb.get_style_context().add_class("lbl")
-        hb.pack_start(lb, False, False, 0); hb.pack_start(widget, True, True, 0)
+        hb.pack_start(lb, False, False, 0)
+        hb.pack_start(widget, expand, expand, 0)
         (parent_box or box).pack_start(hb, False, False, 0)
 
     action = (pad_cfg.get("action", "play") if pad_cfg else "play")
@@ -830,15 +842,18 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     for txt in ["Play a sound", "Run a script", "Stop SFX", "Stop everything",
                 "Stop a specific pad", "Toggle Crosshair"]:
         act_c.append_text(txt)
+    _compact_combo(act_c, 22, 16)
     act_map = {"play":0, "script":1, "stop_sfx":2, "stop_all":3,
                "stop_key":4, "crosshair_toggle":5}
     act_c.set_active(act_map.get(action, 0))
-    row("Does", act_c)
+    row("Action", act_c)
 
     # label
     lbl_e = Gtk.Entry()
     lbl_e.set_text(pad_cfg.get("label","") if pad_cfg else "")
     lbl_e.set_placeholder_text("Name shown on the pad")
+    lbl_e.set_width_chars(18)
+    lbl_e.set_max_width_chars(24)
     lbl_e.set_activates_default(True)
     row("Name", lbl_e)
 
@@ -847,19 +862,24 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     col_c = Gtk.ComboBoxText()
     swatch = Gtk.Label(label=" ● ")
     for cn in color_names: col_c.append_text(cn)
+    _compact_combo(col_c, 14, 10)
     stored = (pad_cfg.get("color") if pad_cfg else None) or "default"
     if stored not in PAD_COLORS: stored = "default"
     col_c.set_active(color_names.index(stored))
 
     def _swatch(*_):
         idx = col_c.get_active()
-        cn  = color_names[idx] if idx >= 0 else "default"
-        _, bg, border, fg = PAD_COLORS.get(cn, PAD_COLORS["default"])
+        cn = color_names[idx] if idx >= 0 else "default"
+        _, _bg, _border, fg = PAD_COLORS.get(cn, PAD_COLORS["default"])
         if fg:
-            solid = fg.replace("rgba","rgb").rsplit(",",1)[0] + ")"
-            try: swatch.set_markup(f'<span foreground="{solid}"> ● </span>')
-            except Exception: swatch.set_text(" ● ")
-        else: swatch.set_text(" ● ")
+            try:
+                channels = [int(float(part.strip())) for part in fg[5:].split(",")[:3]]
+                color = "#" + "".join(f"{max(0, min(255, value)):02x}" for value in channels)
+                swatch.set_markup(f'<span foreground="{color}"> ● </span>')
+            except (TypeError, ValueError):
+                swatch.set_text(" ● ")
+        else:
+            swatch.set_text(" ● ")
     col_c.connect("changed", _swatch); _swatch()
     cbox = Gtk.Box(spacing=4)
     cbox.pack_start(col_c, True, True, 0); cbox.pack_start(swatch, False, False, 0)
@@ -873,7 +893,6 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     notes_view.get_style_context().add_class("lbl")
     ns = Gtk.ScrolledWindow(); ns.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
     ns.set_size_request(-1, 44); ns.add(notes_view)
-    row("Notes", ns)
 
     sep1 = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
     sep1.set_margin_top(2); sep1.set_margin_bottom(2)
@@ -882,15 +901,53 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     # play section
     play_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     box.pack_start(play_box, False, False, 0)
-    def prow(l, w): row(l, w, play_box)
+    def prow(l, w, expand=True): row(l, w, play_box, expand)
 
-    file_btn = Gtk.FileChooserButton(title="Pick audio file", action=Gtk.FileChooserAction.OPEN)
-    ff = Gtk.FileFilter(); ff.set_name("Audio")
-    for p in ["*.wav","*.flac","*.ogg","*.mp3","*.aiff","*.opus"]: ff.add_pattern(p)
-    file_btn.add_filter(ff)
-    if pad_cfg and pad_cfg.get("file") and Path(pad_cfg["file"]).exists():
-        file_btn.set_filename(pad_cfg["file"])
-    prow("File", file_btn)
+    # A path entry plus a small chooser button stays compact even when a
+    # selected filename is very long. Paths can also be pasted directly.
+    file_row = Gtk.Box(spacing=6)
+    file_e = Gtk.Entry()
+    file_e.set_placeholder_text("Choose an audio file…")
+    file_e.set_width_chars(16)
+    file_e.set_max_width_chars(22)
+    file_e.set_hexpand(True)
+    if pad_cfg and pad_cfg.get("file") and Path(pad_cfg["file"]).is_file():
+        file_e.set_text(pad_cfg["file"])
+    browse_audio_btn = Gtk.Button(label="Browse")
+    browse_audio_btn.get_style_context().add_class("act btn-sm")
+    file_row.pack_start(file_e, True, True, 0)
+    file_row.pack_start(browse_audio_btn, False, False, 0)
+    prow("Sound", file_row)
+
+    def get_audio_file():
+        value = file_e.get_text().strip()
+        if not value:
+            return None
+        candidate = Path(value).expanduser()
+        return str(candidate) if candidate.is_file() else None
+
+    ff = Gtk.FileFilter(); ff.set_name("Audio files")
+    for p in ["*.wav", "*.flac", "*.ogg", "*.mp3", "*.aiff", "*.opus"]:
+        ff.add_pattern(p)
+
+    def _browse_audio(*_):
+        chooser = Gtk.FileChooserDialog(
+            title="Choose audio file", transient_for=dlg,
+            action=Gtk.FileChooserAction.OPEN,
+        )
+        chooser.add_buttons("Cancel", Gtk.ResponseType.CANCEL,
+                            "Select", Gtk.ResponseType.OK)
+        chooser.add_filter(ff)
+        current = get_audio_file()
+        if current:
+            chooser.set_filename(current)
+        if chooser.run() == Gtk.ResponseType.OK:
+            selected = chooser.get_filename()
+            if selected:
+                file_e.set_text(selected)
+        chooser.destroy()
+
+    browse_audio_btn.connect("clicked", _browse_audio)
 
     # Keep the system default first, then offer this machine's actual sinks.
     sink_c = Gtk.ComboBoxText()
@@ -899,6 +956,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     combo_sinks = [None]
     for s in sorted(set(sinks), key=str.casefold):
         sink_c.append_text(s); combo_sinks.append(s)
+    _compact_combo(sink_c, 22, 16)
     try: sink_c.set_active(combo_sinks.index(cur_sink or None))
     except ValueError: sink_c.set_active(0)
     prow("Output", sink_c)
@@ -908,9 +966,17 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
 
     vol_adj = Gtk.Adjustment(value=pad_cfg.get("vol",80) if pad_cfg else 80,
                              lower=0, upper=150, step_increment=1)
-    vol_sl  = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=vol_adj)
-    vol_sl.set_value_pos(Gtk.PositionType.RIGHT); vol_sl.set_digits(0)
-    prow("Volume", vol_sl)
+    vol_sl = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL, adjustment=vol_adj)
+    vol_sl.set_draw_value(False)
+    vol_sl.set_size_request(156, -1)
+    vol_sl.set_hexpand(False)
+    vol_value = Gtk.Label(label=f"{int(vol_adj.get_value())}%")
+    vol_value.get_style_context().add_class("volume-value")
+    vol_adj.connect("value-changed", lambda adj: vol_value.set_text(f"{int(adj.get_value())}%"))
+    vol_row = Gtk.Box(spacing=8)
+    vol_row.pack_start(vol_sl, False, False, 0)
+    vol_row.pack_start(vol_value, False, False, 0)
+    prow("Volume", vol_row, expand=False)
 
     # LUFS / loudness suggestion
     lufs_row = Gtk.Box(spacing=6)
@@ -923,7 +989,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     _lufs  = [None]
 
     def _analyze(*_):
-        f = file_btn.get_filename()
+        f = get_audio_file()
         if not f or _dialog_cancel.is_set():
             return
         current = _analysis_thread[0]
@@ -987,6 +1053,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
 
     rt_c = Gtk.ComboBoxText()
     rt_c.append_text("Restart from start"); rt_c.append_text("Stop on 2nd press"); rt_c.append_text("Use global setting")
+    _compact_combo(rt_c, 22, 16)
     rt_c.set_active({"restart":0,"toggle":1,"global":2}.get(pad_cfg.get("retrigger","global") if pad_cfg else "global", 2))
     arow("2nd press", rt_c)
 
@@ -1031,7 +1098,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
             _preview_worker_done()
 
     def _test(*_):
-        filepath = file_btn.get_filename()
+        filepath = get_audio_file()
         if not filepath:
             return
         # Snapshot GTK widget values here, on the main thread.
@@ -1149,6 +1216,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     # pad at whatever happened to be first in the list.
     sk_raw = [k.split("  (")[0] if "  (" in k else k for k in all_pad_keys]
     for k in all_pad_keys: sk_c.append_text(k)
+    _compact_combo(sk_c, 22, 16)
     have_targets = all_pad_keys != ["(none)"]
     cur_sk  = (pad_cfg.get("stop_key","") if pad_cfg else "")
     cur_raw = cur_sk.split("  (")[0] if "  (" in cur_sk else cur_sk
@@ -1164,12 +1232,30 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
         _nt.set_xalign(0); _nt.get_style_context().add_class("lbl")
         stop_box.pack_start(_nt, False, False, 0)
 
+    # Notes are useful but optional; keep them out of the everyday form while
+    # making them available for every pad action type.
+    notes_exp = Gtk.Expander(label="Notes (optional)")
+    notes_exp.get_style_context().add_class("lbl")
+    notes_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    notes_box.set_margin_top(4)
+    notes_exp.add(notes_box)
+    row("Notes", ns, notes_box)
+    box.pack_start(notes_exp, False, False, 0)
+
+    def _fit_dialog_to_content():
+        _minimum, natural = dlg.get_preferred_size()
+        dlg.resize(380, natural.height + 12)
+        return False
+
     def _show_hide(_=None):
         idx = act_c.get_active()
         play_box.set_visible(idx == 0)
         script_box.set_visible(idx == 1)
         stop_box.set_visible(idx == 4)
         crosshair_box.set_visible(idx == 5)
+        # Recompute after GTK has allocated the newly visible mode, so script
+        # and stop pads get short dialogs instead of inheriting Play's height.
+        GLib.idle_add(_fit_dialog_to_content)
 
     act_c.connect("changed", _show_hide)
     _show_hide(); dlg.show_all(); _show_hide()
@@ -1206,7 +1292,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
         idx = act_c.get_active()
         color = _color(); notes = _notes(); label = lbl_e.get_text().strip()
         if idx == 0:
-            fname = file_btn.get_filename()
+            fname = get_audio_file()
             if fname:
                 result = {"action":"play","file":fname,"sink":get_sink(),
                           "vol":int(vol_adj.get_value()),"loop":loop_sw.get_active(),
@@ -1244,14 +1330,14 @@ def settings_dialog(parent, cfg, sinks):
     dlg.get_widget_for_response(Gtk.ResponseType.OK).get_style_context().add_class("btn-ok")
 
     box = dlg.get_content_area()
-    box.set_spacing(10); box.set_margin_start(14); box.set_margin_end(14)
+    box.set_spacing(8); box.set_margin_start(14); box.set_margin_end(14)
     box.set_margin_top(10); box.set_margin_bottom(10)
 
-    def row(lbl, w):
+    def row(lbl, w, expand=True):
         hb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        lb = Gtk.Label(label=lbl); lb.set_xalign(0); lb.set_width_chars(18)
+        lb = Gtk.Label(label=lbl); lb.set_xalign(0); lb.set_width_chars(14)
         lb.get_style_context().add_class("lbl")
-        hb.pack_start(lb, False, False, 0); hb.pack_start(w, True, True, 0)
+        hb.pack_start(lb, False, False, 0); hb.pack_start(w, expand, expand, 0)
         box.pack_start(hb, False, False, 0)
 
     # System default first, followed by sinks discovered on this computer.
@@ -1261,6 +1347,7 @@ def settings_dialog(parent, cfg, sinks):
     for sink in sorted(set(sinks), key=str.casefold):
         sink_c.append_text(sink)
         combo_sinks.append(sink)
+    _compact_combo(sink_c, 20, 14)
     cur = cfg.get("default_sink", "")
     try: sink_c.set_active(combo_sinks.index(cur))
     except ValueError: sink_c.set_active(0)
@@ -1269,39 +1356,42 @@ def settings_dialog(parent, cfg, sinks):
     def get_sink():
         return _sink_from_selection(combo_sinks, sink_c.get_active())
 
-    sop_sw = Gtk.Switch(); sop_sw.set_active(cfg.get("stop_on_page_change", False))
-    sb = Gtk.Box(); sb.pack_start(sop_sw, False, False, 0)
-    row("Stop on page change", sb)
-
     rt_c = Gtk.ComboBoxText()
     rt_c.append_text("Restart from start"); rt_c.append_text("Stop on 2nd press")
+    _compact_combo(rt_c, 20, 16)
     rt_c.set_active(0 if cfg.get("retrigger","restart") == "restart" else 1)
-    row("2nd press (default)", rt_c)
+    row("Press again", rt_c)
+
+    sop_sw = Gtk.Switch(); sop_sw.set_active(cfg.get("stop_on_page_change", False))
+    sb = Gtk.Box(); sb.pack_start(sop_sw, False, False, 0)
+    row("Stop on page", sb)
 
     # monitor section
     sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL); sep.set_margin_top(4); sep.set_margin_bottom(2)
     box.pack_start(sep, False, False, 0)
-    mon_title = Gtk.Label(label="Monitor / hear what you're sending")
-    mon_title.set_xalign(0); mon_title.get_style_context().add_class("lbl")
+    mon_title = Gtk.Label(label="MONITORING")
+    mon_title.set_xalign(0)
+    mon_title.get_style_context().add_class("dialog-section")
     box.pack_start(mon_title, False, False, 0)
 
     mon_sw = Gtk.Switch(); mon_sw.set_active(cfg.get("monitor_enabled", False))
-    msb = Gtk.Box(); msb.pack_start(mon_sw, False, False, 0)
-    row("Monitor on", msb)
+    row("Monitor audio", mon_sw, expand=False)
 
     mon_c = Gtk.ComboBoxText()
     mon_c.append_text("System default")
     monitor_sinks = [None]
-    for sink in sinks:
+    for sink in sorted(set(sinks), key=str.casefold):
         mon_c.append_text(sink)
         monitor_sinks.append(sink)
+    _compact_combo(mon_c, 20, 14)
     cur_mon = cfg.get("monitor_sink", "")
     try: mon_c.set_active(monitor_sinks.index(cur_mon or None))
     except ValueError: mon_c.set_active(0)
-    row("Monitor output", mon_c)
+    row("Mirror output", mon_c)
 
-    hint = Gtk.Label()
-    hint.set_markup("<small>When on, sound plays on both the pad's output and this sink —\nso you hear what's being sent (e.g. to B1 / mic).</small>")
+    hint = Gtk.Label(
+        label="Duplicates pad audio to this output while monitoring is enabled."
+    )
     hint.set_xalign(0); hint.set_line_wrap(True); hint.get_style_context().add_class("lbl")
     box.pack_start(hint, False, False, 0)
 
