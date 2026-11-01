@@ -324,6 +324,39 @@ def _terminate_process(proc, timeout=0.5, *, process_group=False):
         if process_group:
             _signal_process(proc, signal.SIGKILL, process_group=True)
 
+def _run_script_test_command(command, cancel_event, timeout=30.0):
+    """Run the editor's Test Run command with bounded, cancellable cleanup."""
+    if cancel_event.is_set():
+        return
+    proc = None
+    process_group = os.name == "posix"
+    try:
+        proc = subprocess.Popen(
+            command, shell=True, start_new_session=process_group
+        )
+        if cancel_event.is_set():
+            _terminate_process(proc, process_group=process_group)
+            return
+        deadline = time.monotonic() + timeout
+        while not cancel_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            try:
+                proc.wait(timeout=min(0.1, remaining))
+                return
+            except subprocess.TimeoutExpired:
+                continue
+        _terminate_process(proc, process_group=process_group)
+    except subprocess.TimeoutExpired:
+        print(f"[script-test] timed out: {command[:100]}")
+        if proc is not None:
+            _terminate_process(proc, process_group=process_group)
+    except Exception as exc:
+        print(f"[script-test] failed: {exc}")
+
+
+
 
 # audio engine -- paplay subprocess, no PortAudio
 
@@ -890,7 +923,26 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
         if d2.run() == Gtk.ResponseType.OK: cmd_e.set_text(d2.get_filename())
         d2.destroy()
     bb.connect("clicked", _browse)
-    ts.connect("clicked", lambda *_: threading.Thread(target=lambda: subprocess.run(cmd_e.get_text().strip(), shell=True, timeout=30), daemon=True).start() if cmd_e.get_text().strip() else None)
+    _test_cancel = threading.Event()
+    _test_thread: list[threading.Thread | None] = [None]
+
+    def _test_run(*_):
+        command = cmd_e.get_text().strip()
+        if not command or _test_cancel.is_set():
+            return
+        current = _test_thread[0]
+        if current is not None and current.is_alive():
+            return
+        worker = threading.Thread(
+            target=_run_script_test_command,
+            args=(command, _test_cancel),
+            daemon=True,
+            name="padfire-script-test",
+        )
+        _test_thread[0] = worker
+        worker.start()
+
+    ts.connect("clicked", _test_run)
     br.pack_start(bb, False, False, 0); br.pack_start(ts, False, False, 0)
     script_box.pack_start(br, False, False, 0)
 
@@ -948,6 +1000,10 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     _show_hide(); dlg.show_all(); _show_hide()
 
     resp = dlg.run()
+    _test_cancel.set()
+    test_worker = _test_thread[0]
+    if test_worker is not None and test_worker is not threading.current_thread():
+        test_worker.join(timeout=1.5)
     audio.stop(TK)
 
     def _color(): return color_names[col_c.get_active()] if col_c.get_active() >= 0 else "default"
