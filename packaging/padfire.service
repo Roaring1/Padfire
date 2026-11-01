@@ -5,7 +5,7 @@ Wants=pipewire.service pipewire-pulse.service wireplumber.service
 
 [Service]
 Type=simple
-ExecStart=%h/bin/padfire-launch
+ExecStart=/bin/bash %h/bin/padfire-launch
 Restart=on-failure
 RestartSec=4
 

@@ -25,7 +25,10 @@ except Exception:
     pass
 # Hand off to the real script
 import runpy
-_target = os.environ.get("PADFIRE_PY", "padfire.py")
+_target = os.path.abspath(os.environ.get("PADFIRE_PY", "padfire.py"))
+# padfire.py now imports the shared core module beside itself. The launcher
+# can be invoked from any working directory, so make that directory importable.
+sys.path.insert(0, os.path.dirname(_target))
 sys.argv = [_target] + sys.argv[1:]
 runpy.run_path(_target, run_name="__main__")
 PYEOF
