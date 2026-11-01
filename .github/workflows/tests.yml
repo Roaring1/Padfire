@@ -3,6 +3,7 @@ name: Padfire tests
 on:
   push:
     branches: [main, "release/padfire-v2.3-20261028"]
+    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -12,19 +13,49 @@ jobs:
   linux-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install GTK and smoke-test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             gir1.2-gtk-3.0 python3-gi python3-cairo python3-gi-cairo python3-mido python3-pil \
-            imagemagick shellcheck xvfb xauth
+            imagemagick shellcheck xvfb xauth desktop-file-utils librsvg2-common
       - name: Run hardware-free regression tests
         run: |
           python3 tests/test_padfire_core.py
-          python3 -m py_compile padfire.py tools/padfire-shot tests/test_padfire_core.py
-          bash -n padfire-launch
-          shellcheck padfire-launch
+          xvfb-run -a python3 tests/test_padfire_dialogs.py
+          python3 -m py_compile padfire.py tools/padfire-shot tests/test_padfire_core.py tests/test_padfire_dialogs.py packaging/extra-scripts/padfire_test.py
+          bash -n padfire-launch packaging/extra-scripts/padfire-restart.sh
+          shellcheck padfire-launch packaging/extra-scripts/padfire-restart.sh
+          desktop-file-validate packaging/padfire.desktop
+      - name: Load the bundled Padfire icon with GTK
+        run: |
+          xvfb-run -a python3 - <<'PY'
+          from pathlib import Path
+          import gi
+          gi.require_version('Gtk', '3.0')
+          gi.require_version('Gdk', '3.0')
+          from gi.repository import Gtk, Gdk, GLib
+
+          Gtk.init([])
+          GLib.set_prgname('padfire')
+          Gdk.set_program_class('padfire')
+          theme = Gtk.IconTheme.get_default()
+          theme.append_search_path(str((Path.cwd() / 'packaging' / 'icons').resolve()))
+          theme.rescan_if_needed()
+          info = theme.lookup_icon('padfire', 64, Gtk.IconLookupFlags.FORCE_SIZE)
+          assert info is not None, 'bundled Padfire icon not found'
+          pixbuf = info.load_icon()
+          assert pixbuf is not None and (pixbuf.get_width(), pixbuf.get_height()) == (64, 64)
+          window = Gtk.Window(title='Padfire')
+          window.set_icon_name('padfire')
+          window.show_all()
+          Gtk.main_iteration_do(False)
+          assert GLib.get_prgname() == 'padfire'
+          assert Gdk.get_program_class() == 'padfire'
+          print(f'PASS GTK app identity and icon: {info.get_filename()}')
+          window.destroy()
+          PY
       - name: Render the real GTK UI in a virtual display
         run: |
           xvfb-run -a tools/padfire-shot --demo \
