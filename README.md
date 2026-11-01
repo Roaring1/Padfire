@@ -10,7 +10,7 @@ GTK3 soundboard for the Novation Launchpad Mini (MK1/MK2).
 
 - 8 pages (top-row CC 104-111), 64 assignable pads per page
 - Per-pad: sound file, label, volume (0-150%), output sink, loop toggle, color
-- Per-pad actions: `play`, `script`, `stop_sfx`, `stop_all`, `stop_key`
+- Per-pad actions: `play`, `script`, `stop_sfx`, `stop_all`, `stop_key`, `crosshair_toggle`
 - LED feedback: pad lights on press, color reflects assignment state
 - Missing sound files are shown on the pad itself: a dashed red border and a `!` glyph, so a broken assignment is visible before you press it
 - Tray icon with a live page indicator (`P1`-`P8`) and stop-all
@@ -88,6 +88,16 @@ Saves are atomic and keep one generation of backup at `padfire.json.bak`. A corr
 Configs are migrated forward automatically on load (`CONFIG_VERSION`), and unknown keys from older versions are pruned rather than carried along.
 
 ---
+
+### Toggle Crosshair from a Launchpad pad
+
+Right-click the pad you want to assign, choose **Edit Pad**, set **Does** to
+**Toggle Crosshair**, and save. Pressing that pad runs the Crosshair CLI's
+`--toggle` command, switching the overlay between enabled and disabled.
+Padfire resolves `crosshair` from `PATH`, then falls back to
+`~/.local/bin/crosshair`. The action runs off the GTK/MIDI callback thread
+and reports missing-command, timeout, or CLI errors in Padfire's status area.
+It does not change any existing pad assignments.
 
 ## MIDI mapping
 
