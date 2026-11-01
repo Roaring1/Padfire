@@ -138,6 +138,7 @@ button { transition: background 120ms ease, border-color 120ms ease, box-shadow 
 .pad-stop    { border-color: rgba(255,69,58,0.40); color: rgba(255,130,120,0.85); }
 .pad-script  { border-color: rgba(255,160,30,0.40); color: rgba(255,200,80,0.80); }
 .pad-script-on { box-shadow: inset 0 0 0 2px rgba(255,200,50,0.85); color: rgba(255,230,100,0.95); }
+.pad-action  { border-color: rgba(10,132,255,0.45); color: rgba(120,190,255,0.90); }
 .pad-flash   { background: rgba(255,255,255,0.18); border-color: rgba(255,255,255,0.55); }
 .pad-dragover { border-color: rgba(10,132,255,0.75); border-width: 2px; }
 
@@ -266,6 +267,17 @@ def save_config(cfg):
     try:
         _dfd = os.open(str(CFGDIR), os.O_RDONLY); os.fsync(_dfd); os.close(_dfd)
     except Exception: pass
+
+
+def crosshair_toggle_argv():
+    """Return a safe argv for the installed Crosshair CLI, or None if absent."""
+    executable = shutil.which("crosshair")
+    if executable:
+        return [executable, "--toggle"]
+    fallback = Path.home() / ".local" / "bin" / "crosshair"
+    if fallback.is_file() and os.access(fallback, os.X_OK):
+        return [str(fallback), "--toggle"]
+    return None
 
 
 # audio engine -- paplay subprocess, no PortAudio
@@ -564,9 +576,11 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
 
     # what this pad does
     act_c = Gtk.ComboBoxText()
-    for txt in ["Play a sound", "Run a script", "Stop SFX", "Stop everything", "Stop a specific pad"]:
+    for txt in ["Play a sound", "Run a script", "Stop SFX", "Stop everything",
+                "Stop a specific pad", "Toggle Crosshair"]:
         act_c.append_text(txt)
-    act_map = {"play":0, "script":1, "stop_sfx":2, "stop_all":3, "stop_key":4}
+    act_map = {"play":0, "script":1, "stop_sfx":2, "stop_all":3,
+               "stop_key":4, "crosshair_toggle":5}
     act_c.set_active(act_map.get(action, 0))
     row("Does", act_c)
 
@@ -752,6 +766,18 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
     pid_e.set_activates_default(True)
     srow("PID file", pid_e)
 
+    # Crosshair integration -- this invokes the installed CLI directly,
+    # without a shell, and flips the overlay's current enabled state.
+    crosshair_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+    box.pack_start(crosshair_box, False, False, 0)
+    crosshair_hint = Gtk.Label(
+        label="Pressing this pad runs crosshair --toggle to switch the overlay on/off."
+    )
+    crosshair_hint.set_xalign(0)
+    crosshair_hint.set_line_wrap(True)
+    crosshair_hint.get_style_context().add_class("lbl")
+    crosshair_box.pack_start(crosshair_hint, False, False, 0)
+
     # stop-key section
     stop_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
     box.pack_start(stop_box, False, False, 0)
@@ -782,6 +808,7 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
         play_box.set_visible(idx == 0)
         script_box.set_visible(idx == 1)
         stop_box.set_visible(idx == 4)
+        crosshair_box.set_visible(idx == 5)
 
     act_c.connect("changed", _show_hide)
     _show_hide(); dlg.show_all(); _show_hide()
@@ -818,6 +845,9 @@ def pad_edit_dialog(parent, pad_cfg, sinks, default_sink, audio, all_pad_keys):
             if _tgt:
                 result = {"action":"stop_key","stop_key":_tgt,
                           "label":label or "Stop","color":color,"notes":notes}
+        elif idx == 5:
+            result = {"action":"crosshair_toggle",
+                      "label":label or "Crosshair","color":color,"notes":notes}
 
     dlg.destroy()
     return result
@@ -1101,6 +1131,32 @@ class PadfireApp:
             threading.Thread(target=lambda: self._stop_key(tkey), daemon=True).start()
             self._led_dirty = True; return False
 
+        if action == "crosshair_toggle":
+            def _toggle_crosshair():
+                command = crosshair_toggle_argv()
+                if not command:
+                    GLib.idle_add(self._flash_status, "Crosshair CLI not found")
+                    return
+                try:
+                    result = subprocess.run(
+                        command, capture_output=True, text=True, timeout=5, check=False
+                    )
+                    if result.returncode != 0:
+                        detail = (result.stderr or result.stdout).strip()
+                        message = detail or f"exit status {result.returncode}"
+                        GLib.idle_add(
+                            self._flash_status, f"Crosshair toggle failed: {message[:100]}"
+                        )
+                    else:
+                        print("[padfire] Crosshair toggled")
+                except subprocess.TimeoutExpired:
+                    GLib.idle_add(self._flash_status, "Crosshair toggle timed out")
+                except OSError as exc:
+                    GLib.idle_add(self._flash_status, f"Crosshair toggle failed: {exc}")
+
+            threading.Thread(target=_toggle_crosshair, daemon=True).start()
+            return False
+
         if action == "script":
             cmd = pad.get("cmd","").strip()
             if not cmd: return False
@@ -1182,6 +1238,8 @@ class PadfireApp:
         clr    = PAD_COLORS.get(pad.get("color","default"), PAD_COLORS["default"])[0]
         if action in ("stop_sfx","stop_all","stop_key"):
             return clr if clr else LED_RED
+        if action == "crosshair_toggle":
+            return clr if clr else LED_AMBER
         if action == "script":
             return LED_GREEN if self._script_on(key, pad) else (clr if clr else LED_ORANGE)
         if self.audio.is_playing(key): return LED_GREEN
@@ -1239,6 +1297,9 @@ class PadfireApp:
         pad = pg.get(str(note))
         if not pad: return (self._page, "empty")
         action = pad.get("action", "play")
+        if action == "crosshair_toggle":
+            return (self._page, "crosshair", pad.get("label",""),
+                    pad.get("color"), pad.get("notes",""))
         if action in ("stop_sfx", "stop_all"):
             return (self._page, "stop", action, pad.get("label",""), pad.get("color"))
         if action == "script":
@@ -1269,7 +1330,7 @@ class PadfireApp:
 
             ctx  = btn.get_style_context()
             for cls in ("pad-has","pad-playing","pad-stop","pad-script",
-                        "pad-script-on","pad-missing"):
+                        "pad-script-on","pad-missing","pad-action"):
                 ctx.remove_class(cls)
             self._apply_color(row, col, btn, pad.get("color") if pad else None)
 
@@ -1287,6 +1348,15 @@ class PadfireApp:
                 btn.set_tooltip_text(
                     "Stop all sounds and scripts" if action=="stop_all"
                     else "Stop audio only (scripts keep running)")
+
+            elif action == "crosshair_toggle":
+                self._pad_text(row, col, lbl or "Crosshair")
+                if plain: ctx.add_class("pad-action")
+                notes = pad.get("notes","")
+                tip = "Toggle Crosshair overlay on/off"
+                if notes: tip += f"\n{notes[:160]}"
+                tip += "\n\nRight-click to edit"
+                btn.set_tooltip_text(tip)
 
             elif action == "script":
                 on = self._script_on(key, pad)
