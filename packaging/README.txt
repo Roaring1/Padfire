@@ -16,7 +16,24 @@ icons/hicolor/scalable/apps/padfire.svg
 padfire.service
     User systemd unit template. Uses %h/bin/padfire-launch and inherits the
     active desktop session's display/audio environment; no fixed username,
-    X display number or Wayland socket is assumed.
+    X display number or Wayland socket is assumed. It orders startup after
+    PipeWire, pipewire-pulse and WirePlumber.
+
+extra-scripts/padfire-restart.sh
+    Optional developer/maintenance helper. It runs a syntax check, asks an
+    existing Padfire instance to quit through its own IPC command, waits for
+    that instance to disappear, then launches the checkout. It never uses a
+    broad pkill pattern and never unlinks a live socket. Logs are created with
+    owner-only permissions. Review PADFIRE_PY, PADFIRE_LAUNCH and PADFIRE_LOG
+    before using environment overrides.
+
+extra-scripts/padfire_test.py
+    Optional manual Launchpad Mini MK1/MK2 hardware smoke test. It deliberately
+    lights the controller and opens both MIDI ports. Quit Padfire first; the
+    script checks the local IPC socket and refuses to claim ports if Padfire
+    is running or socket ownership cannot be established. The Mini MK3 is
+    explicitly excluded because it uses a different protocol. This tool is
+    not part of automated CI.
 
 Install on Linux
 ----------------
@@ -35,6 +52,19 @@ Run without installing:
 
     ./padfire-launch
 
-The live pad assignments/configuration are intentionally not included in the
-repository. They live at ~/.config/padfire/padfire.json and can contain
-machine-specific audio paths, sound-file paths and local commands.
+Configuration and privacy
+-------------------------
+
+Pad assignments/configuration are intentionally not included in the
+repository. They live at ~/.config/padfire/padfire.json and may contain
+machine-specific audio paths, sound-file paths and executable shell commands.
+
+Current Padfire versions keep ~/.config/padfire private (0700) and write the
+configuration, backup, PID marker and IPC socket with owner-only permissions
+(0600). Config reads are capped at 4 MiB and reject symlinks, hard links and
+special files. A Script pad executes
+the shell command saved by the user; treat imported configurations as
+executable content and only use configurations from sources you trust.
+
+See README.md, SECURITY.md, CONTRIBUTING.md and RELEASING.md for the full
+runtime, security, testing and release guidance.

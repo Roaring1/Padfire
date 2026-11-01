@@ -7,7 +7,7 @@
 # - LED: velocity=(green&3)<<4|(red&3)|0x0C  (0x0C = double-buffer, no CC 0 reset)
 # - audio: paplay subprocess -> PipeWire, no PortAudio/JACK
 
-import os, sys, json, time, math, shutil, struct, select, signal, socket, threading, argparse, subprocess
+import os, sys, json, time, math, shutil, struct, select, signal, socket, threading, argparse, subprocess, stat, tempfile
 sys.stdout.reconfigure(line_buffering=True)
 
 import mido
@@ -26,22 +26,98 @@ try:
 except Exception:
     AI = None
 
-VER      = "2.3"
+VER      = "2.4.0"
 HOME     = Path.home()
 CFGDIR   = HOME / ".config" / "padfire"
 SOCK     = str(CFGDIR / "padfire.sock")
 PIDF     = str(CFGDIR / "padfire.pid")
 CONF     = str(CFGDIR / "padfire.json")
 
-# One-time migration: move config from old ~/.config/roaring/ location
+IPC_MAX_REQUEST = 256
+IPC_MAX_CLIENTS = 8
+IPC_MAX_RESPONSE = 64 * 1024
+MAX_CONFIG_BYTES = 4 * 1024 * 1024
+
+
+def _ensure_private_config_dir():
+    """Create the per-user state directory and restrict it to its owner."""
+    CFGDIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = CFGDIR.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise PermissionError(f"Padfire config path is not a real directory: {CFGDIR}")
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        raise PermissionError(f"Padfire config directory is owned by another user: {CFGDIR}")
+    if os.name == "posix":
+        os.chmod(CFGDIR, 0o700)
+
+
+def _read_private_file(path, max_bytes=MAX_CONFIG_BYTES):
+    """Read a bounded regular file owned by this user, refusing links/special files."""
+    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    fd = os.open(str(path), flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise PermissionError(f"Not a regular file: {path}")
+        if info.st_nlink != 1:
+            raise PermissionError(f"Hard-linked files are not accepted: {path}")
+        if hasattr(os, "getuid") and info.st_uid != os.getuid():
+            raise PermissionError(f"File is owned by another user: {path}")
+        if info.st_size > max_bytes:
+            raise ValueError(f"File exceeds the {max_bytes}-byte size limit: {path}")
+        if os.name == "posix":
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "rb") as stream:
+            fd = -1
+            payload = stream.read(max_bytes + 1)
+        if len(payload) > max_bytes:
+            raise ValueError(f"File exceeds the {max_bytes}-byte size limit: {path}")
+        return payload
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _atomic_private_write(path, content):
+    """Atomically write bytes to a same-directory 0600 temporary file."""
+    path = Path(path)
+    _ensure_private_config_dir()
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        if os.name == "posix":
+            os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            fd = -1
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+_ensure_private_config_dir()
+
+# One-time migration: move config from old ~/.config/roaring/ location.
+# Treat the old file as data: do not follow symlinks or copy its permissions.
 _OLD_CFGDIR = HOME / ".config" / "roaring"
-for _old, _new in [
-    (_OLD_CFGDIR / "padfire.json", CFGDIR / "padfire.json"),
-]:
-    if _old.exists() and not _new.exists():
-        CFGDIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(_old), str(_new))
-        print(f"[config] migrated {_old} -> {_new}")
+_old_config = _OLD_CFGDIR / "padfire.json"
+_new_config = CFGDIR / "padfire.json"
+if _old_config.exists() and not _new_config.exists():
+    try:
+        _atomic_private_write(_new_config, _read_private_file(_old_config))
+        print(f"[config] migrated {_old_config} -> {_new_config}")
+    except (OSError, ValueError) as exc:
+        print(f"[config] legacy migration skipped: {exc}")
 
 # The old dir also held a socket + pid file nothing reads any more; leaving
 # them behind made it look like another instance was live.
@@ -234,31 +310,39 @@ def _migrate(c):
 
 def load_config():
     try:
-        c = json.loads(Path(CONF).read_text())
+        raw = _read_private_file(Path(CONF))
+        c = json.loads(raw.decode("utf-8"))
         return _migrate(c)
-    except Exception:
+    except Exception as exc:
+        if not isinstance(exc, FileNotFoundError):
+            print(f"[config] could not load config safely; using defaults: {exc}")
         return json.loads(json.dumps(DEFAULT_CONFIG))
 
+
 def save_config(cfg):
-    # atomic write + single rolling backup so a crash mid-save can't corrupt
-    # the file that holds every pad assignment
-    CFGDIR.mkdir(parents=True, exist_ok=True)
+    # Keep every pad assignment private: config may contain local file paths
+    # and shell commands entered by the user. The rolling backup has the same
+    # 0600 permissions and is atomically replaced too.
+    _ensure_private_config_dir()
+    payload = json.dumps(cfg, indent=2).encode("utf-8")
+    if len(payload) > MAX_CONFIG_BYTES:
+        raise ValueError(f"Config exceeds the {MAX_CONFIG_BYTES}-byte size limit")
     dst = Path(CONF)
-    tmp = Path(str(dst) + ".tmp")
-    # flush + fsync before the rename: without it, power loss between write()
-    # and rename() can leave a 0-byte config, losing every pad assignment
-    with open(tmp, "w") as fh:
-        fh.write(json.dumps(cfg, indent=2))
-        fh.flush(); os.fsync(fh.fileno())
-    # copy (not move) the old file to .bak so CONF never stops existing --
-    # between the two os.replace calls there was a window with no config
-    if dst.exists():
-        try: shutil.copy2(str(dst), str(dst) + ".bak")
-        except Exception as e: print(f"[config] backup failed: {e}")
-    os.replace(str(tmp), str(dst))
+    backup = Path(str(dst) + ".bak")
+    if dst.exists() or dst.is_symlink():
+        try:
+            _atomic_private_write(backup, _read_private_file(dst))
+        except Exception as exc:
+            print(f"[config] backup skipped: {exc}")
+    _atomic_private_write(dst, payload)
     try:
-        _dfd = os.open(str(CFGDIR), os.O_RDONLY); os.fsync(_dfd); os.close(_dfd)
-    except Exception: pass
+        dir_fd = os.open(str(CFGDIR), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
 
 
 def crosshair_toggle_argv():
@@ -724,53 +808,149 @@ class MidiEngine:
 
 # IPC
 
+def _read_ipc_request(conn, max_bytes=IPC_MAX_REQUEST):
+    """Read one bounded newline-delimited local IPC command."""
+    buf = bytearray()
+    while True:
+        chunk = conn.recv(min(256, max_bytes - len(buf) + 1))
+        if not chunk:
+            # Require the framing delimiter so a truncated command is never
+            # dispatched merely because the client closed its write side.
+            return None
+        newline = chunk.find(b"\n")
+        if newline >= 0:
+            if len(buf) + newline > max_bytes:
+                return None
+            return (bytes(buf) + chunk[:newline]).decode(errors="replace").strip()
+        buf.extend(chunk)
+        if len(buf) > max_bytes:
+            return None
+
+
 def ipc_send(cmd, sock_path=None, timeout=1.0):
     path = sock_path or SOCK
-    if not Path(path).exists(): return None
+    if not Path(path).exists():
+        return None
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(timeout); s.connect(path)
-        s.sendall((cmd + "\n").encode())
-        # Read a complete newline-delimited response for external clients.
-        buf = b""
-        while b"\n" not in buf:
-            chunk = s.recv(4096)
-            if not chunk: break
-            buf += chunk
-        s.close()
-        return buf.decode(errors="replace").strip()
-    except Exception: return None
+        payload = (cmd + "\n").encode("utf-8")
+        if len(payload) > IPC_MAX_REQUEST + 1:
+            return None
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.settimeout(timeout)
+            conn.connect(path)
+            conn.sendall(payload)
+            # Responses are newline-delimited and capped defensively.
+            buf = bytearray()
+            while b"\n" not in buf:
+                chunk = conn.recv(min(4096, IPC_MAX_RESPONSE + 1 - len(buf)))
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                if len(buf) > IPC_MAX_RESPONSE:
+                    return None
+            return buf.decode(errors="replace").strip()
+    except (OSError, UnicodeError):
+        return None
+
 
 def ipc_serve(handler, srv_ref):
-    sp = Path(SOCK); sp.parent.mkdir(parents=True, exist_ok=True)
-    if sp.exists():
-        try: sp.unlink()
-        except Exception: pass
+    _ensure_private_config_dir()
+    sp = Path(SOCK)
+
+    # Never unlink an arbitrary file/symlink at the socket path, and never
+    # evict another live Padfire instance if two launches race.
+    if sp.exists() or sp.is_symlink():
+        try:
+            info = sp.lstat()
+            if not stat.S_ISSOCK(info.st_mode):
+                print(f"[ipc] refusing to replace non-socket path: {sp}")
+                return
+            if hasattr(os, "getuid") and info.st_uid != os.getuid():
+                print(f"[ipc] refusing socket owned by another user: {sp}")
+                return
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.25)
+                try:
+                    probe.connect(str(sp))
+                except (ConnectionRefusedError, FileNotFoundError):
+                    # Re-check the inode: another launch may have replaced
+                    # this stale path with a new live socket during the probe.
+                    current = sp.lstat()
+                    if (
+                        not stat.S_ISSOCK(current.st_mode)
+                        or current.st_dev != info.st_dev
+                        or current.st_ino != info.st_ino
+                    ):
+                        print("[ipc] socket path changed during stale-socket check")
+                        return
+                    sp.unlink()
+                except OSError as exc:
+                    print(f"[ipc] cannot safely inspect existing socket: {exc}")
+                    return
+                else:
+                    print("[ipc] another Padfire instance already owns the socket")
+                    return
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            print(f"[ipc] cannot inspect existing socket: {exc}")
+            return
+
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try: srv.bind(str(sp)); srv.listen(4); os.chmod(str(sp), 0o600)
-    except Exception: return
-    srv_ref.append(srv); srv.settimeout(1.0)
+    try:
+        srv.bind(str(sp))
+        os.chmod(sp, 0o600)
+        srv.listen(IPC_MAX_CLIENTS)
+        srv.settimeout(1.0)
+    except OSError as exc:
+        print(f"[ipc] could not create local socket: {exc}")
+        srv.close()
+        return
+    srv_ref.append(srv)
+    client_slots = threading.BoundedSemaphore(IPC_MAX_CLIENTS)
 
     def _handle(conn):
         try:
-            conn.settimeout(2.0); buf = b""
-            while b"\n" not in buf:
-                chunk = conn.recv(256)
-                if not chunk: break
-                buf += chunk
-            resp = (handler(buf.decode(errors="replace").strip()) or "ok") + "\n"
-            conn.sendall(resp.encode())
-        except Exception: pass
+            conn.settimeout(2.0)
+            command = _read_ipc_request(conn)
+            if command is None:
+                response = "error: request too long"
+            else:
+                response = handler(command) or "ok"
+            payload = (str(response) + "\n").encode("utf-8", errors="replace")
+            if len(payload) > IPC_MAX_RESPONSE:
+                payload = b"error: response too large\n"
+            conn.sendall(payload)
+        except (OSError, UnicodeError):
+            pass
+        except Exception as exc:
+            print(f"[ipc] request handler failed: {exc}")
         finally:
-            try: conn.close()
-            except Exception: pass
+            try:
+                conn.close()
+            except OSError:
+                pass
+            client_slots.release()
 
     while True:
         try:
-            c, _ = srv.accept()
-            threading.Thread(target=_handle, args=(c,), daemon=True).start()
-        except socket.timeout: continue
-        except Exception: break
+            conn, _ = srv.accept()
+            if not client_slots.acquire(blocking=False):
+                conn.close()
+                continue
+            worker = threading.Thread(
+                target=_handle, args=(conn,), daemon=True, name="padfire-ipc-client"
+            )
+            try:
+                worker.start()
+            except Exception as exc:
+                print(f"[ipc] could not start client handler: {exc}")
+                client_slots.release()
+                conn.close()
+        except socket.timeout:
+            continue
+        except OSError:
+            break
 
 
 # LUFS analysis via ffmpeg
@@ -2729,8 +2909,8 @@ class PadfireApp:
     def run(self):
         signal.signal(signal.SIGTERM, lambda *_: GLib.idle_add(self._quit))
         signal.signal(signal.SIGINT,  lambda *_: GLib.idle_add(self._quit))
-        CFGDIR.mkdir(parents=True, exist_ok=True)
-        Path(PIDF).write_text(str(os.getpid()))
+        _ensure_private_config_dir()
+        _atomic_private_write(Path(PIDF), f"{os.getpid()}\n".encode("ascii"))
         Gtk.main()
 
 

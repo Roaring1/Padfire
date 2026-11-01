@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fast Padfire v2.3 regression checks; never opens MIDI/audio or real user config."""
+"""Hardware-free Padfire core regressions; never opens real MIDI/audio or user config."""
 import importlib.util
 import json
 import os
@@ -28,6 +28,203 @@ class PadfireCoreTests(unittest.TestCase):
         self.config_dir.mkdir(parents=True, exist_ok=True)
         padfire.CFGDIR = self.config_dir
         padfire.CONF = str(self.config_dir / "padfire.json")
+
+    def test_release_version_changelog_and_license_are_consistent(self):
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertEqual(padfire.VER, "2.4.0")
+        self.assertIn(f"## v{padfire.VER}", changelog)
+        self.assertTrue(license_text.startswith("MIT License\n"))
+        self.assertIn("Copyright (c) 2026 Roaring1", license_text)
+        self.assertIn("[LICENSE](LICENSE)", readme)
+        self.assertTrue((ROOT / "SECURITY.md").is_file())
+        self.assertTrue((ROOT / "ROADMAP.md").is_file())
+        self.assertTrue((ROOT / "CONTRIBUTING.md").is_file())
+        self.assertTrue((ROOT / "RELEASING.md").is_file())
+
+    def test_manual_launchpad_smoke_matches_supported_protocol_and_excludes_mk3(self):
+        import importlib.util
+
+        helper_path = ROOT / "packaging" / "extra-scripts" / "padfire_test.py"
+        helper_spec = importlib.util.spec_from_file_location("padfire_manual_smoke", helper_path)
+        self.assertIsNotNone(helper_spec)
+        helper = importlib.util.module_from_spec(helper_spec)
+        helper_spec.loader.exec_module(helper)
+
+        self.assertTrue(helper.is_supported_port("Launchpad Mini MIDI 1"))
+        self.assertTrue(helper.is_supported_port("Launchpad Mini MK2 MIDI 1"))
+        self.assertFalse(helper.is_supported_port("Launchpad Mini MK3 MIDI 1"))
+        self.assertFalse(helper.is_supported_port("Other MIDI Controller"))
+        for color in (
+            helper.LED_OFF, helper.LED_DIM, helper.LED_GREEN, helper.LED_RED,
+            helper.LED_ORANGE, helper.LED_AMBER,
+        ):
+            self.assertEqual(color & 0x0C, 0x0C)
+
+    def test_manual_launchpad_smoke_refuses_to_compete_with_live_padfire(self):
+        import socket
+        import json
+        import importlib.util
+
+        helper_path = ROOT / "packaging" / "extra-scripts" / "padfire_test.py"
+        helper_spec = importlib.util.spec_from_file_location("padfire_manual_smoke_live", helper_path)
+        helper = importlib.util.module_from_spec(helper_spec)
+        helper_spec.loader.exec_module(helper)
+
+        socket_path = TEST_HOME / "manual-smoke-live.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(socket_path))
+        server.listen(1)
+
+        def respond():
+            conn, _ = server.accept()
+            with conn:
+                self.assertEqual(conn.recv(128), b"status\n")
+                conn.sendall(json.dumps({"connected": True, "version": "2.4.0"}).encode() + b"\n")
+
+        worker = threading.Thread(target=respond, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(helper.padfire_is_running(socket_path))
+        finally:
+            server.close()
+            worker.join(timeout=1)
+
+    def test_manual_launchpad_smoke_refuses_non_socket_ipc_path(self):
+        import importlib.util
+
+        helper_path = ROOT / "packaging" / "extra-scripts" / "padfire_test.py"
+        helper_spec = importlib.util.spec_from_file_location("padfire_manual_smoke_bad_path", helper_path)
+        helper = importlib.util.module_from_spec(helper_spec)
+        helper_spec.loader.exec_module(helper)
+
+        path = TEST_HOME / "manual-smoke-not-a-socket"
+        path.write_text("do not open or replace")
+        self.assertIsNone(helper.padfire_is_running(path))
+        self.assertEqual(path.read_text(), "do not open or replace")
+
+    def test_restart_helper_gracefully_restarts_only_its_own_instance(self):
+        import subprocess
+        import tempfile
+        import signal
+
+        helper = ROOT / "packaging" / "extra-scripts" / "padfire-restart.sh"
+        with tempfile.TemporaryDirectory(prefix="padfire-restart-test-") as raw_dir:
+            temp_dir = Path(raw_dir)
+            state_file = temp_dir / "dummy.pid"
+            dummy_python = temp_dir / "dummy_padfire.py"
+            dummy_launcher = temp_dir / "dummy_padfire-launch"
+            log_file = temp_dir / "padfire.log"
+
+            dummy_python.write_text(
+                """import signal, sys, time
+from pathlib import Path
+state = Path(sys.argv[1])
+state.write_text(str(__import__('os').getpid()))
+def stop(*_):
+    state.unlink(missing_ok=True)
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, stop)
+while True:
+    time.sleep(0.1)
+""",
+                encoding="utf-8",
+            )
+            dummy_launcher.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+state="$PADFIRE_TEST_STATE"
+case "${1:-}" in
+  --status)
+    if [[ -f "$state" ]]; then
+      pid="$(cat "$state")"
+      if kill -0 "$pid" 2>/dev/null; then
+        echo '{"connected":false,"version":"test"}'
+        exit 0
+      fi
+    fi
+    echo '{"running":false}'
+    ;;
+  --quit)
+    if [[ -f "$state" ]]; then kill "$(cat "$state")" 2>/dev/null || true; fi
+    echo "ok"
+    ;;
+  *) exec python3 "$PADFIRE_PY" "$state" ;;
+esac
+""",
+                encoding="utf-8",
+            )
+            dummy_launcher.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(temp_dir),
+                "PADFIRE_PY": str(dummy_python),
+                "PADFIRE_LAUNCH": str(dummy_launcher),
+                "PADFIRE_LOG": str(log_file),
+                "PADFIRE_TEST_STATE": str(state_file),
+            })
+            sentinel = subprocess.Popen(["sleep", "30"])
+            first = subprocess.Popen(
+                [str(dummy_launcher)], env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            restarted_pid = None
+            try:
+                deadline = padfire.time.monotonic() + 3
+                while not state_file.exists() and padfire.time.monotonic() < deadline:
+                    padfire.time.sleep(0.01)
+                self.assertTrue(state_file.exists(), "dummy Padfire failed to start")
+
+                result = subprocess.run(
+                    ["bash", str(helper)], env=env, capture_output=True,
+                    text=True, timeout=8, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Padfire is running.", result.stdout)
+                self.assertTrue(state_file.exists(), "restart helper did not relaunch Padfire")
+                restarted_pid = int(state_file.read_text())
+                self.assertNotEqual(restarted_pid, first.pid)
+                self.assertIsNone(sentinel.poll(), "restart helper affected an unrelated process")
+                self.assertEqual(padfire.stat.S_IMODE(log_file.stat().st_mode), 0o600)
+
+            finally:
+                if state_file.exists():
+                    try:
+                        subprocess.run(
+                            [str(dummy_launcher), "--quit"], env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            timeout=2, check=False,
+                        )
+                    except subprocess.TimeoutExpired:
+                        pass
+                try:
+                    first.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    first.terminate()
+                    first.wait(timeout=2)
+                if restarted_pid is not None:
+                    try:
+                        os.kill(restarted_pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                if sentinel.poll() is None:
+                    sentinel.terminate()
+                    sentinel.wait(timeout=2)
+
+    def test_restart_helper_never_uses_broad_kill_or_unlinks_ipc_socket(self):
+        helper = (ROOT / "packaging" / "extra-scripts" / "padfire-restart.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--quit", helper)
+        self.assertIn("is_running", helper)
+        self.assertIn("refusing to force-kill", helper)
+        self.assertIn("refusing to start a duplicate", helper)
+        self.assertNotIn("pkill -f", helper)
+        self.assertNotIn('rm -f "$SOCK"', helper)
+        self.assertIn('chmod 600 "$LOG"', helper)
 
     def test_migration_normalizes_legacy_config_and_preserves_toggle(self):
         old = {
@@ -90,6 +287,176 @@ class PadfireCoreTests(unittest.TestCase):
         self.assertEqual(json.loads(Path(padfire.CONF).read_text()), second)
         self.assertEqual(json.loads(Path(padfire.CONF + ".bak").read_text()), first)
         self.assertFalse(Path(padfire.CONF + ".tmp").exists())
+
+    def test_config_and_backup_are_private_after_save(self):
+        first = {"version": 5, "command": "example --argument"}
+        second = {"version": 5, "command": "updated --argument"}
+        Path(padfire.CONF).write_text(json.dumps(first), encoding="utf-8")
+        Path(padfire.CONF).chmod(0o644)
+        padfire.CFGDIR.chmod(0o755)
+
+        padfire.save_config(second)
+
+        self.assertEqual(padfire.stat.S_IMODE(padfire.CFGDIR.stat().st_mode), 0o700)
+        self.assertEqual(padfire.stat.S_IMODE(Path(padfire.CONF).stat().st_mode), 0o600)
+        self.assertEqual(
+            padfire.stat.S_IMODE(Path(padfire.CONF + ".bak").stat().st_mode), 0o600
+        )
+        self.assertEqual(json.loads(Path(padfire.CONF).read_text()), second)
+        self.assertEqual(json.loads(Path(padfire.CONF + ".bak").read_text()), first)
+        self.assertEqual(padfire.load_config()["command"], "updated --argument")
+
+    def test_config_directory_refuses_symlinked_directory(self):
+        target = self.config_dir / "real-config"
+        target.mkdir()
+        link = self.config_dir / "linked-config"
+        link.symlink_to(target, target_is_directory=True)
+
+        with patch.object(padfire, "CFGDIR", link):
+            with self.assertRaises(PermissionError):
+                padfire._ensure_private_config_dir()
+
+        self.assertTrue(target.is_dir())
+        self.assertTrue(link.is_symlink())
+
+    def test_config_file_size_is_bounded(self):
+        path = Path(padfire.CONF)
+        with open(path, "wb") as stream:
+            stream.truncate(padfire.MAX_CONFIG_BYTES + 1)
+
+        config = padfire.load_config()
+
+        self.assertEqual(config["version"], padfire.CONFIG_VERSION)
+        self.assertEqual(path.stat().st_size, padfire.MAX_CONFIG_BYTES + 1)
+
+    def test_save_refuses_oversized_config_without_replacing_valid_file(self):
+        valid = {"version": 5, "label": "valid config"}
+        padfire.save_config(valid)
+        previous = Path(padfire.CONF).read_bytes()
+        too_large = {
+            "version": 5,
+            "pages": [{} for _ in range(8)],
+            "notes": "x" * (padfire.MAX_CONFIG_BYTES + 1),
+        }
+
+        with self.assertRaises(ValueError):
+            padfire.save_config(too_large)
+
+        self.assertEqual(Path(padfire.CONF).read_bytes(), previous)
+
+    def test_load_config_refuses_special_files_without_blocking(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("FIFO security check is POSIX-only")
+        os.mkfifo(padfire.CONF)
+        config = padfire.load_config()
+        self.assertEqual(config["version"], padfire.CONFIG_VERSION)
+        self.assertTrue(Path(padfire.CONF).is_fifo())
+
+    def test_load_config_refuses_hardlinked_config_without_chmodding_other_path(self):
+        target = self.config_dir / "shared.json"
+        target.write_text(json.dumps({"version": 5, "label": "shared"}), encoding="utf-8")
+        target.chmod(0o644)
+        os.link(target, Path(padfire.CONF))
+
+        config = padfire.load_config()
+
+        self.assertEqual(config["version"], padfire.CONFIG_VERSION)
+        self.assertEqual(padfire.stat.S_IMODE(target.stat().st_mode), 0o644)
+        self.assertEqual(target.stat().st_nlink, 2)
+        self.assertEqual(json.loads(target.read_text())["label"], "shared")
+
+    def test_load_config_refuses_symlinked_config_file(self):
+        target = self.config_dir / "outside.json"
+        target.write_text(json.dumps({"version": 5, "secret": "must not load"}))
+        Path(padfire.CONF).symlink_to(target)
+
+        config = padfire.load_config()
+
+        self.assertEqual(config["version"], padfire.CONFIG_VERSION)
+        self.assertNotIn("secret", config)
+        self.assertTrue(Path(padfire.CONF).is_symlink())
+        self.assertIn("secret", json.loads(target.read_text()))
+
+    def test_save_config_replaces_symlink_without_modifying_target(self):
+        target = self.config_dir / "outside.json"
+        original = {"version": 5, "secret": "keep this untouched"}
+        target.write_text(json.dumps(original))
+        Path(padfire.CONF).symlink_to(target)
+        replacement = {"version": 5, "pages": [{} for _ in range(8)]}
+
+        padfire.save_config(replacement)
+
+        self.assertFalse(Path(padfire.CONF).is_symlink())
+        self.assertEqual(json.loads(Path(padfire.CONF).read_text()), replacement)
+        self.assertEqual(json.loads(target.read_text()), original)
+        self.assertEqual(padfire.stat.S_IMODE(Path(padfire.CONF).stat().st_mode), 0o600)
+
+    def test_ipc_request_reader_accepts_bounded_newline_command(self):
+        left, right = padfire.socket.socketpair()
+        try:
+            command = "x" * padfire.IPC_MAX_REQUEST
+            right.sendall((command + "\n").encode())
+            self.assertEqual(padfire._read_ipc_request(left), command)
+        finally:
+            left.close()
+            right.close()
+
+    def test_ipc_request_reader_rejects_oversized_or_unterminated_input(self):
+        left, right = padfire.socket.socketpair()
+        try:
+            right.sendall(b"x" * (padfire.IPC_MAX_REQUEST + 1))
+            self.assertIsNone(padfire._read_ipc_request(left))
+        finally:
+            left.close()
+            right.close()
+
+        left, right = padfire.socket.socketpair()
+        try:
+            right.sendall(b"status")
+            right.shutdown(padfire.socket.SHUT_WR)
+            self.assertIsNone(padfire._read_ipc_request(left))
+        finally:
+            left.close()
+            right.close()
+
+    def test_ipc_server_uses_private_socket_and_does_not_evict_live_instance(self):
+        socket_path = TEST_HOME / "ipc-live.sock"
+        refs = []
+        second_refs = []
+        with patch.object(padfire, "SOCK", str(socket_path)):
+            server = threading.Thread(
+                target=padfire.ipc_serve, args=(lambda cmd: "reply:" + cmd, refs),
+                daemon=True,
+            )
+            server.start()
+            deadline = padfire.time.monotonic() + 2
+            while not socket_path.exists() and padfire.time.monotonic() < deadline:
+                padfire.time.sleep(0.01)
+            self.assertTrue(socket_path.exists())
+            self.assertEqual(padfire.stat.S_IMODE(socket_path.stat().st_mode), 0o600)
+
+            second = threading.Thread(
+                target=padfire.ipc_serve, args=(lambda cmd: "wrong", second_refs),
+                daemon=True,
+            )
+            second.start()
+            second.join(timeout=0.5)
+            self.assertFalse(second.is_alive())
+            self.assertEqual(second_refs, [])
+            self.assertEqual(padfire.ipc_send("status", str(socket_path)), "reply:status")
+
+            refs[0].close()
+            server.join(timeout=2)
+            self.assertFalse(server.is_alive())
+
+    def test_ipc_server_never_unlinks_a_regular_file_at_socket_path(self):
+        socket_path = TEST_HOME / "ipc.sock"
+        socket_path.write_text("preserve this file")
+        refs = []
+        with patch.object(padfire, "SOCK", str(socket_path)):
+            padfire.ipc_serve(lambda _cmd: "ok", refs)
+        self.assertEqual(socket_path.read_text(), "preserve this file")
+        self.assertEqual(refs, [])
 
     def test_corrupt_config_falls_back_to_safe_defaults(self):
         Path(padfire.CONF).write_text("{ broken json", encoding="utf-8")

@@ -3,6 +3,7 @@ name: Padfire tests
 on:
   push:
     branches: [main, "release/padfire-v2.3-20261028"]
+    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -12,7 +13,7 @@ jobs:
   linux-smoke:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install GTK and smoke-test dependencies
         run: |
           sudo apt-get update
@@ -23,9 +24,9 @@ jobs:
         run: |
           python3 tests/test_padfire_core.py
           xvfb-run -a python3 tests/test_padfire_dialogs.py
-          python3 -m py_compile padfire.py tools/padfire-shot tests/test_padfire_core.py tests/test_padfire_dialogs.py
-          bash -n padfire-launch
-          shellcheck padfire-launch
+          python3 -m py_compile padfire.py tools/padfire-shot tests/test_padfire_core.py tests/test_padfire_dialogs.py packaging/extra-scripts/padfire_test.py
+          bash -n padfire-launch packaging/extra-scripts/padfire-restart.sh
+          shellcheck padfire-launch packaging/extra-scripts/padfire-restart.sh
           desktop-file-validate packaging/padfire.desktop
       - name: Load the bundled Padfire icon with GTK
         run: |
