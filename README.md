@@ -18,7 +18,10 @@ A compact GTK3 soundboard and macro pad app for Linux desktops. The current MIDI
 - A stable local Unix-socket API for optional external integrations; the standalone app works normally without another application
 - New installs and missing saved audio routes use the current audio server's default output; per-pad and global sink overrides remain available
 - VU meter follows your configured monitor/output sink rather than a fixed one
-- MIDI input via `mido` (rtmidi backend), auto-reconnect on device unplug/replug
+- MIDI input via `mido` (rtmidi backend), with automatic USB unplug/replug recovery
+- A top-bar Launchpad status badge: green **Connected** or amber
+  **Disconnected**. Padfire checks both MIDI ports once per second and retries
+  without requiring the window to be reopened.
 - Audio via `paplay` subprocess -> PipeWire, no JACK/PortAudio dependency
 - Loudness analysis (`--` LUFS target -18.0) available from the pad editor
 
@@ -148,6 +151,7 @@ Run the fast, hardware-free v2.3 regression checks with:
 
 ```bash
 python3 tests/test_padfire_core.py
+xvfb-run -a python3 tests/test_padfire_dialogs.py
 ```
 
-These checks use a temporary `HOME`; they cover config migration and backup rotation, malformed-config fallback, configured VU-source selection, Launchpad Mini MK3 rejection, and LED protocol invariants. They do not replace a separate physical-device/audio playtest.
+The core checks use a temporary `HOME` and cover config migration, audio routing, MIDI discovery, disconnect detection and simulated USB unplug/replug recovery, process cleanup, and LED protocol invariants. The GTK checks exercise the dialogs under a virtual display without opening MIDI hardware or playing audio. These automated checks do not replace a separate physical-device/audio playtest.

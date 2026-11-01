@@ -29,6 +29,11 @@
   width with a live percentage, and moves optional notes behind a collapsed
   expander. Settings dropdowns are bounded, labels are readable, and monitor
   switches keep their native width instead of stretching across the row.
+- **Reliable Launchpad reconnection.** Detect normal MIDI input-stream
+  termination and independently check that the opened input/output ports
+  remain enumerated once per second. Close stale handles and retry discovery
+  without requiring Padfire to be reopened. The top bar now explicitly says
+  Connected or Disconnected with a high-contrast status treatment.
 - **Added:** a built-in `Toggle Crosshair` pad action. It invokes the installed
   Crosshair CLI without a shell, off the MIDI/GTK callback thread, and reports
   command errors in the Padfire status area. Existing pad assignments are
