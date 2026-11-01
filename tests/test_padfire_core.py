@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -68,6 +69,215 @@ class PadfireCoreTests(unittest.TestCase):
         found = engine._find(["Launchpad Mini MK3 MIDI 1", "Launchpad Mini MIDI 1"])
         self.assertEqual(found, "Launchpad Mini MIDI 1")
         self.assertIsNone(engine._find(["Launchpad Mini MK3 MIDI 1", "Other controller"]))
+
+    def test_audio_stop_and_stop_all_invalidate_workers_not_started_yet(self):
+        class DeferredThread:
+            def __init__(self, target, args=(), daemon=None, name=None):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                workers.append(self)
+
+            def run(self):
+                self.target(*self.args)
+
+        for stop_all in (False, True):
+            with self.subTest(stop_all=stop_all):
+                engine = object.__new__(padfire.AudioEngine)
+                engine._procs = {}
+                engine._generations = {}
+                engine._lock = threading.Lock()
+                engine._sinks = ["vm_game"]
+                workers = []
+                with patch.object(padfire.threading, "Thread", DeferredThread):
+                    with patch.object(padfire.subprocess, "Popen") as popen:
+                        engine.play("0:1", "/tmp/sound.wav", "vm_game", 80, False)
+                        if stop_all:
+                            engine.stop_all()
+                        else:
+                            engine.stop("0:1")
+                        self.assertEqual(len(workers), 1)
+                        workers[0].run()
+                        popen.assert_not_called()
+
+    def test_newer_playback_invalidates_older_pending_worker(self):
+        class DeferredThread:
+            def __init__(self, target, args=(), daemon=None, name=None):
+                self.target = target
+                self.args = args
+
+            def start(self):
+                workers.append(self)
+
+            def run(self):
+                self.target(*self.args)
+
+        class FinishedProcess:
+            returncode = 0
+
+            def communicate(self):
+                return b"", b""
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        engine = object.__new__(padfire.AudioEngine)
+        engine._procs = {}
+        engine._generations = {}
+        engine._lock = threading.Lock()
+        engine._sinks = ["vm_game"]
+        workers = []
+        with patch.object(padfire.threading, "Thread", DeferredThread):
+            engine.play("0:2", "/tmp/old.wav", "vm_game", 80, False)
+            engine.play("0:2", "/tmp/new.wav", "vm_game", 80, False)
+        self.assertEqual(len(workers), 2)
+
+        with patch.object(padfire.subprocess, "Popen", return_value=FinishedProcess()) as popen:
+            workers[0].run()
+            popen.assert_not_called()
+            workers[1].run()
+            self.assertEqual(popen.call_count, 1)
+            self.assertIn("/tmp/new.wav", popen.call_args.args[0])
+
+    def test_audio_stop_during_process_creation_kills_late_process(self):
+        class PendingProcess:
+            def __init__(self):
+                self.returncode = None
+                self.killed = threading.Event()
+
+            def communicate(self):
+                return b"", b""
+
+            def poll(self):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+                self.killed.set()
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+        engine = object.__new__(padfire.AudioEngine)
+        engine._procs = {}
+        engine._generations = {}
+        engine._lock = threading.Lock()
+        engine._sinks = ["vm_game"]
+        entered_popen = threading.Event()
+        release_popen = threading.Event()
+        process = PendingProcess()
+        workers = []
+        real_thread = threading.Thread
+
+        def tracked_thread(*args, **kwargs):
+            worker = real_thread(*args, **kwargs)
+            workers.append(worker)
+            return worker
+
+        def delayed_popen(*args, **kwargs):
+            entered_popen.set()
+            release_popen.wait(2)
+            return process
+
+        with patch.object(padfire.threading, "Thread", side_effect=tracked_thread):
+            with patch.object(padfire.subprocess, "Popen", side_effect=delayed_popen):
+                engine.play("0:3", "/tmp/racing.wav", "vm_game", 80, False)
+                self.assertTrue(entered_popen.wait(1), "playback worker never reached Popen")
+                engine.stop("0:3")
+                release_popen.set()
+                self.assertTrue(process.killed.wait(1), "late subprocess survived Stop")
+                workers[0].join(timeout=1)
+        self.assertFalse(engine.is_playing("0:3"))
+
+    def _bare_midi_engine(self):
+        engine = object.__new__(padfire.MidiEngine)
+        engine._in = engine._out = None
+        engine._out_lock = threading.Lock()
+        engine._conn_lock = threading.Lock()
+        engine._connected = False
+        engine._running = True
+        engine._on_connect = lambda: None
+        engine._on_disconnect = lambda: None
+        return engine
+
+    def test_midi_input_open_failure_closes_already_open_output(self):
+        class FakePort:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        engine = self._bare_midi_engine()
+        output = FakePort()
+        with patch.object(padfire.mido, "get_input_names", return_value=["Launchpad Mini MIDI 1"]), \
+             patch.object(padfire.mido, "get_output_names", return_value=["Launchpad Mini MIDI 1"]), \
+             patch.object(padfire.mido, "open_output", return_value=output), \
+             patch.object(padfire.mido, "open_input", side_effect=OSError("device vanished")):
+            self.assertFalse(engine.try_connect())
+
+        self.assertTrue(output.closed)
+        self.assertIsNone(engine._in)
+        self.assertIsNone(engine._out)
+        self.assertFalse(engine.is_connected())
+
+    def test_midi_discovery_failure_does_not_prevent_a_later_retry(self):
+        class FakePort:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        engine = self._bare_midi_engine()
+        output = FakePort()
+        input_port = FakePort()
+        with patch.object(
+            padfire.mido,
+            "get_input_names",
+            side_effect=[OSError("backend restarting"), ["Launchpad Mini MIDI 1"]],
+        ), patch.object(
+            padfire.mido, "get_output_names", return_value=["Launchpad Mini MIDI 1"]
+        ), patch.object(
+            padfire.mido, "open_output", return_value=output
+        ), patch.object(
+            padfire.mido, "open_input", return_value=input_port
+        ):
+            self.assertFalse(engine.try_connect())
+            self.assertTrue(engine.try_connect())
+
+        self.assertTrue(engine.is_connected())
+        engine._disconnect()
+        self.assertTrue(output.closed)
+        self.assertTrue(input_port.closed)
+
+    def test_midi_disconnect_closes_partial_handle_even_when_not_connected(self):
+        class FakePort:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        engine = self._bare_midi_engine()
+        output = FakePort()
+        engine._out = output
+        disconnect_events = []
+        engine._on_disconnect = lambda: disconnect_events.append(True)
+
+        engine._disconnect()
+
+        self.assertTrue(output.closed)
+        self.assertIsNone(engine._out)
+        self.assertIsNone(engine._in)
+        self.assertEqual(disconnect_events, [])
 
     def test_vu_source_tracks_selected_monitor_or_default_sink(self):
         app = object.__new__(padfire.PadfireApp)  # method only reads cfg; no UI/thread startup

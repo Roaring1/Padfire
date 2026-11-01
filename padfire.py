@@ -273,6 +273,7 @@ def save_config(cfg):
 class AudioEngine:
     def __init__(self):
         self._procs = {}
+        self._generations = {}
         self._lock  = threading.Lock()
         self._sinks = []
         self._refresh_sinks()
@@ -287,59 +288,118 @@ class AudioEngine:
             print(f"[audio] pactl failed: {e}")
 
     def _find_sink(self, name):
-        lo = name.lower()
+        lo = str(name or "").lower()
         for s in self._sinks:
             if s == name: return s
         for s in self._sinks:
             if s.lower().startswith(lo): return s
         for s in self._sinks:
-            if lo in s.lower(): return s
+            if lo and lo in s.lower(): return s
         return self._sinks[0] if self._sinks else "vm_game"
 
+    @staticmethod
+    def _stop_process(proc):
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=0.5)
+        except Exception:
+            pass
+
+    def _cancel(self, keys):
+        """Invalidate pending starts as well as terminate registered processes."""
+        processes = []
+        tokens = {}
+        with self._lock:
+            for key in keys:
+                token = self._generations.get(key, 0) + 1
+                self._generations[key] = token
+                tokens[key] = token
+                proc = self._procs.pop(key, None)
+                if proc is not None:
+                    processes.append(proc)
+        for proc in processes:
+            self._stop_process(proc)
+        return tokens
+
     def play(self, key, filepath, sink_name, vol, loop, monitor_sink=None):
-        self.stop(key)
+        monitor_key = f"__mon__{key}"
+        tokens = self._cancel((key, monitor_key))
         resolved = self._find_sink(sink_name)
         # the dialog allows 0-150%, so cap there. The old 131072 (200%)
         # ceiling was unreachable from the UI.
         pa_vol   = int(min(65536 * vol / 100.0, int(65536 * 1.5)))
         print(f"[audio] {key} -> {resolved} vol={vol}%")
 
-        def _run(tkey, sink):
+        def _run(tkey, sink, token):
             while True:
+                # A Stop or newer Play may arrive before this worker starts.
+                with self._lock:
+                    if self._generations.get(tkey) != token:
+                        return
+                proc = None
                 try:
                     proc = subprocess.Popen(
                         ["paplay", f"--device={sink}", f"--volume={pa_vol}", filepath],
                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                    with self._lock: self._procs[tkey] = proc
+                    with self._lock:
+                        current = self._generations.get(tkey) == token
+                        if current:
+                            self._procs[tkey] = proc
+                    if not current:
+                        # Stop raced with Popen: never publish or leave this
+                        # late process running after the caller asked to stop.
+                        self._stop_process(proc)
+                        return
                     _, err = proc.communicate()
                     rc = proc.returncode
                     if err and rc != 0:
                         print(f"[audio] paplay ({tkey}): {err.decode().strip()}")
                     with self._lock:
-                        # if stop() removed/replaced our proc, we were stopped externally
-                        stopped = self._procs.get(tkey) is not proc
-                        if (not loop or stopped) and self._procs.get(tkey) is proc:
+                        current = self._generations.get(tkey) == token
+                        if self._procs.get(tkey) is proc:
                             self._procs.pop(tkey, None)
-                    if not loop or stopped: break
+                    if not loop or not current:
+                        break
                 except Exception as e:
-                    print(f"[audio] {tkey}: {e}")
-                    with self._lock: self._procs.pop(tkey, None)
+                    with self._lock:
+                        current = self._generations.get(tkey) == token
+                        if self._procs.get(tkey) is proc:
+                            self._procs.pop(tkey, None)
+                    if current:
+                        print(f"[audio] {tkey}: {e}")
+                    if proc is not None:
+                        self._stop_process(proc)
                     break
 
-        threading.Thread(target=_run, args=(key, resolved), daemon=True).start()
+        threading.Thread(target=_run, args=(key, resolved, tokens[key]),
+                         daemon=True, name=f"audio-{key}").start()
         if monitor_sink and monitor_sink != sink_name:
-            threading.Thread(target=_run, args=(f"__mon__{key}", self._find_sink(monitor_sink)), daemon=True).start()
+            threading.Thread(
+                target=_run,
+                args=(monitor_key, self._find_sink(monitor_sink), tokens[monitor_key]),
+                daemon=True, name=f"audio-monitor-{key}"
+            ).start()
 
     def stop(self, key):
-        for k in (key, f"__mon__{key}"):
-            with self._lock: proc = self._procs.pop(k, None)
-            if proc:
-                try: proc.kill(); proc.wait(timeout=0.5)
-                except Exception: pass
+        self._cancel((key, f"__mon__{key}"))
 
     def stop_all(self):
-        with self._lock: keys = list(self._procs.keys())
-        for k in keys: self.stop(k)
+        # Invalidate every known key under the same lock used to publish a
+        # process. This also catches workers that have not reached Popen yet.
+        with self._lock:
+            keys = set(self._generations) | set(self._procs)
+            processes = []
+            for key in keys:
+                self._generations[key] = self._generations.get(key, 0) + 1
+                proc = self._procs.pop(key, None)
+                if proc is not None:
+                    processes.append(proc)
+        for proc in processes:
+            self._stop_process(proc)
 
     def is_playing(self, key):
         with self._lock: proc = self._procs.get(key)
@@ -374,30 +434,55 @@ class MidiEngine:
     def try_connect(self):
         with self._conn_lock:
             if self._connected: return True
-            inn  = self._find(mido.get_input_names())
-            outn = self._find(mido.get_output_names())
-            if not inn or not outn: return False
             try:
-                self._out = mido.open_output(outn)
-                self._in  = mido.open_input(inn)
+                inn  = self._find(mido.get_input_names())
+                outn = self._find(mido.get_output_names())
+            except Exception as e:
+                # Backend enumeration can fail transiently while ALSA/USB is
+                # reinitializing. Keep the reconnect watcher alive to retry.
+                print(f"[midi] discovery failed: {e}")
+                return False
+            if not inn or not outn: return False
+            out_port = in_port = None
+            try:
+                out_port = mido.open_output(outn)
+                in_port = mido.open_input(inn)
+                self._out = out_port
+                self._in = in_port
                 self._connected = True
                 print(f"[midi] connected: {inn}")
                 self._on_connect()
                 return True
             except Exception as e:
+                # Opening the input can fail after the output has acquired the
+                # device. Do not retain that half-open handle: reconnect runs
+                # repeatedly and would otherwise leak/lock MIDI ports.
+                for port in (in_port, out_port):
+                    try:
+                        if port: port.close()
+                    except Exception:
+                        pass
+                self._in = self._out = None
+                self._connected = False
                 print(f"[midi] connect failed: {e}")
                 return False
 
     def _disconnect(self):
         with self._conn_lock:
-            if not self._connected: return
+            was_connected = self._connected
             self._connected = False
-            for port in (self._in, self._out):
-                try:
-                    if port: port.close()
-                except Exception: pass
+            in_port, out_port = self._in, self._out
             self._in = self._out = None
-        self._on_disconnect()
+            # Serialize output-port close with LED sends; cleanup also runs
+            # after a partial connection failure, even when _connected=False.
+            with self._out_lock:
+                for port in (in_port, out_port):
+                    try:
+                        if port: port.close()
+                    except Exception:
+                        pass
+        if was_connected:
+            self._on_disconnect()
 
     def _reconnect_loop(self):
         while self._running:
