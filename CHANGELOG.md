@@ -20,11 +20,15 @@
   their trailing byte instead of losing sample alignment.
 - **Background service probes kept running during Quit.** The Hearth polling
   worker now has an interruptible shutdown wait and is joined during exit.
-- **MIDI could reconnect after Quit.** The initial connect path and reconnect
-  watcher now recheck the engine's running state before opening Launchpad ports.
+- **MIDI workers could linger after Quit.** The reconnect wait is now
+  interruptible, initial/retry connects recheck shutdown state, and the reader
+  and watcher threads are joined after the Launchpad ports close.
 - **The editor's Test Run could leave child commands behind.** Test commands now
   run in a dedicated process group, stop when the dialog closes, and terminate
   descendants on timeout.
+- **Modal workers outlived the pad editor.** LUFS analysis now cancels and reaps
+  its `ffmpeg` process group; preview playback snapshots UI values on the GTK
+  thread and cannot start after Stop or dialog close.
 
 ## v2.3
 
