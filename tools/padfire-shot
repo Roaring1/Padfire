@@ -369,8 +369,9 @@ def report(p):
 def main():
     ap = argparse.ArgumentParser(prog="padfire-shot",
                                  description="Screenshot the Padfire window.")
-    ap.add_argument("-o", "--out", default="/tmp/padfire-shot.png",
-                    help="output PNG directly in HOME, Pictures, Desktop or temp (default: /tmp/padfire-shot.png)")
+    ap.add_argument("-o", "--out",
+                    default=os.path.join(tempfile.gettempdir(), "padfire-shot.png"),
+                    help="output PNG directly in HOME, Pictures, Desktop or temp (default: system temp directory)")
     ap.add_argument("--demo", action="store_true",
                     help="use a throwaway HOME with sample pads covering every "
                          "pad state; never touches your real config")
