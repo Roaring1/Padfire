@@ -2,10 +2,30 @@
 
 ## Unreleased
 
-- **Added:** a built-in `Toggle Crosshair` pad action. It invokes the
-  installed Crosshair CLI without a shell, off the MIDI/GTK callback thread,
-  and reports command errors in the Padfire status area. Existing pad
-  assignments are unchanged.
+- **Standalone, denser main window.** Removed the permanent bottom status bar
+  and all Hearth-specific status widgets/polling. The VU meter now sits
+  directly beneath the Padfire wordmark at the top-left; live playback names
+  and transient errors use the existing utility row. The pad grid remains the
+  focus.
+- **Standalone runtime.** Removed the Hearth socket probe and companion-window
+  button. Padfire keeps its small, same-user Unix-socket API for optional
+  external integrations, but no longer requires or probes for a companion app.
+- **Portable KDE/GTK application identity.** Bundled the existing scalable
+  Padfire SVG, installs it into the user's hicolor icon theme, sets the desktop
+  entry's `Icon=padfire` and `StartupWMClass=padfire`, and explicitly sets the
+  GTK/GDK program identity. The installer updates an existing autostart entry
+  without creating a new one.
+- **Portable audio defaults.** Removed the `vm_game` and specific Astro headset
+  defaults. New installs use the active PipeWire/PulseAudio default sink; an
+  explicit saved sink is kept when available and falls back to the user's
+  default when it is not. Both sink selectors include `System default`.
+- **Low idle overhead.** The VU worker sleeps at 250 ms while idle and performs
+  no sink discovery or capture subprocess work until Padfire is playing.
+  System-default sink discovery is cached for five seconds while active.
+- **Added:** a built-in `Toggle Crosshair` pad action. It invokes the installed
+  Crosshair CLI without a shell, off the MIDI/GTK callback thread, and reports
+  command errors in the Padfire status area. Existing pad assignments are
+  unchanged.
 
 ### Fixed
 
@@ -53,8 +73,8 @@ and the CLI surface.
   unconditionally. It now derives the source from config, checks that `parec`
   exists, backs off after failure, reaps dead children, and restarts when the
   sink changes.
-- **Pad labels truncated mid-word** (`clicker s`, `clicker t`). Labels now wrap
-  to two lines with proper ellipsis.
+- **Pad labels truncated mid-word** (`clicker s`, `clicker t`). Labels now
+  wrap to two lines with proper ellipsis.
 - **`--status` was not JSON.** With no instance running it printed the bare text
   `not running` and exited 0, so every consumer of the documented "JSON status
   for Hearth/tools" raised on the first character. It now always emits valid
@@ -92,33 +112,65 @@ and the CLI surface.
   (`pacman`) on a Fedora-derived system, and several shipped flags, IPC verbs
   and keybindings were undocumented.
 
-## 2.2 — 2026-06-21
+## 2.2 -- 2026-06-21
 
 ### Fixed
-- Sink dropdowns now select the intended hardware sink when the list contains the "-- hardware --" separator. The previous indexing skipped over the separator, so the saved sink could appear one row off.
-- Side-column pads now support the same drag-to-move / Ctrl-drag-to-copy behavior as grid pads.
-- Failed file drops now finish the GTK drag operation cleanly instead of leaving the drag source in an ambiguous state.
-- "Stop a specific pad", "Stop this pad", and clearing a pad now stop script pads as well as audio pads; script pads now also appear in the stop-target picker.
-- README config/socket paths now point to `~/.config/padfire` instead of the legacy `~/.config/roaring` location.
+
+- Sink dropdowns now select the intended hardware sink when the list contains
+  the "-- hardware --" separator. The previous indexing skipped over the
+  separator, so the saved sink could appear one row off.
+- Side-column pads now support the same drag-to-move / Ctrl-drag-to-copy
+  behavior as grid pads.
+- Failed file drops now finish the GTK drag operation cleanly instead of
+  leaving the drag source in an ambiguous state.
+- "Stop a specific pad", "Stop this pad", and clearing a pad now stop script
+  pads as well as audio pads; script pads now also appear in the stop-target
+  picker.
+- README config/socket paths now point to `~/.config/padfire` instead of the
+  legacy `~/.config/roaring` location.
 
 ### Changed
-- Packaging examples are less machine-specific: desktop launcher uses `padfire-launch` + a theme icon, systemd uses `%h/bin/padfire-launch`, and the restart helper resolves the repo root with environment-variable overrides.
 
-## 2.1 — 2026-06-21
+- Packaging examples are less machine-specific: desktop launcher uses
+  `padfire-launch` + a theme icon, systemd uses `%h/bin/padfire-launch`, and
+  the restart helper resolves the repo root with environment-variable
+  overrides.
+
+## 2.1 -- 2026-06-21
 
 ### Fixed
-- Looping pads now actually loop. The playback thread removed its own entry from the active-process table and then checked whether that entry still existed to decide whether to repeat — which was always false, so a looped sound played exactly once. It now distinguishes a natural end (repeat) from an external Stop (don't repeat).
-- Pad colors no longer linger after switching pages. Switching pages dropped the table that tracked each pad's color styling without removing the old styling from the buttons, so a colored pad on one page could keep its color on another page where that slot was empty or a different color. Color styling is now reconciled per pad on every switch.
+
+- Looping pads now actually loop. The playback thread removed its own entry
+  from the active-process table and then checked whether that entry still
+  existed to decide whether to repeat -- which was always false, so a looped
+  sound played exactly once. It now distinguishes a natural end (repeat) from
+  an external Stop (don't repeat).
+- Pad colors no longer linger after switching pages. Switching pages dropped
+  the table that tracked each pad's color styling without removing the old
+  styling from the buttons, so a colored pad on one page could keep its color
+  on another page where the slot was empty or a different color. Color styling
+  is now reconciled per pad on every switch.
 
 ### Changed
-- Pad color styling is only rebuilt when a pad's color actually changes, instead of recreating a CSS provider for every colored pad about five times a second from the refresh loop.
-- Config saves are now atomic and keep a single rolling backup (`padfire.json.bak`), so an interrupted save can't corrupt the file that holds every pad assignment.
-- `padfire-launch` now finds `padfire.py` next to itself (overridable via `$PADFIRE_PY`) instead of the hardcoded `/home/roaring/bin/padfire.py` path, so it runs from the repo or any install location.
-- `extra-scripts/padfire-restart.sh`: corrected the leftover socket path (`~/.config/roaring` → `~/.config/padfire`).
+
+- Pad color styling is only rebuilt when a pad's color actually changes,
+  instead of recreating a CSS provider for every colored pad about five times
+  a second from the refresh loop.
+- Config saves are now atomic and keep a single rolling backup
+  (`padfire.json.bak`), so an interrupted save can't corrupt the file that
+  holds every pad assignment.
+- `padfire-launch` now finds `padfire.py` next to itself (overridable via
+  `$PADFIRE_PY`) instead of the hardcoded `/home/roaring/bin/padfire.py`
+  path, so it runs from the repo or any install location.
+- `extra-scripts/padfire-restart.sh`: corrected the leftover socket path
+  (`~/.config/roaring` -> `~/.config/padfire`).
 
 ### Added
+
 - Keyboard shortcuts on the main window: `Esc` hides to tray, `Ctrl+Q` quits.
 - `--version` flag on the command line.
 
 ### Removed
-- Removed a dead, shadowed copy of the Hearth-status update method (a later definition always overrode it).
+
+- Removed a dead, shadowed copy of the Hearth-status update method (a later
+  definition always overrode it).

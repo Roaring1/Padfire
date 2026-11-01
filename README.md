@@ -1,8 +1,8 @@
 # Padfire
 
-GTK3 soundboard for the Novation Launchpad Mini (MK1/MK2).
+A compact GTK3 soundboard and macro pad app for Linux desktops. The current MIDI protocol supports the Novation Launchpad Mini MK1/MK2.
 
-8 pages of 8x8 pads. Each pad plays a sound file via PipeWire (`paplay`). LED feedback with per-page colors. IPC socket so Hearth can show playback status.
+8 pages of 8x8 pads. Each pad can play a sound file through PipeWire/PulseAudio or run a local command. Padfire stores settings and assignments in the current user's home directory; it does not require a companion app or machine-specific audio sink names.
 
 ---
 
@@ -15,7 +15,8 @@ GTK3 soundboard for the Novation Launchpad Mini (MK1/MK2).
 - Missing sound files are shown on the pad itself: a dashed red border and a `!` glyph, so a broken assignment is visible before you press it
 - Tray icon with a live page indicator (`P1`-`P8`) and stop-all
 - IPC: `status`, `stop_all`, `show`, `reload`, `quit` over a Unix socket (`~/.config/padfire/padfire.sock`)
-- Hearth integration: Padfire status panel in Hearth shows current page, playing sounds, MIDI connection state. When Hearth is not running, its controls hide instead of showing empty labels
+- A stable local Unix-socket API for optional external integrations; the standalone app works normally without another application
+- New installs and missing saved audio routes use the current audio server's default output; per-pad and global sink overrides remain available
 - VU meter follows your configured monitor/output sink rather than a fixed one
 - MIDI input via `mido` (rtmidi backend), auto-reconnect on device unplug/replug
 - Audio via `paplay` subprocess -> PipeWire, no JACK/PortAudio dependency
@@ -28,17 +29,18 @@ GTK3 soundboard for the Novation Launchpad Mini (MK1/MK2).
 - Python 3.10+
 - GTK3 (`python-gobject`)
 - `mido` + `python-rtmidi`
-- `paplay` (PipeWire / pipewire-pulse)
-- `parec` (optional -- VU meter; the meter hides itself if absent)
+- `paplay` (PipeWire / PulseAudio playback CLI)
+- `pactl` (recommended -- sink discovery and resolving the system-default output)
+- `parec` (optional -- live VU capture; the meter hides itself if absent)
 - `libappindicator3` (tray, optional)
 - Novation Launchpad Mini MK1 or MK2
 
 ```bash
 # Fedora / Nobara / RHEL-like
-sudo dnf install python3-gobject python3-mido python3-rtmidi libappindicator-gtk3
+sudo dnf install python3-gobject python3-mido python3-rtmidi libappindicator-gtk3 pulseaudio-utils
 
 # Arch
-sudo pacman -S python-gobject python-mido python-rtmidi libappindicator-gtk3
+sudo pacman -S python-gobject python-mido python-rtmidi libappindicator-gtk3 libpulse
 
 # Any distro, if the packaged MIDI bindings are missing or too old
 pip install --user mido python-rtmidi
@@ -51,7 +53,8 @@ pip install --user mido python-rtmidi
 ## Launch
 
 ```bash
-./padfire-launch        # recommended -- silences JACK error spam before import
+./padfire-launch        # recommended -- sets up the audio environment, then launches Padfire
+./padfire-launch --install  # install a per-user desktop entry, icon and systemd service
 python3 padfire.py      # direct launch (JACK may print errors on startup)
 ```
 
@@ -68,12 +71,12 @@ If no X or Wayland display is available, Padfire exits with a one-line message i
 ./padfire-launch --stop     # stop all audio
 ./padfire-launch --reload   # re-read padfire.json without restarting
 ./padfire-launch --quit     # ask a running instance to exit
-./padfire-launch --status   # JSON status for Hearth/tools
+./padfire-launch --status   # JSON status for scripts and external tools
 ./padfire-launch --version  # print version
-./padfire-launch --install  # install a systemd --user service
+./padfire-launch --install  # install desktop icon/launcher and enable the user service
 ```
 
-`--status` **always** prints valid JSON, so it is safe to pipe into a parser. With no instance running it prints `{"running": false, "version": "..."}` and exits 0.
+`--status` **always** prints valid JSON, so it is safe to pipe into a parser or consume from another app. When running, the response includes MIDI connection state, current page, active pads, and monitor settings. With no instance running it prints `{"running": false, "version": "..."}` and exits 0. The socket is local to the current user at `~/.config/padfire/padfire.sock` and is not a network service.
 
 `--show`, `--stop`, `--reload` and `--quit` print human-readable text and exit **1** when no instance was listening, so scripts can tell "done" from "nothing was there".
 
