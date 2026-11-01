@@ -71,6 +71,48 @@ class PadfireCoreTests(unittest.TestCase):
         self.assertEqual(found, "Launchpad Mini MIDI 1")
         self.assertIsNone(engine._find(["Launchpad Mini MK3 MIDI 1", "Other controller"]))
 
+    def test_editor_test_run_skips_launch_after_dialog_cancellation(self):
+        cancelled = threading.Event()
+        cancelled.set()
+        with patch.object(padfire.subprocess, "Popen") as popen:
+            padfire._run_script_test_command("echo test", cancelled)
+        popen.assert_not_called()
+
+    def test_editor_test_run_terminates_process_created_after_dialog_close(self):
+        cancelled = threading.Event()
+        process = self._fake_process()
+
+        def spawn(*_args, **_kwargs):
+            cancelled.set()
+            return process
+
+        with patch.object(padfire.subprocess, "Popen", side_effect=spawn):
+            padfire._run_script_test_command("test-command", cancelled)
+
+        self.assertTrue(process.terminated)
+        self.assertTrue(process.waited)
+        self.assertTrue(process.killed)
+
+    def test_editor_test_run_timeout_escalates_its_process_group(self):
+        cancelled = threading.Event()
+        process = self._fake_process()
+        process.pid = 54321
+
+        with patch.object(
+            padfire.subprocess, "Popen", return_value=process
+        ) as popen, patch.object(padfire.os, "killpg") as killpg:
+            padfire._run_script_test_command("slow-test-command", cancelled, timeout=0)
+
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertEqual(
+            killpg.call_args_list,
+            [
+                ((54321, padfire.signal.SIGTERM),),
+                ((54321, padfire.signal.SIGKILL),),
+            ],
+        )
+        self.assertTrue(process.waited)
+
     def _bare_app(self):
         app = object.__new__(padfire.PadfireApp)
 

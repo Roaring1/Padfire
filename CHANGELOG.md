@@ -8,6 +8,7 @@
 - **VU capture could outlive Padfire.** The level-meter worker now exits on shutdown, terminates and reaps `parec`, and closes its output pipe on shutdown, EOF, sink changes, and read errors. Partial 16-bit PCM reads retain their trailing byte instead of losing sample alignment.
 - **Background service probes kept running during Quit.** The Hearth polling worker now has an interruptible shutdown wait and is joined during application exit.
 - **MIDI could reconnect after Quit.** The initial connect path and reconnect watcher now recheck the engine's running state before opening Launchpad ports.
+- **The editor's Test Run could leave child commands behind.** Test commands now run in a dedicated process group, stop when the dialog closes, and terminate descendants on timeout.
 
 ## v2.3
 
