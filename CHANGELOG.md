@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Added:** a built-in `Toggle Crosshair` pad action. It invokes the
+  installed Crosshair CLI without a shell, off the MIDI/GTK callback thread,
+  and reports command errors in the Padfire status area. Existing pad
+  assignments are unchanged.
+
 ## v2.3
 
 Audit-driven release. Every item below was reproduced before it was changed and

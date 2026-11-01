@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_HOME = Path(tempfile.mkdtemp(prefix="padfire-core-test-home-"))
@@ -46,6 +47,39 @@ class PadfireCoreTests(unittest.TestCase):
         migrated = padfire._migrate({"version": 5, "retrigger": "unknown", "pages": []})
         self.assertEqual(migrated["retrigger"], "restart")
         self.assertEqual(len(migrated["pages"]), 8)
+
+    def test_migration_preserves_crosshair_toggle_pad_action(self):
+        cfg = {
+            "version": 5,
+            "pages": [{"17": {"action": "crosshair_toggle", "label": "Aim"}}],
+        }
+        migrated = padfire._migrate(cfg)
+        self.assertEqual(
+            migrated["pages"][0]["17"],
+            {"action": "crosshair_toggle", "label": "Aim"},
+        )
+
+    def test_crosshair_toggle_command_prefers_path(self):
+        with patch.object(padfire.shutil, "which", return_value="/usr/bin/crosshair"):
+            self.assertEqual(
+                padfire.crosshair_toggle_argv(),
+                ["/usr/bin/crosshair", "--toggle"],
+            )
+
+    def test_crosshair_toggle_command_uses_local_bin_fallback(self):
+        fallback = TEST_HOME / ".local" / "bin" / "crosshair"
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        fallback.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fallback.chmod(0o755)
+        with patch.object(padfire.shutil, "which", return_value=None):
+            self.assertEqual(
+                padfire.crosshair_toggle_argv(),
+                [str(fallback), "--toggle"],
+            )
+
+    def test_crosshair_toggle_command_reports_missing_cli(self):
+        with patch.object(padfire.shutil, "which", return_value=None):
+            self.assertIsNone(padfire.crosshair_toggle_argv())
 
     def test_save_keeps_previous_generation_as_backup(self):
         first = {"version": 5, "label": "prior"}
