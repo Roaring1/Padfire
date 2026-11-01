@@ -419,6 +419,7 @@ class MidiEngine:
 
     def try_connect(self):
         with self._conn_lock:
+            if not self._running: return False
             if self._connected: return True
             inn  = self._find(mido.get_input_names())
             outn = self._find(mido.get_output_names())
@@ -448,7 +449,10 @@ class MidiEngine:
     def _reconnect_loop(self):
         while self._running:
             time.sleep(2)
-            if not self._connected: self.try_connect()
+            if not self._running:
+                break
+            if not self._connected:
+                self.try_connect()
 
     def _read_loop(self):
         while self._running:

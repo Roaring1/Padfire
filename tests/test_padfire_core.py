@@ -439,6 +439,31 @@ class PadfireCoreTests(unittest.TestCase):
         self.assertTrue(process.waited)
         main_quit.assert_called_once_with()
 
+    def test_midi_try_connect_refuses_after_shutdown(self):
+        engine = object.__new__(padfire.MidiEngine)
+        engine._conn_lock = threading.Lock()
+        engine._connected = False
+        engine._running = False
+
+        with patch.object(padfire.mido, "get_input_names") as get_inputs:
+            self.assertFalse(engine.try_connect())
+            get_inputs.assert_not_called()
+
+    def test_midi_reconnect_loop_does_not_reconnect_after_shutdown(self):
+        engine = object.__new__(padfire.MidiEngine)
+        engine._running = True
+        engine._connected = False
+
+        def shutdown_during_wait(_seconds):
+            engine._running = False
+
+        with patch.object(
+            padfire.time, "sleep", side_effect=shutdown_during_wait
+        ), patch.object(engine, "try_connect") as try_connect:
+            engine._reconnect_loop()
+
+        try_connect.assert_not_called()
+
     def test_vu_source_tracks_selected_monitor_or_default_sink(self):
         app = object.__new__(padfire.PadfireApp)  # method only reads cfg; no UI/thread startup
         app.cfg = {"monitor_enabled": True, "monitor_sink": "vm_music", "default_sink": "vm_game"}
