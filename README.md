@@ -143,7 +143,7 @@ The `0x0C` term selects double-buffered display without a CC 0 reset. Every LED 
 
 ## Tools
 
-`tools/padfire-shot` -- open the window, let it settle, capture a PNG, exit. Intended for UI review, bug reports and automated visual checks; it never touches your real config when run with `--demo`. Output filenames are restricted to PNG names in the existing home directory, `~/Pictures`, `~/Desktop`, or the system temp directory. The helper builds the final path from that fixed directory allow-list and rejects symlinks, hard links, special files and foreign-owned targets.
+`tools/padfire-shot` -- open the window, let it settle, capture a PNG, exit. Intended for UI review, bug reports and automated visual checks; it never touches your real config when run with `--demo`. By default it writes `padfire-shot.png` directly inside Python's system temp directory. Explicit output filenames are restricted to direct children of the existing home directory, `~/Pictures`, `~/Desktop`, or the system temp directory. Parent/final symlinks, nested paths, hard links, special files and foreign-owned targets are rejected; captures and crop/scale variants are written through private temporary files and atomically replaced.
 
 The optional hardware smoke test at `packaging/extra-scripts/padfire_test.py`
 opens the Launchpad MIDI ports, lights the grid and reports button events.
@@ -159,7 +159,7 @@ This sends real LED messages to the controller. It is not an automated test
 and should not be run while another application owns the Launchpad.
 
 ```bash
-tools/padfire-shot                       # 1s settle, 60% centre crop -> /tmp/padfire-shot.png
+tools/padfire-shot                       # 1s settle, 60% centre crop -> system temp/padfire-shot.png
 tools/padfire-shot --demo                # seed a throwaway HOME with example pads
 tools/padfire-shot --demo --scale 250     # also write a 250% upscale
 tools/padfire-shot --playing 0:1          # render a pad in its playing state

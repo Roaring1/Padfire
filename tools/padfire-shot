@@ -5,7 +5,7 @@ Builds the real UI, grabs one frame, and quits. Nothing is clicked, no audio is
 played, no MIDI device is opened, and the tray is never registered. Intended
 for UI review, regression screenshots, and automated inspection.
 
-    tools/padfire-shot                     # -> /tmp/padfire-shot.png
+    tools/padfire-shot                     # -> system temp directory/padfire-shot.png
     tools/padfire-shot -o /tmp/ui.png
     tools/padfire-shot -o ~/Pictures/ui.png
     tools/padfire-shot --demo              # throwaway HOME with sample pads

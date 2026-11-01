@@ -48,7 +48,8 @@
   special files and foreign-owned targets, including crop/scale outputs.
   Captures and derived images use private sibling temporary files plus atomic
   replacement, so a destination symlink introduced after validation is
-  replaced as a link rather than followed to its target.
+  replaced as a link rather than followed to its target. The default output
+  uses Python's system temp directory rather than assuming `/tmp`.
 - **License and maintainer guidance.** Add the owner-selected MIT license for
   Padfire-authored source/docs, a security policy, contribution and manual
   acceptance guidance, a release checklist, and a deferred device-neutral MIDI
