@@ -309,11 +309,20 @@ def _migrate(c):
     return c
 
 def load_config():
+    # Older releases created backups with the process umask (often 0644).
+    # Tighten an existing backup on first v2.4+ startup without following
+    # symlinks or changing permissions on shared/special files.
+    try:
+        _read_private_file(Path(CONF + ".bak"))
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as exc:
+        print(f"[config] existing backup was not accepted safely: {exc}")
     try:
         raw = _read_private_file(Path(CONF))
         c = json.loads(raw.decode("utf-8"))
         return _migrate(c)
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         if not isinstance(exc, FileNotFoundError):
             print(f"[config] could not load config safely; using defaults: {exc}")
         return json.loads(json.dumps(DEFAULT_CONFIG))
@@ -332,7 +341,7 @@ def save_config(cfg):
     if dst.exists() or dst.is_symlink():
         try:
             _atomic_private_write(backup, _read_private_file(dst))
-        except Exception as exc:
+        except (OSError, ValueError) as exc:
             print(f"[config] backup skipped: {exc}")
     _atomic_private_write(dst, payload)
     try:
@@ -407,8 +416,10 @@ def _run_script_test_command(command, cancel_event, timeout=30.0):
     proc = None
     process_group = os.name == "posix"
     try:
+        # Test Run is an explicit editor action; the saved command is user-authored
+        # shell syntax, not data received from the MIDI controller or IPC.
         proc = subprocess.Popen(
-            command, shell=True, start_new_session=process_group
+            command, shell=True, start_new_session=process_group  # nosec B602
         )
         if cancel_event.is_set():
             _terminate_process(proc, process_group=process_group)
@@ -1949,8 +1960,10 @@ class PadfireApp:
                             or self._script_generations.get(key) != generation
                         ):
                             return
+                    # Script pads intentionally execute a command entered by
+                    # the user; the trust boundary is documented in SECURITY.md.
                     proc = subprocess.Popen(
-                        cmd, shell=True, stdout=subprocess.PIPE,
+                        cmd, shell=True, stdout=subprocess.PIPE,  # nosec B602
                         stderr=subprocess.STDOUT, text=True, bufsize=1,
                         start_new_session=(os.name == "posix"),
                     )

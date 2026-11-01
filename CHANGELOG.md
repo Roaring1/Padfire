@@ -37,8 +37,9 @@
   without requiring Padfire to be reopened. The top bar now explicitly says
   Connected or Disconnected with a high-contrast status treatment.
 - **Private local state and bounded IPC.** The config directory is 0700 and
-  config/backup/PID/socket files are 0600. Config reads refuse symlinks,
-  hard links, special files and files larger than 4 MiB. The same-user IPC
+  config/backup/PID/socket files are 0600; legacy backups are tightened on
+  startup. Config reads refuse symlinks, hard links, special files and files
+  larger than 4 MiB. The same-user IPC
   server caps request/response sizes and concurrent clients, and refuses to
   unlink arbitrary files or another live Padfire instance's socket.
 - **License and maintainer guidance.** Add the owner-selected MIT license for

@@ -7,8 +7,9 @@ and is not designed to be exposed to other users or machines.
 
 - Runtime state is stored under `~/.config/padfire`. Current versions create
   that directory with owner-only permissions and write the config, backup,
-  PID marker and Unix socket with owner-only access. Config files are limited
-  to 4 MiB and are read as regular files only; symlinks, hard links, FIFOs and
+  PID marker and Unix socket with owner-only access. Existing legacy backups
+  are tightened to owner-only mode on startup. Config files are limited to
+  4 MiB and are read as regular files only; symlinks, hard links, FIFOs and
   other special files are rejected.
 - The IPC socket accepts a small fixed command set from the same user. It is
   protected by filesystem permissions, bounded request/response sizes and a
