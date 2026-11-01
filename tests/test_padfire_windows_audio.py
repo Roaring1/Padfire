@@ -105,6 +105,7 @@ class WindowsAudioLifecycleTests(unittest.TestCase):
 
         def make_stream(**_kwargs: object) -> IdleStream:
             stream = IdleStream(entered=new_stream_entered, exited=new_stream_exited)
+            stream.active = True
             created_streams.append(stream)
             return stream
 
@@ -119,7 +120,13 @@ class WindowsAudioLifecycleTests(unittest.TestCase):
             self.assertTrue(old_read_entered.wait(1), "older play did not enter file decoding")
             engine.play("0:2", "new.wav", None, 80, False)
             self.assertTrue(new_stream_entered.wait(1), "newer playback did not open its stream")
-            self.assertTrue(new_stream_exited.wait(1), "newer playback stream did not close")
+            with engine._lock:
+                newer_playback = engine._streams.get("0:2")
+            self.assertIsNotNone(newer_playback)
+            engine.stop("0:2")
+            newer_playback.thread.join(timeout=1)
+            self.assertFalse(newer_playback.thread.is_alive())
+            self.assertTrue(new_stream_exited.is_set())
             release_old_read.set()
             older_play.join(timeout=2)
             self.assertFalse(older_play.is_alive(), "older play worker did not finish")
@@ -127,6 +134,40 @@ class WindowsAudioLifecycleTests(unittest.TestCase):
 
         self.assertEqual(len(created_streams), 1)
         self.assertFalse(engine.is_playing("0:2"))
+
+    def test_stop_after_file_read_but_before_stream_registration_cancels_start(self) -> None:
+        engine = self.make_engine()
+        resolution_entered = threading.Event()
+        release_resolution = threading.Event()
+
+        def resolve_device(_name: str | None) -> int:
+            resolution_entered.set()
+            if not release_resolution.wait(2):
+                raise TimeoutError("test did not release device resolution")
+            return 0
+
+        worker = RealThread(
+            target=engine.play,
+            args=("0:5", "decoded.wav", None, 80, False),
+        )
+        with patch.object(
+            audio.sf, "read",
+            return_value=(np.ones((32, 1), dtype=np.float32), 48000),
+        ), patch.object(audio.sd, "OutputStream") as create_stream, patch.object(
+            engine, "_resolve_device", side_effect=resolve_device
+        ):
+            worker.start()
+            self.assertTrue(
+                resolution_entered.wait(1),
+                "play did not reach device resolution after decoding",
+            )
+            engine.stop("0:5")
+            release_resolution.set()
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive(), "play worker did not finish")
+            create_stream.assert_not_called()
+
+        self.assertFalse(engine.is_playing("0:5"))
 
     def test_stop_during_stream_open_aborts_the_late_stream(self) -> None:
         engine = self.make_engine()
@@ -174,6 +215,7 @@ class WindowsAudioLifecycleTests(unittest.TestCase):
         start_entered = threading.Event()
         release_start = threading.Event()
         stream_entered = threading.Event()
+        stop_entered = threading.Event()
         stop_finished = threading.Event()
         stop_errors: list[BaseException] = []
 
@@ -195,6 +237,7 @@ class WindowsAudioLifecycleTests(unittest.TestCase):
                 self._thread.join(timeout)
 
         def stop() -> None:
+            stop_entered.set()
             try:
                 engine.stop("0:4")
             except BaseException as exc:  # capture RuntimeError from joining an unstarted thread
@@ -214,6 +257,7 @@ class WindowsAudioLifecycleTests(unittest.TestCase):
             self.assertTrue(start_entered.wait(1), "stream publisher did not reach Thread.start")
             stopper = RealThread(target=stop)
             stopper.start()
+            self.assertTrue(stop_entered.wait(1), "Stop thread did not start")
             self.assertFalse(
                 stop_finished.wait(0.05),
                 "Stop should wait for atomic registration/start instead of observing an unstarted thread",
