@@ -17,7 +17,7 @@ cannot be answered by reading source. This makes a screenshot one command.
 
 Exit status: 0 on success, 1 if no usable display could be opened.
 """
-import argparse, glob, hashlib, importlib.util, json, os, shutil, stat, subprocess, sys, tempfile, wave
+import argparse, glob, hashlib, importlib.util, json, os, re, shutil, stat, subprocess, sys, tempfile, wave
 from pathlib import Path
 
 HERE      = Path(__file__).resolve().parent
@@ -31,53 +31,42 @@ def log(msg):
 
 
 def safe_output_path(raw):
-    """Resolve an explicit screenshot target inside HOME or the temp directory.
+    """Return a PNG path in one of the explicitly approved output folders.
 
-    User-selected paths are normalized, then checked against an explicit root
-    prefix before any directory creation or file inspection. Existing symlink
-    escapes, hard links, special files and foreign-owned files are rejected.
+    The selected directory must exactly match an existing fixed location; it
+    is never used directly for filesystem operations. Only a simple PNG
+    filename is carried forward to a path built from an approved root.
     """
     value = os.fspath(raw)
-    if not value or "\\x00" in value:
+    if not value or "\x00" in value:
         raise ValueError("Screenshot output path is empty or invalid")
 
-    expanded = os.path.expanduser(value)
-    absolute = os.path.abspath(expanded)
+    absolute = os.path.abspath(os.path.expanduser(value))
+    requested_dir = os.path.realpath(os.path.dirname(absolute))
     filename = os.path.basename(absolute)
-    if filename in ("", ".", ".."):
-        raise ValueError("Screenshot output must name a file")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_. -]{0,180}\.png", filename, re.IGNORECASE):
+        raise ValueError("Screenshot filename must be a simple PNG filename")
 
-    home_root = os.path.realpath(Path.home())
-    temp_root = os.path.realpath(tempfile.gettempdir())
-    normalized = os.path.realpath(absolute)
-    filename = os.path.basename(normalized)
+    home = os.path.realpath(Path.home())
+    candidate_roots = (
+        home,
+        os.path.realpath(os.path.join(home, "Pictures")),
+        os.path.realpath(os.path.join(home, "Desktop")),
+        os.path.realpath(tempfile.gettempdir()),
+    )
+    safe_root = None
+    for root in candidate_roots:
+        if requested_dir == root and os.path.isdir(root):
+            safe_root = root
+            break
+    if safe_root is None:
+        raise ValueError(
+            "Screenshot output must be directly inside HOME, Pictures, Desktop, or the temp directory"
+        )
 
-    # Normalize first, then directly check the complete value under each fixed
-    # root. The separator prevents a sibling path with the same prefix.
-    if normalized != home_root and not normalized.startswith(home_root + os.sep):
-        if normalized != temp_root and not normalized.startswith(temp_root + os.sep):
-            raise ValueError("Screenshot output must be inside HOME or the temp directory")
-        safe_root = temp_root
-    else:
-        safe_root = home_root
-    if normalized == safe_root:
-        raise ValueError("Screenshot output must name a file")
-
-    parent = os.path.realpath(os.path.dirname(normalized))
-    if parent != safe_root and not parent.startswith(safe_root + os.sep):
-        raise ValueError("Screenshot output parent escapes the approved directories")
-    if not os.path.isdir(parent):
-        raise ValueError("Screenshot output directory must already exist")
-
-    # Re-resolve before returning the exact path passed to Cairo/ImageMagick.
-    # The final prefix check guards traversal and symlink escapes.
-    parent = os.path.realpath(parent)
-    if parent != safe_root and not parent.startswith(safe_root + os.sep):
-        raise ValueError("Screenshot output parent changed outside the approved directories")
-    target = os.path.normpath(os.path.join(parent, filename))
-    if not target.startswith(safe_root + os.sep):
-        raise ValueError("Screenshot output escapes the approved directories")
-
+    # Build the sink path only from a fixed, existing root and a validated
+    # basename. No user-controlled directory reaches a filesystem operation.
+    target = os.path.join(safe_root, filename)
     try:
         info = os.lstat(target)
     except FileNotFoundError:
@@ -379,7 +368,7 @@ def main():
     ap = argparse.ArgumentParser(prog="padfire-shot",
                                  description="Screenshot the Padfire window.")
     ap.add_argument("-o", "--out", default="/tmp/padfire-shot.png",
-                    help="output PNG in an existing directory under HOME or temp (default: /tmp/padfire-shot.png)")
+                    help="output PNG directly in HOME, Pictures, Desktop or temp (default: /tmp/padfire-shot.png)")
     ap.add_argument("--demo", action="store_true",
                     help="use a throwaway HOME with sample pads covering every "
                          "pad state; never touches your real config")

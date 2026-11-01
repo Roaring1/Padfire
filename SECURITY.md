@@ -21,9 +21,10 @@ and is not designed to be exposed to other users or machines.
   command the user configured through the user's shell. A pad configuration
   can therefore run arbitrary commands with the privileges of the Padfire
   user. Only import or share configurations you trust.
-- The `tools/padfire-shot` helper only writes screenshots under the user's
-  home or system temp directory. It normalizes output paths and rejects
-  symlinks, hard links, special files and targets owned by another user.
+- The `tools/padfire-shot` helper only writes PNG files directly inside
+  the existing home, Pictures, Desktop or system temp directories. It builds
+  paths from that fixed directory allow-list and rejects symlinks, hard links,
+  special files and targets owned by another user.
 - Do not publish `padfire.json`, screenshots containing private paths, or
   shell-command assignments without reviewing them first.
 

@@ -40,13 +40,15 @@ class PadfireCoreTests(unittest.TestCase):
         helper = importlib.util.module_from_spec(helper_spec)
         helper_spec.loader.exec_module(helper)
 
-        screenshot_dir = TEST_HOME / "screenshots"
+        screenshot_dir = TEST_HOME / "Pictures"
         screenshot_dir.mkdir()
         safe = helper.safe_output_path(screenshot_dir / "main.png")
-        self.assertTrue(safe.is_relative_to(TEST_HOME))
+        self.assertEqual(safe.parent, screenshot_dir)
         self.assertTrue(safe.parent.is_dir())
         with self.assertRaises(ValueError):
-            helper.safe_output_path(TEST_HOME / "missing-directory" / "main.png")
+            helper.safe_output_path(TEST_HOME / "screenshots" / "main.png")
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(screenshot_dir / "not-a-png.txt")
 
         with self.assertRaises(ValueError):
             helper.safe_output_path("/etc/padfire-shot-forbidden.png")
@@ -57,8 +59,9 @@ class PadfireCoreTests(unittest.TestCase):
         target.write_bytes(b"keep existing file")
         symlink = TEST_HOME / "output-symlink.png"
         symlink.symlink_to(target)
-        # A symlink is resolved before containment; an in-root target is safe.
-        self.assertEqual(helper.safe_output_path(symlink), target.resolve())
+        # Refuse final symlinks, even when their destination appears in-root.
+        with self.assertRaises(ValueError):
+            helper.safe_output_path(symlink)
 
         outside_target = TEST_HOME / "outside-target"
         outside_target.symlink_to("/etc/passwd")
