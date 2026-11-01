@@ -33,9 +33,9 @@ def log(msg):
 def safe_output_path(raw):
     """Resolve an explicit screenshot target inside HOME or the temp directory.
 
-    The CLI accepts a user-selected destination, but it must not be able to
-    escape these ordinary output roots or overwrite a hard link, special file,
-    or file owned by another user.
+    User-selected paths are normalized, then checked against an explicit root
+    prefix before any directory creation or file inspection. Existing symlink
+    escapes, hard links, special files and foreign-owned files are rejected.
     """
     value = os.fspath(raw)
     if not value or "\\x00" in value:
@@ -47,31 +47,37 @@ def safe_output_path(raw):
     if filename in ("", ".", ".."):
         raise ValueError("Screenshot output must name a file")
 
-    roots = (
-        os.path.realpath(Path.home()),
-        os.path.realpath(tempfile.gettempdir()),
-    )
+    home_root = os.path.realpath(Path.home())
+    temp_root = os.path.realpath(tempfile.gettempdir())
+    normalized = os.path.realpath(absolute)
+    filename = os.path.basename(normalized)
 
-    def contained(candidate):
-        # Normalize before any Path construction or filesystem write. This
-        # follows parent symlinks and removes '..' before the root comparison.
-        normalized = os.path.realpath(candidate)
-        for root in roots:
-            try:
-                if os.path.commonpath((root, normalized)) == root:
-                    return normalized
-            except ValueError:
-                continue
-        raise ValueError("Screenshot output must be inside HOME or the temp directory")
+    # Normalize first, then directly check the complete value under each fixed
+    # root. The separator prevents a sibling path with the same prefix.
+    if normalized != home_root and not normalized.startswith(home_root + os.sep):
+        if normalized != temp_root and not normalized.startswith(temp_root + os.sep):
+            raise ValueError("Screenshot output must be inside HOME or the temp directory")
+        safe_root = temp_root
+    else:
+        safe_root = home_root
+    if normalized == safe_root:
+        raise ValueError("Screenshot output must name a file")
 
-    target = contained(absolute)
-    os.makedirs(os.path.dirname(target), exist_ok=True)
+    parent = os.path.realpath(os.path.dirname(normalized))
+    if parent != safe_root and not parent.startswith(safe_root + os.sep):
+        raise ValueError("Screenshot output parent escapes the approved directories")
+    os.makedirs(parent, exist_ok=True)
 
-    # Re-resolve after creating the parent so a replaced/symlinked parent is
-    # checked again before any screenshot or ImageMagick process writes there.
-    parent = os.path.realpath(os.path.dirname(target))
-    target = contained(os.path.join(parent, filename))
-    info = None
+    # Re-resolve after creating the parent, then validate the exact path passed
+    # to Cairo/ImageMagick. The final prefix check guards traversal and changes
+    # to symlinks between path selection and directory creation.
+    parent = os.path.realpath(parent)
+    if parent != safe_root and not parent.startswith(safe_root + os.sep):
+        raise ValueError("Screenshot output parent changed outside the approved directories")
+    target = os.path.normpath(os.path.join(parent, filename))
+    if not target.startswith(safe_root + os.sep):
+        raise ValueError("Screenshot output escapes the approved directories")
+
     try:
         info = os.lstat(target)
     except FileNotFoundError:
