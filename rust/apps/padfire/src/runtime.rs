@@ -558,10 +558,10 @@ impl AppRuntime {
             } else {
                 LED_OFF
             };
-            if self.last_page_leds[page_index] != velocity {
-                if self.midi.set_page_led(page_index as u8, velocity).is_ok() {
-                    self.last_page_leds[page_index] = velocity;
-                }
+            if self.last_page_leds[page_index] != velocity
+                && self.midi.set_page_led(page_index as u8, velocity).is_ok()
+            {
+                self.last_page_leds[page_index] = velocity;
             }
         }
     }
@@ -576,14 +576,13 @@ impl AppRuntime {
             .and_then(|pads| pads.get(&note.to_string()))
             .map(|pad| self.pad_led_velocity(pad, PadKey::new(page as u8, note)))
             .unwrap_or(LED_OFF);
-        if self.last_pad_leds.get(&note).copied() != Some(velocity) {
-            if self
+        if self.last_pad_leds.get(&note).copied() != Some(velocity)
+            && self
                 .midi
                 .set_led(Control::from_note(note).unwrap(), velocity)
                 .is_ok()
-            {
-                self.last_pad_leds.insert(note, velocity);
-            }
+        {
+            self.last_pad_leds.insert(note, velocity);
         }
     }
 

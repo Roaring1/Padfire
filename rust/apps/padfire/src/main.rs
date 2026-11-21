@@ -82,10 +82,10 @@ fn run() -> Result<(), String> {
         Err(error) => {
             // If another instance won the socket race, focus it rather than
             // replacing its config or creating duplicate device connections.
-            if let Ok(Some(response)) = ipc_server::send(&socket_path, IpcCommand::Show) {
-                if response == "ok" {
-                    return Ok(());
-                }
+            if let Ok(Some(response)) = ipc_server::send(&socket_path, IpcCommand::Show)
+                && response == "ok"
+            {
+                return Ok(());
             }
             return Err(error);
         }
@@ -143,6 +143,9 @@ struct PadfireApp {
     output_devices: Vec<OutputDevice>,
     output_error: Option<String>,
     status: String,
+    tray_initialized: bool,
+    #[cfg(any(target_os = "linux", windows))]
+    tray_icon: Option<tray_icon::TrayIcon>,
 }
 
 impl PadfireApp {
@@ -160,7 +163,47 @@ impl PadfireApp {
             output_devices: Vec::new(),
             output_error: None,
             status,
+            tray_initialized: false,
+            #[cfg(any(target_os = "linux", windows))]
+            tray_icon: None,
         })
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    fn ensure_tray(&mut self) {
+        if self.tray_initialized {
+            return;
+        }
+        self.tray_initialized = true;
+        match build_tray_icon() {
+            Ok(icon) => self.tray_icon = Some(icon),
+            Err(error) => {
+                eprintln!("Padfire tray unavailable: {error}");
+            }
+        }
+    }
+
+    #[cfg(any(target_os = "linux", windows))]
+    fn handle_tray_events(&mut self, context: &Context) {
+        use tray_icon::menu::MenuEvent;
+
+        for event in MenuEvent::receiver().try_iter() {
+            match event.id.0.as_str() {
+                "padfire-show" => {
+                    context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    context.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                "padfire-stop" => {
+                    self.runtime.stop_audio();
+                    self.status = "Audio playback stopped".to_owned();
+                }
+                "padfire-quit" => {
+                    context.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn begin_edit(&mut self, note: u8) {
@@ -430,11 +473,9 @@ impl PadfireApp {
                     if self.selected_note.is_some_and(|note| {
                         self.config.pages[self.page].contains_key(&note.to_string())
                     }) && ui.button("Clear pad").clicked()
-                    {
-                        if let Some(note) = self.selected_note {
+                        && let Some(note) = self.selected_note {
                             self.clear_pad(note);
                         }
-                    }
                 });
             });
         self.editor_open = open && self.editor_open;
@@ -624,40 +665,40 @@ impl PadfireApp {
                 egui::StrokeKind::Outside,
             );
         }
-        if let Some(source) = response.dnd_release_payload::<PadDragPayload>() {
-            if source.page != self.page || source.note != note {
-                let source_assignment = self
-                    .config
-                    .pages
-                    .get(source.page)
-                    .and_then(|page| page.get(&source.note.to_string()))
-                    .cloned();
-                if let Some(assignment) = source_assignment {
-                    self.runtime.stop_pad(PadKey::new(self.page as u8, note));
-                    let copy = ui.ctx().input(|input| input.modifiers.ctrl);
-                    if !copy {
-                        self.runtime
-                            .stop_pad(PadKey::new(source.page as u8, source.note));
-                        self.config.pages[source.page].remove(&source.note.to_string());
-                    }
-                    self.config.pages[self.page].insert(note.to_string(), assignment);
-                    match self.runtime.save_config(&self.config) {
-                        Ok(()) => {
-                            self.status = if copy {
-                                format!(
-                                    "Copied pad {} to {}",
-                                    PadKey::new(source.page as u8, source.note).to_key(),
-                                    PadKey::new(self.page as u8, note).to_key()
-                                )
-                            } else {
-                                format!(
-                                    "Moved pad to {}",
-                                    PadKey::new(self.page as u8, note).to_key()
-                                )
-                            }
+        if let Some(source) = response.dnd_release_payload::<PadDragPayload>()
+            && (source.page != self.page || source.note != note)
+        {
+            let source_assignment = self
+                .config
+                .pages
+                .get(source.page)
+                .and_then(|page| page.get(&source.note.to_string()))
+                .cloned();
+            if let Some(assignment) = source_assignment {
+                self.runtime.stop_pad(PadKey::new(self.page as u8, note));
+                let copy = ui.ctx().input(|input| input.modifiers.ctrl);
+                if !copy {
+                    self.runtime
+                        .stop_pad(PadKey::new(source.page as u8, source.note));
+                    self.config.pages[source.page].remove(&source.note.to_string());
+                }
+                self.config.pages[self.page].insert(note.to_string(), assignment);
+                match self.runtime.save_config(&self.config) {
+                    Ok(()) => {
+                        self.status = if copy {
+                            format!(
+                                "Copied pad {} to {}",
+                                PadKey::new(source.page as u8, source.note).to_key(),
+                                PadKey::new(self.page as u8, note).to_key()
+                            )
+                        } else {
+                            format!(
+                                "Moved pad to {}",
+                                PadKey::new(self.page as u8, note).to_key()
+                            )
                         }
-                        Err(error) => self.status = format!("Could not save pad move: {error}"),
                     }
+                    Err(error) => self.status = format!("Could not save pad move: {error}"),
                 }
             }
         }
@@ -796,6 +837,12 @@ impl eframe::App for PadfireApp {
         // low-frequency poll instead of leaving those commands stranded.
         context.request_repaint_after(std::time::Duration::from_millis(200));
 
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            self.ensure_tray();
+            self.handle_tray_events(&context);
+        }
+
         self.runtime
             .poll(&mut self.config, &mut self.page, &mut self.status);
         let signals = self.runtime.take_signals();
@@ -867,6 +914,59 @@ fn draw_output_selector(
                 ui.selectable_value(selected, device.id.clone(), device.name.clone());
             }
         });
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn build_tray_icon() -> Result<tray_icon::TrayIcon, String> {
+    use tray_icon::{
+        Icon, TrayIconBuilder,
+        menu::{Menu, MenuItem},
+    };
+
+    let show = MenuItem::with_id("padfire-show", "Show Padfire", true, None);
+    let stop = MenuItem::with_id("padfire-stop", "Stop audio", true, None);
+    let quit = MenuItem::with_id("padfire-quit", "Quit Padfire", true, None);
+    let menu = Menu::with_items(&[&show, &stop, &quit])
+        .map_err(|error| format!("could not create tray menu: {error}"))?;
+    let icon = Icon::from_rgba(padfire_tray_pixels(), 32, 32)
+        .map_err(|error| format!("could not create tray icon: {error}"))?;
+
+    TrayIconBuilder::new()
+        .with_menu(Box::new(menu))
+        .with_tooltip("Padfire")
+        .with_icon(icon)
+        .build()
+        .map_err(|error| format!("could not register tray icon: {error}"))
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn padfire_tray_pixels() -> Vec<u8> {
+    let mut pixels = vec![0_u8; 32 * 32 * 4];
+    for y in 0_i32..32 {
+        for x in 0_i32..32 {
+            let nearest_x = x.clamp(8, 23);
+            let nearest_y = y.clamp(8, 23);
+            let dx = x - nearest_x;
+            let dy = y - nearest_y;
+            let inside = (4..28).contains(&x) && (4..28).contains(&y) && dx * dx + dy * dy <= 16;
+            if !inside {
+                continue;
+            }
+
+            let is_p = (9..13).contains(&x) && (8..24).contains(&y)
+                || (9..22).contains(&x) && (8..12).contains(&y)
+                || (9..21).contains(&x) && (15..19).contains(&y)
+                || (18..22).contains(&x) && (8..19).contains(&y);
+            let color = if is_p {
+                [116, 190, 224, 255]
+            } else {
+                [27, 36, 48, 255]
+            };
+            let offset = ((y * 32 + x) * 4) as usize;
+            pixels[offset..offset + 4].copy_from_slice(&color);
+        }
+    }
+    pixels
 }
 
 fn action_label(action: &str) -> &str {

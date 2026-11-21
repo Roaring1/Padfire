@@ -202,10 +202,10 @@ impl ConfigStore {
         }
 
         // Tighten legacy backup permissions on Unix, but never follow a link.
-        if let Err(error) = read_private_file(&self.backup_path, MAX_CONFIG_BYTES) {
-            if !is_not_found(&error) {
-                eprintln!("[config] existing backup was not accepted safely: {error}");
-            }
+        if let Err(error) = read_private_file(&self.backup_path, MAX_CONFIG_BYTES)
+            && !is_not_found(&error)
+        {
+            eprintln!("[config] existing backup was not accepted safely: {error}");
         }
 
         match read_private_file(&self.config_path, MAX_CONFIG_BYTES) {
@@ -532,8 +532,10 @@ mod tests {
     #[test]
     fn oversized_input_is_rejected_before_replacing_previous_file() {
         let store = test_store();
-        let mut original = AppConfig::default();
-        original.default_sink = "keep-me".to_owned();
+        let original = AppConfig {
+            default_sink: "keep-me".to_owned(),
+            ..AppConfig::default()
+        };
         store.save(&original).unwrap();
 
         let bytes = vec![b'x'; MAX_CONFIG_BYTES + 1];

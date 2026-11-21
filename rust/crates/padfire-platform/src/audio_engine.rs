@@ -303,17 +303,17 @@ impl AudioActor {
             return;
         }
 
-        if let Some(monitor_device) = &monitor {
-            if let Err(error) = self.ensure_stream(&monitor_device.id) {
-                self.fail(
-                    request.pad,
-                    format!(
-                        "could not open monitor output '{}': {error}",
-                        monitor_device.name
-                    ),
-                );
-                return;
-            }
+        if let Some(monitor_device) = &monitor
+            && let Err(error) = self.ensure_stream(&monitor_device.id)
+        {
+            self.fail(
+                request.pad,
+                format!(
+                    "could not open monitor output '{}': {error}",
+                    monitor_device.name
+                ),
+            );
+            return;
         }
 
         // A concurrent Stop can invalidate the token while a native device
@@ -333,13 +333,13 @@ impl AudioActor {
             players.push(player);
         }
 
-        if let (Some(monitor_device), Some(decoder)) = (&monitor, monitor_decoder) {
-            if let Some(stream) = self.streams.get(&monitor_device.id) {
-                let player = Player::connect_new(stream.mixer());
-                player.set_volume(f32::from(request.volume_percent.min(150)) / 100.0);
-                decoder.append_to(&player);
-                players.push(player);
-            }
+        if let (Some(monitor_device), Some(decoder)) = (&monitor, monitor_decoder)
+            && let Some(stream) = self.streams.get(&monitor_device.id)
+        {
+            let player = Player::connect_new(stream.mixer());
+            player.set_volume(f32::from(request.volume_percent.min(150)) / 100.0);
+            decoder.append_to(&player);
+            players.push(player);
         }
 
         let pad_key = request.pad.to_key();
@@ -361,10 +361,9 @@ impl AudioActor {
         }
 
         let host = selected_host()?;
-        let devices = host.output_devices().map_err(|error| error.to_string())?;
+        let mut devices = host.output_devices().map_err(|error| error.to_string())?;
         let device = devices
-            .filter(|device| device.id().is_ok_and(|id| id.to_string() == device_id))
-            .next()
+            .find(|device| device.id().is_ok_and(|id| id.to_string() == device_id))
             .ok_or_else(|| "device disappeared during stream creation".to_owned())?;
 
         let mut stream = DeviceSinkBuilder::from_device(device)

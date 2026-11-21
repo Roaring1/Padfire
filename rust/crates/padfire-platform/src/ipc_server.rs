@@ -223,14 +223,13 @@ mod unix_transport {
 
         // Remove only the socket inode this server created. Never unlink a
         // replacement path created by another process during shutdown.
-        if let Ok(current) = fs::symlink_metadata(&path) {
-            if current.file_type().is_socket()
-                && current.uid() == Uid::current().as_raw()
-                && current.dev() == socket_dev
-                && current.ino() == socket_ino
-            {
-                let _ = fs::remove_file(&path);
-            }
+        if let Ok(current) = fs::symlink_metadata(&path)
+            && current.file_type().is_socket()
+            && current.uid() == Uid::current().as_raw()
+            && current.dev() == socket_dev
+            && current.ino() == socket_ino
+        {
+            let _ = fs::remove_file(&path);
         }
     }
 

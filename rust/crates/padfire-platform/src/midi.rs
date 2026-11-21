@@ -71,17 +71,17 @@ pub fn discover() -> MidiStatus {
     let mut endpoints: Vec<MidiEndpoint> = Vec::new();
 
     for port in input.ports() {
-        if let Ok(name) = input.port_name(&port) {
-            if is_supported_launchpad_port(&name) {
-                merge_endpoint(&mut endpoints, name, true, false);
-            }
+        if let Ok(name) = input.port_name(&port)
+            && is_supported_launchpad_port(&name)
+        {
+            merge_endpoint(&mut endpoints, name, true, false);
         }
     }
     for port in output.ports() {
-        if let Ok(name) = output.port_name(&port) {
-            if is_supported_launchpad_port(&name) {
-                merge_endpoint(&mut endpoints, name, false, true);
-            }
+        if let Ok(name) = output.port_name(&port)
+            && is_supported_launchpad_port(&name)
+        {
+            merge_endpoint(&mut endpoints, name, false, true);
         }
     }
 
@@ -452,45 +452,45 @@ fn midi_supervisor_loop(
 
         match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(MidiCommand::SetPad(control, velocity)) => {
-                if let Some(opened) = &connection {
-                    if let Err(error) = opened.set_led_velocity(control, velocity) {
-                        connection = None;
-                        selected = None;
-                        next_discovery = Instant::now() + Duration::from_millis(250);
-                        report_midi_state(
-                            &mut reported,
-                            &status_events,
-                            MidiConnectionState::Unavailable(error.to_string()),
-                        );
-                    }
+                if let Some(opened) = &connection
+                    && let Err(error) = opened.set_led_velocity(control, velocity)
+                {
+                    connection = None;
+                    selected = None;
+                    next_discovery = Instant::now() + Duration::from_millis(250);
+                    report_midi_state(
+                        &mut reported,
+                        &status_events,
+                        MidiConnectionState::Unavailable(error.to_string()),
+                    );
                 }
             }
             Ok(MidiCommand::SetPage(page, velocity)) => {
-                if let Some(opened) = &connection {
-                    if let Err(error) = opened.set_page_led(page, velocity) {
-                        connection = None;
-                        selected = None;
-                        next_discovery = Instant::now() + Duration::from_millis(250);
-                        report_midi_state(
-                            &mut reported,
-                            &status_events,
-                            MidiConnectionState::Unavailable(error.to_string()),
-                        );
-                    }
+                if let Some(opened) = &connection
+                    && let Err(error) = opened.set_page_led(page, velocity)
+                {
+                    connection = None;
+                    selected = None;
+                    next_discovery = Instant::now() + Duration::from_millis(250);
+                    report_midi_state(
+                        &mut reported,
+                        &status_events,
+                        MidiConnectionState::Unavailable(error.to_string()),
+                    );
                 }
             }
             Ok(MidiCommand::ClearAll) => {
-                if let Some(opened) = &connection {
-                    if let Err(error) = opened.clear_all_leds() {
-                        connection = None;
-                        selected = None;
-                        next_discovery = Instant::now() + Duration::from_millis(250);
-                        report_midi_state(
-                            &mut reported,
-                            &status_events,
-                            MidiConnectionState::Unavailable(error.to_string()),
-                        );
-                    }
+                if let Some(opened) = &connection
+                    && let Err(error) = opened.clear_all_leds()
+                {
+                    connection = None;
+                    selected = None;
+                    next_discovery = Instant::now() + Duration::from_millis(250);
+                    report_midi_state(
+                        &mut reported,
+                        &status_events,
+                        MidiConnectionState::Unavailable(error.to_string()),
+                    );
                 }
             }
             Ok(MidiCommand::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,

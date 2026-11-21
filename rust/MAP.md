@@ -14,9 +14,9 @@ Status key: **implemented** = code exists; **verified** = automated tests or smo
 | Script process supervision | implemented; Linux-tested | `padfire-platform::process_manager`; bounded output, generation cancellation, process-group/tree termination and Crosshair resolver | Windows process-tree tests; verify no orphan descendants on both OSs |
 | Loudness analyzer | not started | No analyzer module or reference fixtures yet | Decide whether this remains in v3 scope; if retained, compare against FFmpeg reference output |
 | Native UI shell | implemented; basic Linux smoke | eframe/egui shell in `apps/padfire/src/main.rs`; pad grid, page selection, editor and settings surfaces | Visual/keyboard/focus/resize acceptance on KDE Wayland and Windows 11 |
-| Tray and window integration | not started | No tray controller or hide-to-tray behavior wired | Implement menu/actions and verify native event-loop integration on both OSs |
+| Tray and window integration | implemented; Linux smoke verified | App-thread tray initialization with Show, Stop Audio and Quit menu; code-generated icon; private D-Bus/Xvfb smoke passes | Windows native menu smoke; KDE Wayland and Windows 11 visual/focus acceptance; decide close-to-tray behavior |
 | Install / update / uninstall | not started | `--install` explicitly reports unavailable | Side-by-side install, shortcuts, clean uninstall, no autostart, rollback and signed Windows packaging |
-| CI | implemented; currently failing format gate | `.github/workflows/rust.yml` runs Ubuntu and Windows stable toolchains, fmt, tests, Clippy and release builds | Formatting is now applied locally; push and verify all matrix jobs pass |
+| CI | implemented; fresh matrix pending | `.github/workflows/rust.yml` runs Ubuntu and Windows stable toolchains, fmt, tests, Clippy and release builds | Verify latest pushed commit passes both OS jobs, including Windows-only IPC and tray compilation |
 | Security / supply-chain gates | not started | Locked dependencies and bounded input handling exist | cargo-deny/license audit, dependency review, CodeQL/SAST and release provenance |
 | Dual-machine acceptance / release | not started | Cutover and rollback checklist in `CUTOVER.md` | Real-device acceptance on Nobara and Windows, artifacts/checksums and rollback rehearsal |
 
