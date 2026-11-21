@@ -355,9 +355,8 @@ fn schedule_windows_uninstall(root: &Path) -> Result<(), String> {
     let script = format!(
         "$ErrorActionPreference = 'SilentlyContinue'\n\
          $root = '{}'\n\
-         $remove = 'rmdir /s /q \"' + $root + '\"'\n\
          for ($attempt = 0; $attempt -lt 30; $attempt++) {{\n\
-           & $env:ComSpec /c $remove\n\
+           try {{ [System.IO.Directory]::Delete($root, $true) }} catch {{ }}\n\
            if (-not (Test-Path -LiteralPath $root)) {{ break }}\n\
            Start-Sleep -Milliseconds 500\n\
          }}\n\
