@@ -162,6 +162,7 @@ pub enum CliAction {
     Status,
     Version,
     Install,
+    Uninstall,
 }
 
 impl CliAction {
@@ -178,6 +179,7 @@ impl CliAction {
                 "--status" => Self::Status,
                 "--version" => Self::Version,
                 "--install" => Self::Install,
+                "--uninstall" => Self::Uninstall,
                 _ => return Err("unknown argument"),
             };
             if selected.replace(action).is_some() {
@@ -194,7 +196,7 @@ impl CliAction {
             Self::Status => Some(IpcCommand::Status),
             Self::Reload => Some(IpcCommand::Reload),
             Self::Quit => Some(IpcCommand::Quit),
-            Self::Version | Self::Install => None,
+            Self::Version | Self::Install | Self::Uninstall => None,
         }
     }
 }
@@ -287,6 +289,14 @@ mod tests {
         );
         assert!(CliAction::parse_args(["--status", "--quit"]).is_err());
         assert!(CliAction::parse_args(["--unknown"]).is_err());
+        assert_eq!(
+            CliAction::parse_args(["--install"]).unwrap(),
+            Some(CliAction::Install)
+        );
+        assert_eq!(
+            CliAction::parse_args(["--uninstall"]).unwrap(),
+            Some(CliAction::Uninstall)
+        );
         assert_eq!(CliAction::parse_args([]).unwrap(), None);
     }
 
@@ -299,5 +309,7 @@ mod tests {
         );
         assert_eq!(CliAction::Status.ipc_command(), Some(IpcCommand::Status));
         assert_eq!(CliAction::Version.ipc_command(), None);
+        assert_eq!(CliAction::Install.ipc_command(), None);
+        assert_eq!(CliAction::Uninstall.ipc_command(), None);
     }
 }

@@ -7,6 +7,7 @@
 
 pub mod audio_engine;
 pub mod config_store;
+pub mod installer;
 pub mod ipc_server;
 pub mod loudness;
 pub mod midi;

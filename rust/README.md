@@ -35,6 +35,12 @@ CI runs the same gates on Ubuntu and Windows. The current local environment is N
 - LUFS analysis is opt-in and uses FFmpeg when installed; it analyzes at most the first 120 seconds, targets -18 LUFS and never silently changes pad volume. Applying the suggested 1-150% gain is an explicit editor action.
 - The playback meter taps Padfire's decoded/mixed signal after pad-volume scaling, aggregates in 256-sample chunks with one atomic update per chunk, uses fast-attack/slow-release smoothing, and returns to zero while idle. It does not launch a monitor process or measure unrelated system audio/post-device effects.
 - Do not add automatic startup or an always-running helper.
+
+## Side-by-side candidate install
+
+Build the release binary, then run `padfire --install` (or `padfire.exe --install`). The Rust candidate installs under `~/.local/opt/padfire-rust` on Linux with a desktop entry/icon, or `%LOCALAPPDATA%\\Programs\\Padfire Rust` on Windows with a Start Menu shortcut. It never replaces the v2.4.0 installation and never creates a login/startup task or background service.
+
+Run `--uninstall` to remove only the Rust candidate binary and its desktop/Start Menu integration. User configuration is intentionally preserved. On Windows, removal is deferred until the running executable exits. Release packaging, signatures and in-app updates remain separate unfinished work.
 - Never replace the production launcher or running process during development.
 
 See `DECISIONS.md`, `BEHAVIOR_MATRIX.md`, `MAP.md`, `CUTOVER.md` and `research/STACK.md`.

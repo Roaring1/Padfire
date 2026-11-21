@@ -36,16 +36,21 @@ fn run() -> Result<(), String> {
     }
 
     let action = CliAction::parse_args(args.iter().map(String::as_str)).map_err(str::to_owned)?;
+
+    if action == Some(CliAction::Install) {
+        let path = padfire_platform::installer::install_current()?;
+        println!("Padfire Rust installed to {}", path.display());
+        return Ok(());
+    }
+    if action == Some(CliAction::Uninstall) {
+        println!("{}", padfire_platform::installer::uninstall_current()?);
+        return Ok(());
+    }
+
     let store = ConfigStore::for_development().map_err(|error| error.to_string())?;
     let socket_path = store.directory().join("padfire-rust.sock");
 
     if let Some(action) = action {
-        if action == CliAction::Install {
-            return Err(
-                "desktop integration installer is not included in this development build"
-                    .to_owned(),
-            );
-        }
         if action == CliAction::Version {
             println!("Padfire {VERSION}");
             return Ok(());
@@ -126,7 +131,7 @@ fn print_help() {
          --quit       Quit the running instance\n\
          --status     Print machine-readable JSON status\n\
          --version    Print the application version\n\
-         --install    Install desktop integration (not yet available)\n"
+         --install    Install Padfire Rust alongside the existing app\n         --uninstall  Remove Padfire Rust without deleting user configuration\n"
     );
 }
 
