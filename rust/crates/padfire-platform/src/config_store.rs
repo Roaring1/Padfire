@@ -2,8 +2,8 @@
 //!
 //! Unix: private 0700 directory, owner-only regular files, no symlink/hardlink
 //! reads, bounded input, same-directory atomic replacement and directory fsync.
-//! Windows: per-user AppData directory, reparse-point and hardlink rejection.
-//! A Windows ACL audit/explicit DACL remains a required integration gate.
+//! Windows: per-user AppData directory with a protected owner/SYSTEM/Administrators
+//! DACL, handle-based reparse-point and hardlink rejection, and same-directory replacement.
 
 use padfire_core::{AppConfig, ConfigError, MAX_CONFIG_BYTES};
 use std::fmt;
@@ -158,18 +158,17 @@ impl ConfigStore {
 
     /// Ensure the final directory is real and controlled by the current user.
     pub fn ensure_private_directory(&self) -> Result<(), StoreError> {
-        fs::create_dir_all(&self.directory)?;
-        let metadata = fs::symlink_metadata(&self.directory)?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(StoreError::UnsafePath(format!(
-                "Padfire configuration directory is not a real directory: {}",
-                self.directory.display()
-            )));
-        }
-
         #[cfg(unix)]
         {
             use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            fs::create_dir_all(&self.directory)?;
+            let metadata = fs::symlink_metadata(&self.directory)?;
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(StoreError::UnsafePath(format!(
+                    "Padfire configuration directory is not a real directory: {}",
+                    self.directory.display()
+                )));
+            }
             if metadata.uid() != nix::unistd::Uid::current().as_raw() {
                 return Err(StoreError::UnsafePath(format!(
                     "Padfire configuration directory is owned by another user: {}",
@@ -180,16 +179,8 @@ impl ConfigStore {
         }
 
         #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
-            if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-                return Err(StoreError::UnsafePath(format!(
-                    "Padfire configuration directory is a reparse point: {}",
-                    self.directory.display()
-                )));
-            }
-        }
+        ensure_windows_private_directory(&self.directory)?;
+
         Ok(())
     }
 
@@ -316,8 +307,12 @@ fn read_private_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, StoreErro
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Foundation::GENERIC_READ;
+        use windows_sys::Win32::Security::{READ_CONTROL, WRITE_DAC};
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        options
+            .access_mode(GENERIC_READ | READ_CONTROL | WRITE_DAC)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
 
     let file = options.open(path)?;
@@ -363,6 +358,7 @@ fn read_private_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, StoreErro
                 path.display()
             )));
         }
+        harden_windows_owner_only_handle(file.as_raw_handle(), path)?;
     }
 
     if metadata.len() > max_bytes as u64 {
@@ -461,6 +457,278 @@ fn sync_directory(path: &Path) -> Result<(), StoreError> {
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
+fn ensure_windows_private_directory(path: &Path) -> Result<(), StoreError> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{
+        ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::Security::{FILE_READ_ATTRIBUTES, READ_CONTROL, WRITE_DAC};
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
+        OPEN_EXISTING,
+    };
+
+    // Create the final component with the private DACL from the first instant.
+    // No config bytes are written until the directory has been opened and its
+    // identity and owner have been checked through that stable handle.
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let descriptor = windows_owner_only_security_descriptor()?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    let wide_path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let created = unsafe { CreateDirectoryW(wide_path.as_ptr(), &attributes) };
+    if created == 0 {
+        let error = std::io::Error::last_os_error();
+        if !matches!(error.raw_os_error(), Some(code) if code == ERROR_ALREADY_EXISTS as i32 || code == ERROR_FILE_EXISTS as i32)
+        {
+            return Err(StoreError::Io(error));
+        }
+    }
+
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(StoreError::Io(std::io::Error::last_os_error()));
+    }
+    // SAFETY: CreateFileW returned a new owned handle; File closes it on all paths.
+    let directory = unsafe { fs::File::from_raw_handle(handle as _) };
+    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
+        return Err(StoreError::Io(std::io::Error::last_os_error()));
+    }
+    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(StoreError::UnsafePath(format!(
+            "Padfire configuration directory is a reparse point: {}",
+            path.display()
+        )));
+    }
+    if information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(StoreError::UnsafePath(format!(
+            "Padfire configuration path is not a directory: {}",
+            path.display()
+        )));
+    }
+
+    harden_windows_owner_only_handle(handle, path)?;
+    drop(directory);
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_owner_only_security_descriptor() -> Result<WindowsLocalSecurityDescriptor, StoreError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    const OWNER_ONLY_SDDL: &str = "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+    let wide = std::ffi::OsStr::new(OWNER_ONLY_SDDL)
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut descriptor = std::ptr::null_mut();
+    let succeeded = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if succeeded == 0 {
+        return Err(StoreError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(WindowsLocalSecurityDescriptor(descriptor))
+}
+
+#[cfg(windows)]
+struct WindowsLocalSecurityDescriptor(windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
+
+#[cfg(windows)]
+impl Drop for WindowsLocalSecurityDescriptor {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::LocalFree(
+                self.0 as windows_sys::Win32::Foundation::HLOCAL,
+            );
+        }
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_token_info(
+    class: windows_sys::Win32::Security::TOKEN_INFORMATION_CLASS,
+) -> Result<Vec<u64>, StoreError> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    struct Token(HANDLE);
+    impl Drop for Token {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+    let mut raw = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
+        return Err(StoreError::Io(std::io::Error::last_os_error()));
+    }
+    let token = Token(raw);
+    let mut length = 0u32;
+    unsafe { GetTokenInformation(token.0, class, std::ptr::null_mut(), 0, &mut length) };
+    if length == 0 {
+        return Err(StoreError::Io(std::io::Error::last_os_error()));
+    }
+    let mut buffer = vec![0u64; (length as usize).div_ceil(std::mem::size_of::<u64>())];
+    if unsafe {
+        GetTokenInformation(
+            token.0,
+            class,
+            buffer.as_mut_ptr() as *mut _,
+            length,
+            &mut length,
+        )
+    } == 0
+    {
+        return Err(StoreError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(buffer)
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_assert_owned_by_current_user(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    path: &Path,
+) -> Result<(), StoreError> {
+    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HLOCAL, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        EqualSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_OWNER, TOKEN_USER,
+        TokenOwner, TokenUser,
+    };
+
+    let user = windows_token_info(TokenUser)?;
+    let default_owner = windows_token_info(TokenOwner)?;
+    // SAFETY: GetTokenInformation filled aligned buffers for the matching
+    // classes; embedded SID pointers remain valid while each Vec is alive.
+    let user_sid = unsafe { (*(user.as_ptr() as *const TOKEN_USER)).User.Sid };
+    let default_owner_sid = unsafe { (*(default_owner.as_ptr() as *const TOKEN_OWNER)).Owner };
+    let mut owner: PSID = std::ptr::null_mut();
+    let mut security_descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    let status = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut security_descriptor,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(StoreError::Io(std::io::Error::from_raw_os_error(
+            status as i32,
+        )));
+    }
+    struct LocalDescriptor(PSECURITY_DESCRIPTOR);
+    impl Drop for LocalDescriptor {
+        fn drop(&mut self) {
+            unsafe { LocalFree(self.0 as HLOCAL) };
+        }
+    }
+    let _descriptor = LocalDescriptor(security_descriptor);
+    let owned = !owner.is_null()
+        && (unsafe { EqualSid(owner, user_sid) } != 0
+            || unsafe { EqualSid(owner, default_owner_sid) } != 0);
+    if !owned {
+        return Err(StoreError::UnsafePath(format!(
+            "refusing to change permissions on a Padfire path owned by another account: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn harden_windows_owner_only_handle(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    path: &Path,
+) -> Result<(), StoreError> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetSecurityInfo};
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, GetSecurityDescriptorDacl,
+        PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+
+    windows_assert_owned_by_current_user(handle, path)?;
+    let descriptor = windows_owner_only_security_descriptor()?;
+    let mut dacl_present = 0i32;
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut dacl_defaulted = 0i32;
+    if unsafe {
+        GetSecurityDescriptorDacl(
+            descriptor.0,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+    } == 0
+    {
+        return Err(StoreError::Io(std::io::Error::last_os_error()));
+    }
+    if dacl_present == 0 || dacl.is_null() {
+        return Err(StoreError::UnsafePath(
+            "owner-only Windows DACL could not be constructed".to_owned(),
+        ));
+    }
+    let status = unsafe {
+        SetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            dacl,
+            std::ptr::null_mut(),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(StoreError::Io(std::io::Error::from_raw_os_error(
+            status as i32,
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
 fn windows_number_of_links(file: &fs::File) -> Result<u32, StoreError> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -497,6 +765,107 @@ mod tests {
             std::env::temp_dir().join(format!("padfire-store-test-{}-{id}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         ConfigStore::new(path)
+    }
+
+    #[cfg(windows)]
+    fn windows_sddl(path: &Path, directory: bool) -> Result<String, StoreError> {
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::io::FromRawHandle;
+        use windows_sys::Win32::Foundation::{
+            ERROR_SUCCESS, HLOCAL, INVALID_HANDLE_VALUE, LocalFree,
+        };
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+            SE_FILE_OBJECT,
+        };
+        use windows_sys::Win32::Security::{
+            DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+            READ_CONTROL,
+        };
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            OPEN_EXISTING,
+        };
+
+        let wide = path
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect::<Vec<_>>();
+        let mut flags = FILE_FLAG_OPEN_REPARSE_POINT;
+        if directory {
+            flags |= FILE_FLAG_BACKUP_SEMANTICS;
+        }
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                READ_CONTROL | FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                flags,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(StoreError::Io(std::io::Error::last_os_error()));
+        }
+        // SAFETY: this is an owned CreateFileW handle and File closes it.
+        let _file = unsafe { fs::File::from_raw_handle(handle as _) };
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let status = unsafe {
+            GetSecurityInfo(
+                handle,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != ERROR_SUCCESS {
+            return Err(StoreError::Io(std::io::Error::from_raw_os_error(
+                status as i32,
+            )));
+        }
+        let descriptor = WindowsLocalSecurityDescriptor(descriptor);
+        let mut sddl: *mut u16 = std::ptr::null_mut();
+        let mut length = 0u32;
+        let succeeded = unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor.0,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
+                &mut sddl,
+                &mut length,
+            )
+        };
+        if succeeded == 0 {
+            return Err(StoreError::Io(std::io::Error::last_os_error()));
+        }
+        let units = unsafe { std::slice::from_raw_parts(sddl, length as usize) };
+        let result = String::from_utf16_lossy(units)
+            .trim_end_matches('\0')
+            .to_owned();
+        unsafe { LocalFree(sddl as HLOCAL) };
+        Ok(result)
+    }
+
+    #[cfg(windows)]
+    fn assert_private_windows_sddl(sddl: &str) {
+        assert!(sddl.contains("D:P"), "DACL is not protected: {sddl}");
+        assert!(sddl.contains("OW"), "owner rights ACE is missing: {sddl}");
+        assert!(sddl.contains("SY"), "SYSTEM ACE is missing: {sddl}");
+        assert!(sddl.contains("BA"), "Administrators ACE is missing: {sddl}");
+        assert!(!sddl.contains("WD"), "Everyone has an ACE: {sddl}");
+        assert!(
+            !sddl.contains("AU"),
+            "Authenticated Users has an ACE: {sddl}"
+        );
+        assert!(!sddl.contains(";;;BU"), "Builtin Users has an ACE: {sddl}");
     }
 
     #[test]
@@ -620,6 +989,49 @@ mod tests {
         assert!(store.ensure_private_directory().is_err());
         let _ = fs::remove_file(store.directory());
         let _ = fs::remove_dir_all(target);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn config_directory_and_file_have_protected_owner_only_dacls() {
+        let store = test_store();
+        store.ensure_private_directory().unwrap();
+        let directory_sddl = windows_sddl(store.directory(), true).unwrap();
+        assert_private_windows_sddl(&directory_sddl);
+
+        store.save(&AppConfig::default()).unwrap();
+        assert_eq!(store.load().state, LoadState::Loaded);
+        let file_sddl = windows_sddl(store.config_path(), false).unwrap();
+        assert_private_windows_sddl(&file_sddl);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn configuration_directory_junction_is_rejected() {
+        let base = test_store().directory;
+        let target = base.with_extension("junction-target");
+        let junction = base.with_extension("junction");
+        fs::create_dir_all(&target).unwrap();
+        let junction_text = junction.to_string_lossy().into_owned();
+        let target_text = target.to_string_lossy().into_owned();
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J", &junction_text, &target_text])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "could not create test junction: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let result = ConfigStore::new(&junction).ensure_private_directory();
+        let _ = fs::remove_dir(&junction);
+        let _ = fs::remove_dir_all(&target);
+        assert!(
+            matches!(result, Err(StoreError::UnsafePath(_))),
+            "junction was not rejected: {result:?}"
+        );
     }
 
     #[cfg(windows)]
