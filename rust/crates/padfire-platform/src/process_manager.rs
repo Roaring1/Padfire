@@ -269,9 +269,25 @@ impl ProcessActor {
         };
 
         #[cfg(windows)]
-        if let Err(error) = job.assign(&child).and_then(|()| job.resume(&child)) {
+        if let Err(error) = job.assign(&child) {
             job.terminate();
-            let _ = child.kill();
+            let _ = child.wait();
+            self.fail(Some(pad), ProcessKind::Script, error);
+            return;
+        }
+
+        #[cfg(windows)]
+        if !self.token_is_current(&token) {
+            // The child is still suspended, so a cancelled generation never
+            // gets a chance to execute even its first command.
+            job.terminate();
+            let _ = child.wait();
+            return;
+        }
+
+        #[cfg(windows)]
+        if let Err(error) = job.resume(&child) {
+            job.terminate();
             let _ = child.wait();
             self.fail(Some(pad), ProcessKind::Script, error);
             return;
