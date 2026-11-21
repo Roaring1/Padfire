@@ -238,7 +238,7 @@ impl ProcessActor {
             let mut command = Command::new("cmd.exe");
             command
                 .args(["/D", "/S", "/C", command_line])
-                .creation_flags(0x0000_0200);
+                .creation_flags(winjob::CREATE_NEW_PROCESS_GROUP | winjob::CREATE_SUSPENDED);
             command
         };
 
@@ -269,7 +269,8 @@ impl ProcessActor {
         };
 
         #[cfg(windows)]
-        if let Err(error) = job.assign(&child) {
+        if let Err(error) = job.assign(&child).and_then(|()| job.resume(&child)) {
+            job.terminate();
             let _ = child.kill();
             let _ = child.wait();
             self.fail(Some(pad), ProcessKind::Script, error);
@@ -348,7 +349,11 @@ impl ProcessActor {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0000_0200);
+            command.creation_flags(
+                winjob::CREATE_NO_WINDOW
+                    | winjob::CREATE_NEW_PROCESS_GROUP
+                    | winjob::CREATE_SUSPENDED,
+            );
         }
 
         #[cfg(windows)]
@@ -373,7 +378,8 @@ impl ProcessActor {
         };
 
         #[cfg(windows)]
-        if let Err(error) = job.assign(&child) {
+        if let Err(error) = job.assign(&child).and_then(|()| job.resume(&child)) {
+            job.terminate();
             let _ = child.kill();
             let _ = child.wait();
             self.fail(Some(pad), ProcessKind::Crosshair, error);
@@ -692,6 +698,10 @@ mod winjob {
         SetInformationJobObject, TerminateJobObject,
     };
 
+    pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    pub const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    pub const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
     pub struct JobGuard {
         handle: HANDLE,
     }
@@ -737,6 +747,13 @@ mod winjob {
             }
         }
 
+        /// Resume the initial thread only after the process belongs to this job.
+        /// This closes the spawn/assignment race in which a fast script could
+        /// otherwise create grandchildren before Windows applies job limits.
+        pub fn resume(&self, child: &Child) -> Result<(), String> {
+            resume_suspended_process(child.id())
+        }
+
         pub fn terminate(&self) {
             // SAFETY: The Job Object handle remains valid for this guard.
             unsafe { TerminateJobObject(self.handle, 1) };
@@ -747,6 +764,154 @@ mod winjob {
         fn drop(&mut self) {
             // SAFETY: This owning guard closes its handle exactly once.
             unsafe { CloseHandle(self.handle) };
+        }
+    }
+
+    #[allow(unsafe_code)]
+    fn resume_suspended_process(process_id: u32) -> Result<(), String> {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
+        };
+
+        struct OwnedHandle(HANDLE);
+        impl Drop for OwnedHandle {
+            fn drop(&mut self) {
+                // SAFETY: This wrapper owns a valid handle and closes it once.
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+
+        // The process is still suspended, so its initial thread is the only
+        // thread it can own. Enumerating it lets std::process::Child remain
+        // responsible for process lifetime without leaking a primary thread
+        // handle out of the platform abstraction.
+        // SAFETY: Snapshot flags request the system thread list; process ID is ignored for threads.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        let _snapshot = OwnedHandle(snapshot);
+        let mut entry = THREADENTRY32 {
+            dwSize: size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: entry is initialized with the required size and writable for API output.
+        let mut found = unsafe { Thread32First(snapshot, &mut entry) } != 0
+            && entry.th32OwnerProcessID == process_id;
+        let mut thread_id = if found { entry.th32ThreadID } else { 0 };
+        while !found {
+            // SAFETY: entry remains a valid THREADENTRY32 output structure.
+            if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
+                break;
+            }
+            if entry.th32OwnerProcessID == process_id {
+                thread_id = entry.th32ThreadID;
+                found = true;
+            }
+        }
+        if !found {
+            return Err(format!(
+                "could not locate the initial thread for suspended process {process_id}"
+            ));
+        }
+
+        // SAFETY: thread_id was obtained from the current system thread snapshot.
+        let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, thread_id) };
+        if thread.is_null() {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        let _thread = OwnedHandle(thread);
+        // SAFETY: thread is an open handle with THREAD_SUSPEND_RESUME access.
+        let mut previous = unsafe { ResumeThread(thread) };
+        if previous == u32::MAX {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        while previous > 1 {
+            // Remove any additional suspend counts before returning control.
+            // SAFETY: same live thread handle and access right as above.
+            previous = unsafe { ResumeThread(thread) };
+            if previous == u32::MAX {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::fs;
+        use std::process::Command;
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+        use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+        };
+
+        #[test]
+        fn terminating_job_terminates_a_spawned_descendant() {
+            let marker = std::env::temp_dir().join(format!(
+                "padfire-job-child-{}-{}.pid",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            let marker_text = marker.to_string_lossy().replace('\'', "''");
+            let script = format!(
+                "$ErrorActionPreference = 'Stop'; Start-Sleep -Milliseconds 400; $child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru -WindowStyle Hidden; [System.IO.File]::WriteAllText('{marker_text}', [string]$child.Id); Start-Sleep -Seconds 30"
+            );
+            let mut command = Command::new("powershell.exe");
+            use std::os::windows::process::CommandExt;
+            command
+                .args(["-NoProfile", "-Command", &script])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
+
+            let job = JobGuard::new().expect("create Job Object");
+            let mut parent = command.spawn().expect("spawn suspended PowerShell process");
+            if let Err(error) = job.assign(&parent).and_then(|()| job.resume(&parent)) {
+                job.terminate();
+                let _ = parent.kill();
+                let _ = parent.wait();
+                panic!("attach and resume suspended process: {error}");
+            }
+
+            let deadline = Instant::now() + Duration::from_secs(8);
+            let child_pid = loop {
+                if let Ok(value) = fs::read_to_string(&marker) {
+                    if let Ok(pid) = value.trim().parse::<u32>() {
+                        break pid;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "PowerShell did not create the child process"
+                );
+                std::thread::sleep(Duration::from_millis(25));
+            };
+
+            // SAFETY: The PID came from the child PowerShell process itself.
+            let child_process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, child_pid) };
+            assert!(!child_process.is_null(), "open descendant process handle");
+            job.terminate();
+            // SAFETY: child_process is a live process handle opened with SYNCHRONIZE.
+            let wait = unsafe { WaitForSingleObject(child_process, 5_000) };
+            // SAFETY: test owns this handle and closes it exactly once.
+            unsafe { CloseHandle(child_process) };
+            let _ = parent.wait();
+            let _ = fs::remove_file(&marker);
+            assert_eq!(
+                wait, WAIT_OBJECT_0,
+                "Job Object did not terminate the descendant"
+            );
         }
     }
 }
