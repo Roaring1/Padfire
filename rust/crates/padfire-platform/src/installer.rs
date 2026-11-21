@@ -8,7 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "linux")]
@@ -380,7 +380,10 @@ fn schedule_windows_uninstall(root: &Path) -> Result<(), String> {
             "-File",
         ])
         .arg(&script_path)
-        .creation_flags(0x0000_0008 | 0x0000_0200)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x0800_0000)
         .spawn()
         .map_err(|error| format!("could not schedule Padfire Rust removal: {error}"))?;
     Ok(())
