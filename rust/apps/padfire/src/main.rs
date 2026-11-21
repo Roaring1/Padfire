@@ -163,6 +163,7 @@ struct PadfireApp {
     meter_level_display: f32,
     meter_last_update: Instant,
     tray_initialized: bool,
+    quit_requested: bool,
     #[cfg(any(target_os = "linux", windows))]
     tray_icon: Option<tray_icon::TrayIcon>,
 }
@@ -193,6 +194,7 @@ impl PadfireApp {
             meter_level_display: 0.0,
             meter_last_update: Instant::now(),
             tray_initialized: false,
+            quit_requested: false,
             #[cfg(any(target_os = "linux", windows))]
             tray_icon: None,
         })
@@ -309,11 +311,36 @@ impl PadfireApp {
                     self.runtime.stop_audio();
                     self.status = "Audio playback stopped".to_owned();
                 }
-                "padfire-quit" => {
-                    context.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                "padfire-quit" => self.request_quit(context),
                 _ => {}
             }
+        }
+    }
+
+    fn tray_available(&self) -> bool {
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            self.tray_icon.is_some()
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            false
+        }
+    }
+
+    fn request_quit(&mut self, context: &Context) {
+        self.quit_requested = true;
+        context.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    fn handle_window_close_request(&mut self, context: &Context) {
+        let close_requested = context.input(|input| input.viewport().close_requested());
+        if close_requested && !self.quit_requested && self.tray_available() {
+            // Closing the titlebar should leave the app and its device workers
+            // alive in the tray. Explicit Quit paths set quit_requested first.
+            context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.status = "Padfire is running in the tray".to_owned();
         }
     }
 
@@ -956,22 +983,27 @@ impl PadfireApp {
     }
 
     fn handle_keyboard(&mut self, context: &Context) {
+        let keyboard_is_editing = context.egui_wants_keyboard_input();
         let (number_page, stop_audio, quit, escape) = context.input(|input| {
-            let number_page = [
-                egui::Key::Num1,
-                egui::Key::Num2,
-                egui::Key::Num3,
-                egui::Key::Num4,
-                egui::Key::Num5,
-                egui::Key::Num6,
-                egui::Key::Num7,
-                egui::Key::Num8,
-            ]
-            .iter()
-            .position(|key| input.key_pressed(*key));
+            let number_page = (!keyboard_is_editing)
+                .then(|| {
+                    [
+                        egui::Key::Num1,
+                        egui::Key::Num2,
+                        egui::Key::Num3,
+                        egui::Key::Num4,
+                        egui::Key::Num5,
+                        egui::Key::Num6,
+                        egui::Key::Num7,
+                        egui::Key::Num8,
+                    ]
+                    .iter()
+                    .position(|key| input.key_pressed(*key))
+                })
+                .flatten();
             (
                 number_page,
-                input.key_pressed(egui::Key::Space),
+                !keyboard_is_editing && input.key_pressed(egui::Key::Space),
                 input.modifiers.ctrl && input.key_pressed(egui::Key::Q),
                 input.key_pressed(egui::Key::Escape),
             )
@@ -985,9 +1017,14 @@ impl PadfireApp {
             self.status = "Audio playback stopped".to_owned();
         }
         if quit {
-            context.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.request_quit(context);
         } else if escape {
-            context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            if self.tray_available() {
+                context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                self.status = "Padfire is running in the tray".to_owned();
+            } else {
+                context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
         }
     }
 }
@@ -1017,9 +1054,10 @@ impl eframe::App for PadfireApp {
             context.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         if signals.quit_requested {
-            context.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.request_quit(&context);
         }
         self.handle_keyboard(&context);
+        self.handle_window_close_request(&context);
 
         egui::Panel::top("top_bar")
             .exact_size(40.0)
