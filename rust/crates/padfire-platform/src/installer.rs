@@ -474,6 +474,7 @@ mod tests {
         let _ = fs::remove_dir_all(integration_root);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn desktop_exec_quotes_paths_with_spaces() {
         let entry = desktop_entry(Path::new(
