@@ -11,12 +11,12 @@ description = "Windows and Linux adapters for Padfire audio, MIDI, process, stor
 padfire-core = { path = "../padfire-core" }
 serde.workspace = true
 serde_json.workspace = true
-libc = "0.2"
 midir = "0.11.1"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav", "mp3", "flac", "vorbis", "mp4"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18.2", features = ["pulseaudio"] }
+libc = "0.2"
 nix = { version = "0.30", features = ["user", "signal", "process"] }
 
 [target.'cfg(windows)'.dependencies]

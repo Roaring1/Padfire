@@ -4,9 +4,13 @@
 //! directory. Windows uses a per-user named pipe (implemented separately).
 //! Every request is fixed-command, newline-framed, bounded and deadline-limited.
 
+#[cfg(unix)]
 use padfire_core::ipc::{IpcCommand, MAX_IPC_CLIENTS, decode_request, encode_response};
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::Arc;
+#[cfg(unix)]
 use std::thread::JoinHandle;
 
 #[cfg(unix)]

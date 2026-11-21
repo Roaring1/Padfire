@@ -7,7 +7,9 @@
 
 use padfire_core::{AppConfig, ConfigError, MAX_CONFIG_BYTES};
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -355,7 +357,7 @@ fn read_private_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, StoreErro
                 path.display()
             )));
         }
-        if metadata.number_of_links() != 1 {
+        if windows_number_of_links(&file)? != 1 {
             return Err(StoreError::UnsafePath(format!(
                 "hard-linked Padfire config files are not accepted: {}",
                 path.display()
@@ -455,6 +457,24 @@ fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), StoreError> {
 fn sync_directory(path: &Path) -> Result<(), StoreError> {
     File::open(path)?.sync_all()?;
     Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_number_of_links(file: &fs::File) -> Result<u32, StoreError> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: file owns a live Windows handle for this call, and information
+    // is a valid writable output structure of the documented size.
+    let succeeded = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) };
+    if succeeded == 0 {
+        return Err(StoreError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(information.nNumberOfLinks)
 }
 
 #[cfg(windows)]

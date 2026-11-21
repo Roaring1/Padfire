@@ -8,5 +8,6 @@
 pub mod audio_engine;
 pub mod config_store;
 pub mod ipc_server;
+pub mod loudness;
 pub mod midi;
 pub mod process_manager;

@@ -7,8 +7,12 @@ use padfire_core::{AppConfig, PAGE_COUNT, PadAction, PadAssignment, PadKey};
 use padfire_platform::audio_engine::enumerate_output_devices;
 use padfire_platform::config_store::{ConfigStore, LoadState};
 use padfire_platform::ipc_server;
+use padfire_platform::loudness::LoudnessResult;
 use runtime::AppRuntime;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread::JoinHandle;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -143,6 +147,13 @@ struct PadfireApp {
     output_devices: Vec<OutputDevice>,
     output_error: Option<String>,
     status: String,
+    loudness_sender: mpsc::Sender<Result<Option<LoudnessResult>, String>>,
+    loudness_receiver: mpsc::Receiver<Result<Option<LoudnessResult>, String>>,
+    loudness_cancel: Option<Arc<AtomicBool>>,
+    loudness_worker: Option<JoinHandle<()>>,
+    loudness_busy: bool,
+    loudness_result: Option<LoudnessResult>,
+    loudness_message: String,
     tray_initialized: bool,
     #[cfg(any(target_os = "linux", windows))]
     tray_icon: Option<tray_icon::TrayIcon>,
@@ -151,6 +162,7 @@ struct PadfireApp {
 impl PadfireApp {
     fn new(config: AppConfig, store: ConfigStore, status: String) -> Result<Self, String> {
         let runtime = AppRuntime::new(store, &config, VERSION)?;
+        let (loudness_sender, loudness_receiver) = mpsc::channel();
         Ok(Self {
             runtime,
             config,
@@ -163,10 +175,99 @@ impl PadfireApp {
             output_devices: Vec::new(),
             output_error: None,
             status,
+            loudness_sender,
+            loudness_receiver,
+            loudness_cancel: None,
+            loudness_worker: None,
+            loudness_busy: false,
+            loudness_result: None,
+            loudness_message: String::new(),
             tray_initialized: false,
             #[cfg(any(target_os = "linux", windows))]
             tray_icon: None,
         })
+    }
+
+    fn start_loudness_analysis(&mut self) {
+        if self.loudness_busy {
+            return;
+        }
+        let filepath = self.editor.file.trim().to_owned();
+        if filepath.is_empty() {
+            self.loudness_message = "Choose an audio file first".to_owned();
+            return;
+        }
+
+        self.loudness_result = None;
+        self.loudness_message = "Analyzing first 120 seconds...".to_owned();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let sender = self.loudness_sender.clone();
+        let worker = std::thread::Builder::new()
+            .name("padfire-loudness".to_owned())
+            .spawn(move || {
+                let result = padfire_platform::loudness::analyze_lufs(&filepath, &worker_cancelled)
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(result);
+            });
+
+        match worker {
+            Ok(worker) => {
+                self.loudness_cancel = Some(cancelled);
+                self.loudness_worker = Some(worker);
+                self.loudness_busy = true;
+            }
+            Err(error) => {
+                self.loudness_message = format!("Could not start analysis: {error}");
+            }
+        }
+    }
+
+    fn poll_loudness_analysis(&mut self) {
+        let Ok(result) = self.loudness_receiver.try_recv() else {
+            return;
+        };
+        let was_cancelled = self
+            .loudness_cancel
+            .as_ref()
+            .is_some_and(|token| token.load(Ordering::Acquire));
+        self.loudness_busy = false;
+        self.loudness_cancel = None;
+        if let Some(worker) = self.loudness_worker.take() {
+            let _ = worker.join();
+        }
+
+        match result {
+            Ok(Some(result)) => {
+                self.loudness_message = format!(
+                    "{:.1} LUFS, {:.1} dBFS true peak",
+                    result.integrated_lufs, result.true_peak_dbfs
+                );
+                self.loudness_result = Some(result);
+            }
+            Ok(None) if was_cancelled => {
+                self.loudness_message = "Analysis cancelled".to_owned();
+            }
+            Ok(None) => {
+                self.loudness_message = "File is silent; no gain suggestion".to_owned();
+            }
+            Err(error) => {
+                self.loudness_message = format!("Loudness analysis failed: {error}");
+            }
+        }
+    }
+
+    fn cancel_loudness_analysis(&mut self) {
+        if let Some(cancelled) = self.loudness_cancel.take() {
+            cancelled.store(true, Ordering::Release);
+        }
+        if let Some(worker) = self.loudness_worker.take() {
+            let _ = worker.join();
+        }
+        while self.loudness_receiver.try_recv().is_ok() {}
+        self.loudness_busy = false;
+        self.loudness_result = None;
+        self.loudness_message.clear();
     }
 
     #[cfg(any(target_os = "linux", windows))]
@@ -207,6 +308,7 @@ impl PadfireApp {
     }
 
     fn begin_edit(&mut self, note: u8) {
+        self.cancel_loudness_analysis();
         self.selected_note = Some(note);
         self.editor = self.config.pages[self.page]
             .get(&note.to_string())
@@ -216,6 +318,7 @@ impl PadfireApp {
     }
 
     fn save_edit(&mut self) {
+        self.cancel_loudness_analysis();
         if let Some(note) = self.selected_note {
             self.config.pages[self.page].insert(note.to_string(), self.editor.clone());
             match self.runtime.save_config(&self.config) {
@@ -227,6 +330,7 @@ impl PadfireApp {
     }
 
     fn clear_pad(&mut self, note: u8) {
+        self.cancel_loudness_analysis();
         self.runtime.stop_pad(PadKey::new(self.page as u8, note));
         if let Some(page) = self.config.pages.get_mut(self.page) {
             page.remove(&note.to_string());
@@ -334,6 +438,7 @@ impl PadfireApp {
             )
             .pick_file();
         if let Some(path) = path {
+            self.cancel_loudness_analysis();
             self.editor.file = path.display().to_string();
             if self.editor.label.trim().is_empty() {
                 self.editor.label = path
@@ -349,6 +454,7 @@ impl PadfireApp {
         if !self.editor_open {
             return;
         }
+        let was_open = self.editor_open;
         let mut open = self.editor_open;
         egui::Window::new("Pad assignment")
             .open(&mut open)
@@ -376,12 +482,16 @@ impl PadfireApp {
                     "play" => {
                         ui.label("Audio file");
                         ui.horizontal(|ui| {
-                            ui.add(
+                            ui.add_enabled(
+                                !self.loudness_busy,
                                 egui::TextEdit::singleline(&mut self.editor.file)
                                     .desired_width(270.0)
                                     .hint_text("Path to WAV, MP3, FLAC, OGG or M4A"),
                             );
-                            if ui.button("Browse").clicked() {
+                            if ui
+                                .add_enabled(!self.loudness_busy, egui::Button::new("Browse"))
+                                .clicked()
+                            {
                                 self.choose_audio_file();
                             }
                         });
@@ -392,6 +502,33 @@ impl PadfireApp {
                                 .suffix("%")
                                 .text("Volume"),
                         );
+                        ui.horizontal(|ui| {
+                            let label = if self.loudness_busy {
+                                "Analyzing..."
+                            } else {
+                                "Check loudness"
+                            };
+                            if ui
+                                .add_enabled(!self.loudness_busy, egui::Button::new(label))
+                                .clicked()
+                            {
+                                self.start_loudness_analysis();
+                            }
+                            if let Some(result) = self.loudness_result
+                                && ui
+                                    .button(format!(
+                                        "Apply {}%",
+                                        result.suggested_volume_percent
+                                    ))
+                                    .clicked()
+                            {
+                                self.editor.vol = i64::from(result.suggested_volume_percent);
+                                self.loudness_message = "Suggested volume applied".to_owned();
+                            }
+                        });
+                        if !self.loudness_message.is_empty() {
+                            ui.small(&self.loudness_message);
+                        }
                         ui.checkbox(&mut self.editor.loop_enabled, "Loop continuously");
                         egui::ComboBox::from_label("Second press")
                             .selected_text(retrigger_label(
@@ -468,6 +605,7 @@ impl PadfireApp {
                         self.save_edit();
                     }
                     if ui.button("Cancel").clicked() {
+                        self.cancel_loudness_analysis();
                         self.editor_open = false;
                     }
                     if self.selected_note.is_some_and(|note| {
@@ -479,6 +617,9 @@ impl PadfireApp {
                 });
             });
         self.editor_open = open && self.editor_open;
+        if was_open && !self.editor_open {
+            self.cancel_loudness_analysis();
+        }
     }
 
     fn draw_settings(&mut self, context: &Context) {
@@ -845,6 +986,7 @@ impl eframe::App for PadfireApp {
 
         self.runtime
             .poll(&mut self.config, &mut self.page, &mut self.status);
+        self.poll_loudness_analysis();
         let signals = self.runtime.take_signals();
         if signals.show_requested {
             context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -914,6 +1056,12 @@ fn draw_output_selector(
                 ui.selectable_value(selected, device.id.clone(), device.name.clone());
             }
         });
+}
+
+impl Drop for PadfireApp {
+    fn drop(&mut self) {
+        self.cancel_loudness_analysis();
+    }
 }
 
 #[cfg(any(target_os = "linux", windows))]
