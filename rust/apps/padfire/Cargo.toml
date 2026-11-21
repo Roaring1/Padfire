@@ -1,0 +1,18 @@
+[package]
+name = "padfire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native cross-platform Padfire soundboard and Launchpad controller"
+
+[[bin]]
+name = "padfire"
+path = "src/main.rs"
+
+[dependencies]
+padfire-core = { path = "../../crates/padfire-core" }
+padfire-platform = { path = "../../crates/padfire-platform" }
+rfd = { version = "0.15.4", default-features = true }
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }

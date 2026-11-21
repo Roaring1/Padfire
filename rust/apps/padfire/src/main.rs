@@ -1,0 +1,857 @@
+mod runtime;
+
+use eframe::egui::{
+    self, Align, Color32, Context, Grid, Layout, RichText, Stroke, Vec2,
+};
+use padfire_core::ipc::{CliAction, IpcCommand, StatusResponse};
+use padfire_core::{AppConfig, PadAction, PadAssignment, PadKey, PAGE_COUNT};
+use padfire_platform::audio_engine::enumerate_output_devices;
+use padfire_platform::config_store::{ConfigStore, LoadState};
+use padfire_platform::ipc_server;
+use padfire_core::audio::OutputDevice;
+use runtime::AppRuntime;
+use std::path::Path;
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("Padfire: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.as_slice() == ["--help"] || args.as_slice() == ["-h"] {
+        print_help();
+        return Ok(());
+    }
+    if args.as_slice() == ["--version"] {
+        println!("Padfire {VERSION}");
+        return Ok(());
+    }
+
+    let action = CliAction::parse_args(args.iter().map(String::as_str))
+        .map_err(str::to_owned)?;
+    let store = ConfigStore::for_development().map_err(|error| error.to_string())?;
+    let socket_path = store.directory().join("padfire-rust.sock");
+
+    if let Some(action) = action {
+        if action == CliAction::Install {
+            return Err("desktop integration installer is not included in this development build".to_owned());
+        }
+        if action == CliAction::Version {
+            println!("Padfire {VERSION}");
+            return Ok(());
+        }
+        let Some(command) = action.ipc_command() else {
+            return Err("invalid command".to_owned());
+        };
+        match ipc_server::send(&socket_path, command)? {
+            Some(response) => println!("{response}"),
+            None if command == IpcCommand::Status => {
+                println!(
+                    "{}",
+                    StatusResponse::stopped(VERSION)
+                        .to_json()
+                        .map_err(|error| error.to_string())?
+                );
+            }
+            None => {
+                println!("not running");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    let loaded = store.load();
+    let warning = loaded.warning.clone();
+    let startup_status = warning.unwrap_or_else(|| match loaded.state {
+        LoadState::Loaded => "Ready".to_owned(),
+        LoadState::ImportedLegacy => "Imported the previous Padfire configuration".to_owned(),
+        LoadState::CreatedDefault => "New configuration - right-click a pad to assign it".to_owned(),
+        LoadState::DefaultAfterError => "Configuration could not be loaded safely".to_owned(),
+    });
+
+    let app = match PadfireApp::new(loaded.config, store.clone(), startup_status) {
+        Ok(app) => app,
+        Err(error) => {
+            // If another instance won the socket race, focus it rather than
+            // replacing its config or creating duplicate device connections.
+            if let Ok(Some(response)) = ipc_server::send(&socket_path, IpcCommand::Show) {
+                if response == "ok" {
+                    return Ok(());
+                }
+            }
+            return Err(error);
+        }
+    };
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title(format!("Padfire {VERSION}"))
+            .with_inner_size([540.0, 586.0])
+            .with_min_inner_size([490.0, 510.0])
+            .with_resizable(true),
+        renderer: eframe::Renderer::Glow,
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Padfire",
+        options,
+        Box::new(move |_creation_context| Ok(Box::new(app))),
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn print_help() {
+    println!(
+        "Padfire {VERSION}\n\
+         \n\
+         Usage: padfire [OPTION]\n\
+         \n\
+         --show       Bring the running window to the front\n\
+         --stop       Stop all audio playback\n\
+         --reload     Reload padfire.json without restarting\n\
+         --quit       Quit the running instance\n\
+         --status     Print machine-readable JSON status\n\
+         --version    Print the application version\n\
+         --install    Install desktop integration (not yet available)\n"
+    );
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PadDragPayload {
+    page: usize,
+    note: u8,
+}
+
+struct PadfireApp {
+    runtime: AppRuntime,
+    config: AppConfig,
+    page: usize,
+    selected_note: Option<u8>,
+    editor_open: bool,
+    settings_open: bool,
+    editor: PadAssignment,
+    settings_backup: Option<AppConfig>,
+    output_devices: Vec<OutputDevice>,
+    output_error: Option<String>,
+    status: String,
+}
+
+impl PadfireApp {
+    fn new(config: AppConfig, store: ConfigStore, status: String) -> Result<Self, String> {
+        let runtime = AppRuntime::new(store, &config, VERSION)?;
+        Ok(Self {
+            runtime,
+            config,
+            page: 0,
+            selected_note: None,
+            editor_open: false,
+            settings_open: false,
+            editor: PadAssignment::default(),
+            settings_backup: None,
+            output_devices: Vec::new(),
+            output_error: None,
+            status,
+        })
+    }
+
+    fn begin_edit(&mut self, note: u8) {
+        self.selected_note = Some(note);
+        self.editor = self.config.pages[self.page]
+            .get(&note.to_string())
+            .cloned()
+            .unwrap_or_default();
+        self.editor_open = true;
+    }
+
+    fn save_edit(&mut self) {
+        if let Some(note) = self.selected_note {
+            self.config.pages[self.page].insert(note.to_string(), self.editor.clone());
+            match self.runtime.save_config(&self.config) {
+                Ok(()) => self.status = format!("Saved page {} pad {note}", self.page + 1),
+                Err(error) => self.status = format!("Could not save configuration: {error}"),
+            }
+        }
+        self.editor_open = false;
+    }
+
+    fn clear_pad(&mut self, note: u8) {
+        self.runtime.stop_pad(PadKey::new(self.page as u8, note));
+        if let Some(page) = self.config.pages.get_mut(self.page) {
+            page.remove(&note.to_string());
+        }
+        match self.runtime.save_config(&self.config) {
+            Ok(()) => self.status = format!("Cleared page {} pad {note}", self.page + 1),
+            Err(error) => self.status = format!("Could not save configuration: {error}"),
+        }
+        self.editor_open = false;
+    }
+
+    fn change_page(&mut self, page: usize) {
+        let page = page.min(PAGE_COUNT - 1);
+        if page == self.page {
+            return;
+        }
+        self.page = page;
+        if self.config.stop_on_page_change {
+            self.runtime.stop_audio();
+        }
+        self.runtime.set_page(self.page);
+        self.status = format!("Page {}", self.page + 1);
+    }
+
+    fn pad_name(&self, note: u8) -> String {
+        let Some(pad) = self.config.pages[self.page].get(&note.to_string()) else {
+            return String::new();
+        };
+        if !pad.label.trim().is_empty() {
+            return pad.label.trim().to_owned();
+        }
+        if !pad.file.trim().is_empty() {
+            return Path::new(&pad.file)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&pad.file)
+                .to_owned();
+        }
+        match pad.action_kind() {
+            PadAction::Script => "Script".to_owned(),
+            PadAction::StopSfx => "Stop SFX".to_owned(),
+            PadAction::StopAll => "Stop All".to_owned(),
+            PadAction::StopKey => "Stop".to_owned(),
+            PadAction::CrosshairToggle => "Crosshair".to_owned(),
+            PadAction::Unsupported(_) => "Unsupported".to_owned(),
+            PadAction::Play => String::new(),
+        }
+    }
+
+    fn pad_color(&self, note: u8) -> Color32 {
+        let color_name = self.config.pages[self.page]
+            .get(&note.to_string())
+            .map(|pad| pad.color.as_str())
+            .unwrap_or("default");
+        match color_name {
+            "red" => Color32::from_rgb(90, 28, 30),
+            "orange" => Color32::from_rgb(100, 53, 21),
+            "amber" => Color32::from_rgb(96, 73, 17),
+            "green" => Color32::from_rgb(26, 78, 40),
+            "dim green" => Color32::from_rgb(25, 55, 35),
+            _ => Color32::from_rgb(43, 48, 56),
+        }
+    }
+
+    fn open_settings(&mut self) {
+        self.settings_backup = Some(self.config.clone());
+        self.refresh_output_devices();
+        self.settings_open = true;
+    }
+
+    fn refresh_output_devices(&mut self) {
+        match enumerate_output_devices() {
+            Ok(devices) => {
+                self.output_devices = devices;
+                self.output_error = None;
+            }
+            Err(error) => {
+                self.output_devices.clear();
+                self.output_error = Some(error);
+            }
+        }
+    }
+
+    fn save_settings(&mut self) {
+        match self.runtime.save_config(&self.config) {
+            Ok(()) => self.status = "Settings saved".to_owned(),
+            Err(error) => self.status = format!("Could not save settings: {error}"),
+        }
+        self.settings_backup = None;
+        self.settings_open = false;
+    }
+
+    fn cancel_settings(&mut self) {
+        if let Some(original) = self.settings_backup.take() {
+            self.config = original;
+        }
+        self.settings_open = false;
+    }
+
+    fn choose_audio_file(&mut self) {
+        let path = rfd::FileDialog::new()
+            .add_filter("Audio", &["wav", "mp3", "flac", "ogg", "opus", "m4a", "aac"])
+            .pick_file();
+        if let Some(path) = path {
+            self.editor.file = path.display().to_string();
+            if self.editor.label.trim().is_empty() {
+                self.editor.label = path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or_default()
+                    .to_owned();
+            }
+        }
+    }
+
+    fn draw_editor(&mut self, context: &Context) {
+        if !self.editor_open {
+            return;
+        }
+        let mut open = self.editor_open;
+        egui::Window::new("Pad assignment")
+            .open(&mut open)
+            .resizable(true)
+            .collapsible(false)
+            .default_width(390.0)
+            .show(context, |ui| {
+                egui::ComboBox::from_label("Action")
+                    .selected_text(action_label(&self.editor.action))
+                    .show_ui(ui, |ui| {
+                        for (id, label) in [
+                            ("play", "Play sound"),
+                            ("script", "Run a script"),
+                            ("stop_sfx", "Stop sounds"),
+                            ("stop_all", "Stop all sounds and scripts"),
+                            ("stop_key", "Stop a specific pad"),
+                            ("crosshair_toggle", "Toggle Crosshair"),
+                        ] {
+                            ui.selectable_value(&mut self.editor.action, id.to_owned(), label);
+                        }
+                    });
+
+                ui.separator();
+                match self.editor.action.as_str() {
+                    "play" => {
+                        ui.label("Audio file");
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.editor.file)
+                                    .desired_width(270.0)
+                                    .hint_text("Path to WAV, MP3, FLAC, OGG or M4A"),
+                            );
+                            if ui.button("Browse").clicked() {
+                                self.choose_audio_file();
+                            }
+                        });
+                        ui.label("Output device - blank uses the global output");
+                        ui.text_edit_singleline(&mut self.editor.sink);
+                        ui.add(
+                            egui::Slider::new(&mut self.editor.vol, 0..=150)
+                                .suffix("%")
+                                .text("Volume"),
+                        );
+                        ui.checkbox(&mut self.editor.loop_enabled, "Loop continuously");
+                        egui::ComboBox::from_label("Second press")
+                            .selected_text(retrigger_label(
+                                self.editor.retrigger.as_deref().unwrap_or("global"),
+                            ))
+                            .show_ui(ui, |ui| {
+                                for (id, label) in [
+                                    ("global", "Use global setting"),
+                                    ("restart", "Restart from start"),
+                                    ("toggle", "Stop on second press"),
+                                ] {
+                                    ui.selectable_value(
+                                        &mut self.editor.retrigger,
+                                        Some(id.to_owned()),
+                                        label,
+                                    );
+                                }
+                            });
+                    }
+                    "script" => {
+                        ui.label("Command or script path");
+                        ui.text_edit_multiline(&mut self.editor.cmd);
+                        ui.label("Optional PID file");
+                        ui.text_edit_singleline(&mut self.editor.pid_file);
+                        ui.colored_label(
+                            Color32::from_rgb(200, 160, 90),
+                            "Trusted command: scripts run through your shell. Only assign commands you trust.",
+                        );
+                        if ui.button("Test Run").clicked() {
+                            match self.runtime.test_script(
+                                self.page,
+                                self.selected_note.unwrap_or(0),
+                                self.editor.cmd.clone(),
+                            ) {
+                                Ok(()) => self.status = "Script test started (30-second limit)".to_owned(),
+                                Err(error) => self.status = format!("Could not start script test: {error}"),
+                            }
+                        }
+                    }
+                    "stop_key" => {
+                        ui.label("Target pad key (page:note)");
+                        ui.text_edit_singleline(&mut self.editor.stop_key);
+                    }
+                    "stop_sfx" | "stop_all" | "crosshair_toggle" => {
+                        ui.label(action_description(&self.editor.action));
+                        if self.editor.action == "crosshair_toggle" {
+                            ui.label("Crosshair is located on PATH or in its user-local install directory.");
+                        }
+                    }
+                    _ => {
+                        ui.colored_label(Color32::LIGHT_RED, "This action is not recognized.");
+                    }
+                }
+
+                ui.separator();
+                ui.label("Pad label");
+                ui.text_edit_singleline(&mut self.editor.label);
+                egui::ComboBox::from_label("Pad color")
+                    .selected_text(&self.editor.color)
+                    .show_ui(ui, |ui| {
+                        for color in ["default", "green", "dim green", "orange", "red", "amber"] {
+                            ui.selectable_value(
+                                &mut self.editor.color,
+                                color.to_owned(),
+                                color,
+                            );
+                        }
+                    });
+                ui.label("Notes");
+                ui.text_edit_multiline(&mut self.editor.notes);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        self.save_edit();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.editor_open = false;
+                    }
+                    if self.selected_note.is_some_and(|note| {
+                        self.config.pages[self.page].contains_key(&note.to_string())
+                    }) && ui.button("Clear pad").clicked()
+                    {
+                        if let Some(note) = self.selected_note {
+                            self.clear_pad(note);
+                        }
+                    }
+                });
+            });
+        self.editor_open = open && self.editor_open;
+    }
+
+    fn draw_settings(&mut self, context: &Context) {
+        if !self.settings_open {
+            return;
+        }
+        let mut open = self.settings_open;
+        egui::Window::new("Settings")
+            .open(&mut open)
+            .resizable(false)
+            .collapsible(false)
+            .default_width(380.0)
+            .show(context, |ui| {
+                ui.label("Default output");
+                draw_output_selector(
+                    ui,
+                    "default_output",
+                    &mut self.config.default_sink,
+                    &self.output_devices,
+                );
+
+                if let Some(error) = &self.output_error {
+                    ui.colored_label(Color32::LIGHT_RED, format!("Audio device discovery: {error}"));
+                }
+                if ui.button("Refresh audio devices").clicked() {
+                    self.refresh_output_devices();
+                }
+
+                egui::ComboBox::from_label("Global second press")
+                    .selected_text(retrigger_label(&self.config.retrigger))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.config.retrigger,
+                            "restart".to_owned(),
+                            "Restart from start",
+                        );
+                        ui.selectable_value(
+                            &mut self.config.retrigger,
+                            "toggle".to_owned(),
+                            "Stop on second press",
+                        );
+                    });
+
+                ui.checkbox(
+                    &mut self.config.stop_on_page_change,
+                    "Stop audio when changing pages",
+                );
+
+                ui.separator();
+                ui.checkbox(
+                    &mut self.config.monitor_enabled,
+                    "Mirror audio to a second output",
+                );
+                ui.add_enabled_ui(self.config.monitor_enabled, |ui| {
+                    draw_output_selector(
+                        ui,
+                        "monitor_output",
+                        &mut self.config.monitor_sink,
+                        &self.output_devices,
+                    );
+                });
+                ui.label(
+                    RichText::new("A second stream is opened only when the selected output is different from the primary output.")
+                        .size(10.0)
+                        .color(Color32::from_rgb(150, 157, 168)),
+                );
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        self.save_settings();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.cancel_settings();
+                    }
+                });
+            });
+        if !open && self.settings_open {
+            self.cancel_settings();
+        }
+        self.settings_open = open && self.settings_open;
+    }
+
+    fn draw_top_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_centered(|ui| {
+            ui.add_space(6.0);
+            ui.label(RichText::new("PADFIRE").strong().size(14.0));
+            ui.separator();
+            let state = if self.runtime.midi_connected() { "Launchpad connected" } else { "Launchpad unavailable" };
+            let color = if self.runtime.midi_connected() {
+                Color32::from_rgb(110, 185, 130)
+            } else {
+                Color32::from_rgb(155, 160, 170)
+            };
+            ui.colored_label(color, state);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.button("Settings").clicked() {
+                    self.open_settings();
+                }
+                let mut monitor = self.config.monitor_enabled;
+                if ui.checkbox(&mut monitor, "Mon").changed() {
+                    self.config.monitor_enabled = monitor;
+                    match self.runtime.save_config(&self.config) {
+                        Ok(()) => self.status = if monitor {
+                            "Audio monitoring enabled".to_owned()
+                        } else {
+                            "Audio monitoring disabled".to_owned()
+                        },
+                        Err(error) => self.status = format!("Could not save settings: {error}"),
+                    }
+                }
+                if ui.button("Stop").clicked() {
+                    self.runtime.stop_audio();
+                    self.status = "Audio playback stopped".to_owned();
+                }
+            });
+        });
+    }
+
+    fn draw_page_selector(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            for index in 0..PAGE_COUNT {
+                let selected = self.page == index;
+                let mut button = egui::Button::new(
+                    RichText::new((index + 1).to_string())
+                        .size(12.0)
+                        .strong(),
+                )
+                .min_size(Vec2::new(43.0, 25.0));
+                if selected {
+                    button = button.fill(Color32::from_rgb(36, 91, 147));
+                }
+                if ui.add(button).clicked() {
+                    self.change_page(index);
+                }
+            }
+        });
+    }
+
+    fn draw_grid(&mut self, ui: &mut egui::Ui) {
+        Grid::new("launchpad_grid")
+            .num_columns(9)
+            .spacing(Vec2::new(3.0, 3.0))
+            .show(ui, |ui| {
+                for row in 0..8_u8 {
+                    for column in 0..8_u8 {
+                        self.draw_pad(ui, row * 16 + column);
+                    }
+                    self.draw_pad(ui, row * 16 + 8);
+                    ui.end_row();
+                }
+            });
+    }
+
+    fn draw_pad(&mut self, ui: &mut egui::Ui, note: u8) {
+        let label = self.pad_name(note);
+        let color = self.pad_color(note);
+        let text = if label.is_empty() { " " } else { &label };
+        let response = ui.add_sized(
+            Vec2::new(49.0, 49.0),
+            egui::Button::new(
+                RichText::new(text)
+                    .size(9.0)
+                    .color(Color32::from_rgb(226, 231, 237)),
+            )
+            .fill(color)
+            .stroke(Stroke::new(1.0, Color32::from_rgb(65, 71, 80))),
+        ).interact(egui::Sense::click_and_drag());
+
+        response.dnd_set_drag_payload(PadDragPayload { page: self.page, note });
+        if response.dnd_hover_payload::<PadDragPayload>().is_some() {
+            ui.painter().rect_stroke(
+                response.rect,
+                3.0,
+                Stroke::new(2.0, Color32::from_rgb(90, 155, 225)),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if let Some(source) = response.dnd_release_payload::<PadDragPayload>() {
+            if source.page != self.page || source.note != note {
+                let source_assignment = self.config.pages
+                    .get(source.page)
+                    .and_then(|page| page.get(&source.note.to_string()))
+                    .cloned();
+                if let Some(assignment) = source_assignment {
+                    self.runtime.stop_pad(PadKey::new(self.page as u8, note));
+                    let copy = ui.ctx().input(|input| input.modifiers.ctrl);
+                    if !copy {
+                        self.runtime.stop_pad(PadKey::new(source.page as u8, source.note));
+                        self.config.pages[source.page].remove(&source.note.to_string());
+                    }
+                    self.config.pages[self.page].insert(note.to_string(), assignment);
+                    match self.runtime.save_config(&self.config) {
+                        Ok(()) => self.status = if copy {
+                            format!("Copied pad {} to {}", PadKey::new(source.page as u8, source.note).to_key(), PadKey::new(self.page as u8, note).to_key())
+                        } else {
+                            format!("Moved pad to {}", PadKey::new(self.page as u8, note).to_key())
+                        },
+                        Err(error) => self.status = format!("Could not save pad move: {error}"),
+                    }
+                }
+            }
+        }
+
+        if response.clicked() {
+            if self.config.pages[self.page].contains_key(&note.to_string()) {
+                self.runtime.trigger_pad(&self.config, self.page, note, &mut self.status);
+            } else {
+                self.begin_edit(note);
+            }
+        }
+
+        let mut menu_edit = false;
+        let mut menu_trigger = false;
+        let mut menu_stop = false;
+        let mut menu_clear = false;
+        response.context_menu(|ui| {
+            if ui.button("Edit...").clicked() {
+                menu_edit = true;
+                ui.close();
+            }
+            if ui.button("Trigger").clicked() {
+                menu_trigger = true;
+                ui.close();
+            }
+            if ui.button("Stop this pad").clicked() {
+                menu_stop = true;
+                ui.close();
+            }
+            ui.separator();
+            if ui.button("Clear pad").clicked() {
+                menu_clear = true;
+                ui.close();
+            }
+        });
+
+        if menu_edit {
+            self.begin_edit(note);
+        }
+        if menu_trigger && self.config.pages[self.page].contains_key(&note.to_string()) {
+            self.runtime.trigger_pad(&self.config, self.page, note, &mut self.status);
+        }
+        if menu_stop {
+            self.runtime.stop_pad(PadKey::new(self.page as u8, note));
+            self.status = format!("Stopped pad {}", PadKey::new(self.page as u8, note).to_key());
+        }
+        if menu_clear {
+            self.clear_pad(note);
+        }
+
+        // File drag-and-drop assigns a new audio source to the pad under the
+        // pointer. The pad editor opens so volume, output and retrigger can be
+        // reviewed before the assignment is saved.
+        let dropped_path = if response.hovered() {
+            ui.ctx().input(|input| {
+                input.raw.dropped_files.first().map(|file| file.path().to_path_buf())
+            })
+        } else {
+            None
+        };
+        if let Some(path) = dropped_path {
+            let file = path.display().to_string();
+            let mut assignment = self.config.pages[self.page]
+                .get(&note.to_string())
+                .cloned()
+                .unwrap_or_default();
+            assignment.action = "play".to_owned();
+            assignment.file = file;
+            if assignment.label.trim().is_empty() {
+                assignment.label = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_owned();
+            }
+            self.selected_note = Some(note);
+            self.editor = assignment;
+            self.editor_open = true;
+        }
+
+        response.on_hover_text(format!("Pad {} / note {}", note, note));
+    }
+
+    fn handle_keyboard(&mut self, context: &Context) {
+        let (number_page, stop_audio, quit, escape) = context.input(|input| {
+            let number_page = [
+                egui::Key::Num1,
+                egui::Key::Num2,
+                egui::Key::Num3,
+                egui::Key::Num4,
+                egui::Key::Num5,
+                egui::Key::Num6,
+                egui::Key::Num7,
+                egui::Key::Num8,
+            ]
+            .iter()
+            .position(|key| input.key_pressed(*key));
+            (
+                number_page,
+                input.key_pressed(egui::Key::Space),
+                input.modifiers.ctrl && input.key_pressed(egui::Key::Q),
+                input.key_pressed(egui::Key::Escape),
+            )
+        });
+
+        if let Some(page) = number_page {
+            self.change_page(page);
+        }
+        if stop_audio {
+            self.runtime.stop_audio();
+            self.status = "Audio playback stopped".to_owned();
+        }
+        if quit {
+            context.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if escape {
+            context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
+    }
+}
+
+impl eframe::App for PadfireApp {
+    fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let context = root_ui.ctx().clone();
+        context.set_visuals(egui::Visuals::dark());
+        // IPC, MIDI and process/audio workers post events from other threads.
+        // eframe does not continuously call ui() while idle, so schedule a
+        // low-frequency poll instead of leaving those commands stranded.
+        context.request_repaint_after(std::time::Duration::from_millis(200));
+
+        self.runtime.poll(&mut self.config, &mut self.page, &mut self.status);
+        let signals = self.runtime.take_signals();
+        if signals.show_requested {
+            context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            context.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        if signals.quit_requested {
+            context.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        self.handle_keyboard(&context);
+
+        egui::Panel::top("top_bar")
+            .exact_size(40.0)
+            .show(root_ui, |ui| self.draw_top_bar(ui));
+
+        egui::Panel::bottom("status_bar")
+            .exact_size(25.0)
+            .show(root_ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.label(
+                        RichText::new(&self.status)
+                            .size(10.0)
+                            .color(Color32::from_rgb(155, 162, 172)),
+                    );
+                });
+            });
+
+        egui::CentralPanel::default().show(root_ui, |ui| {
+            self.draw_page_selector(ui);
+            ui.add_space(7.0);
+            self.draw_grid(ui);
+            ui.add_space(7.0);
+            ui.label(
+                RichText::new("Click an assigned pad to play. Right-click an empty or assigned pad to edit.")
+                    .size(10.0)
+                    .color(Color32::from_rgb(143, 150, 161)),
+            );
+        });
+
+        self.draw_editor(&context);
+        self.draw_settings(&context);
+    }
+}
+
+fn draw_output_selector(
+    ui: &mut egui::Ui,
+    id: &'static str,
+    selected: &mut String,
+    devices: &[OutputDevice],
+) {
+    let selected_label = if selected.trim().is_empty() {
+        "System default".to_owned()
+    } else {
+        devices
+            .iter()
+            .find(|device| device.id == *selected || device.name == *selected)
+            .map(|device| device.name.clone())
+            .unwrap_or_else(|| format!("Unavailable: {selected}"))
+    };
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(selected_label)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(selected, String::new(), "System default");
+            for device in devices {
+                ui.selectable_value(selected, device.id.clone(), device.name.clone());
+            }
+        });
+}
+
+fn action_label(action: &str) -> &str {
+    match action {
+        "play" => "Play sound",
+        "script" => "Run a script",
+        "stop_sfx" => "Stop sounds",
+        "stop_all" => "Stop all sounds and scripts",
+        "stop_key" => "Stop a specific pad",
+        "crosshair_toggle" => "Toggle Crosshair",
+        _ => "Unsupported action",
+    }
+}
+
+fn action_description(action: &str) -> &str {
+    match action {
+        "stop_sfx" => "Stop all current audio playback. Script pads are not affected.",
+        "stop_all" => "Stop audio playback and terminate all Padfire-managed script processes.",
+        "crosshair_toggle" => "Run crosshair --toggle using a direct process launch, without a shell.",
+        _ => "",
+    }
+}
+
+fn retrigger_label(value: &str) -> &str {
+    match value {
+        "toggle" => "Stop on second press",
+        "restart" => "Restart from start",
+        _ => "Use global setting",
+    }
+}

@@ -1,0 +1,475 @@
+//! Native audio output actor.
+//!
+//! A single dedicated thread owns CPAL/rodio streams and Player handles. The
+//! UI/MIDI threads only send bounded commands. When no clips are playing the
+//! actor blocks on its receiver and releases all device streams.
+
+use cpal::traits::{DeviceTrait, HostTrait};
+use padfire_core::audio::{
+    resolve_route_pair, OutputDevice, OutputResolution,
+};
+use padfire_core::runtime::{GenerationTracker, OperationToken};
+use padfire_core::PadKey;
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
+use std::collections::HashMap;
+use std::fs::File;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioEvent {
+    Ready,
+    PlaybackStarted { pad: PadKey },
+    PlaybackFinished { pad: PadKey },
+    RouteFallback { requested: String, selected: String },
+    DeviceUnavailable { requested: String },
+    PlaybackFailed { pad: PadKey, message: String },
+    BackendUnavailable(String),
+    Stopped,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlaybackRequest {
+    pub token: OperationToken,
+    pub pad: PadKey,
+    pub file: String,
+    pub sink: String,
+    pub volume_percent: u8,
+    pub looping: bool,
+    pub monitor_sink: Option<String>,
+}
+
+enum AudioCommand {
+    Play(PlaybackRequest),
+    Stop { pad: PadKey },
+    StopAll,
+    Shutdown,
+}
+
+struct ActivePlayers {
+    pad: PadKey,
+    players: Vec<Player>,
+}
+
+pub struct AudioEngine {
+    sender: Sender<AudioCommand>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl AudioEngine {
+    pub fn spawn(
+        generations: Arc<Mutex<GenerationTracker>>,
+        events: Sender<AudioEvent>,
+    ) -> Result<Self, String> {
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::Builder::new()
+            .name("padfire-audio".to_owned())
+            .spawn(move || {
+                AudioActor::new(generations, events).run(receiver);
+            })
+            .map_err(|error| format!("could not start audio worker: {error}"))?;
+        Ok(Self {
+            sender,
+            worker: Some(worker),
+        })
+    }
+
+    pub fn play(&self, request: PlaybackRequest) -> Result<(), String> {
+        self.sender
+            .send(AudioCommand::Play(request))
+            .map_err(|_| "audio worker is not running".to_owned())
+    }
+
+    pub fn stop(&self, pad: PadKey) -> Result<(), String> {
+        self.sender
+            .send(AudioCommand::Stop { pad })
+            .map_err(|_| "audio worker is not running".to_owned())
+    }
+
+    pub fn stop_all(&self) -> Result<(), String> {
+        self.sender
+            .send(AudioCommand::StopAll)
+            .map_err(|_| "audio worker is not running".to_owned())
+    }
+
+    pub fn shutdown(&mut self) {
+        let _ = self.sender.send(AudioCommand::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for AudioEngine {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+struct AudioActor {
+    generations: Arc<Mutex<GenerationTracker>>,
+    events: Sender<AudioEvent>,
+    streams: HashMap<String, MixerDeviceSink>,
+    active: HashMap<String, ActivePlayers>,
+}
+
+impl AudioActor {
+    fn new(
+        generations: Arc<Mutex<GenerationTracker>>,
+        events: Sender<AudioEvent>,
+    ) -> Self {
+        Self {
+            generations,
+            events,
+            streams: HashMap::new(),
+            active: HashMap::new(),
+        }
+    }
+
+    fn run(mut self, receiver: Receiver<AudioCommand>) {
+        let _ = self.events.send(AudioEvent::Ready);
+
+        loop {
+            let message = if self.active.is_empty() {
+                receiver.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            } else {
+                receiver.recv_timeout(Duration::from_millis(100))
+            };
+
+            match message {
+                Ok(AudioCommand::Play(request)) => self.start_playback(request),
+                Ok(AudioCommand::Stop { pad }) => self.stop_pad(pad),
+                Ok(AudioCommand::StopAll) => self.stop_everything(),
+                Ok(AudioCommand::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => self.reap_finished(),
+            }
+        }
+
+        self.stop_everything();
+        let _ = self.events.send(AudioEvent::Stopped);
+    }
+
+    fn is_current(&self, token: &OperationToken) -> bool {
+        self.generations
+            .lock()
+            .map(|tracker| tracker.is_current(token))
+            .unwrap_or(false)
+    }
+
+    fn start_playback(&mut self, request: PlaybackRequest) {
+        if !self.is_current(&request.token) {
+            return;
+        }
+
+        let endpoints = match enumerate_output_devices() {
+            Ok(endpoints) => endpoints,
+            Err(error) => {
+                self.fail(request.pad, error);
+                return;
+            }
+        };
+        let routes = resolve_route_pair(
+            &request.sink,
+            request.monitor_sink.is_some(),
+            request.monitor_sink.as_deref().unwrap_or_default(),
+            &endpoints,
+        );
+
+        let primary = match &routes.primary {
+            OutputResolution::Default { device } => device.clone(),
+            OutputResolution::Matched { device, .. } => Some(device.clone()),
+            OutputResolution::Missing { requested, fallback } => {
+                let _ = self.events.send(AudioEvent::DeviceUnavailable {
+                    requested: requested.clone(),
+                });
+                fallback.clone()
+            }
+        };
+
+        let Some(primary) = primary else {
+            self.fail(request.pad, "no usable audio output device is available".to_owned());
+            return;
+        };
+
+        if let OutputResolution::Missing { requested, .. } = &routes.primary {
+            let _ = self.events.send(AudioEvent::RouteFallback {
+                requested: requested.clone(),
+                selected: primary.name.clone(),
+            });
+        }
+
+        let monitor = if routes.separate_monitor_stream {
+            routes.monitor.as_ref().and_then(OutputResolution::device).cloned()
+        } else {
+            None
+        };
+
+        if let Some(OutputResolution::Missing { requested, fallback }) = routes.monitor.as_ref() {
+            let selected = fallback.as_ref().map(|device| device.name.clone()).unwrap_or_default();
+            let _ = self.events.send(AudioEvent::RouteFallback {
+                requested: requested.clone(),
+                selected,
+            });
+        }
+
+        // Decode before creating a stream. Stop may arrive while decoding, so
+        // the generation is rechecked before opening any endpoint.
+        let primary_file = match File::open(&request.file) {
+            Ok(file) => file,
+            Err(error) => {
+                self.fail(request.pad, format!("could not open sound file: {error}"));
+                return;
+            }
+        };
+        let primary_decoder = if request.looping {
+            match Decoder::new_looped(std::io::BufReader::new(primary_file)) {
+                Ok(decoder) => DecodedSource::Looped(decoder),
+                Err(error) => {
+                    self.fail(request.pad, format!("could not decode sound file: {error}"));
+                    return;
+                }
+            }
+        } else {
+            match Decoder::try_from(primary_file) {
+                Ok(decoder) => DecodedSource::Single(decoder),
+                Err(error) => {
+                    self.fail(request.pad, format!("could not decode sound file: {error}"));
+                    return;
+                }
+            }
+        };
+
+        let monitor_decoder = if monitor.is_some() {
+            let monitor_file = match File::open(&request.file) {
+                Ok(file) => file,
+                Err(error) => {
+                    self.fail(request.pad, format!("could not reopen sound for monitor: {error}"));
+                    return;
+                }
+            };
+            if request.looping {
+                match Decoder::new_looped(std::io::BufReader::new(monitor_file)) {
+                    Ok(decoder) => Some(DecodedSource::Looped(decoder)),
+                    Err(error) => {
+                        self.fail(request.pad, format!("could not decode monitor sound: {error}"));
+                        return;
+                    }
+                }
+            } else {
+                match Decoder::try_from(monitor_file) {
+                    Ok(decoder) => Some(DecodedSource::Single(decoder)),
+                    Err(error) => {
+                        self.fail(request.pad, format!("could not decode monitor sound: {error}"));
+                        return;
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
+        if !self.is_current(&request.token) {
+            return;
+        }
+
+        if let Err(error) = self.ensure_stream(&primary.id) {
+            self.fail(request.pad, format!("could not open output '{}': {error}", primary.name));
+            return;
+        }
+
+        if let Some(monitor_device) = &monitor {
+            if let Err(error) = self.ensure_stream(&monitor_device.id) {
+                self.fail(
+                    request.pad,
+                    format!("could not open monitor output '{}': {error}", monitor_device.name),
+                );
+                return;
+            }
+        }
+
+        // A concurrent Stop can invalidate the token while a native device
+        // stream is opening. Do not publish players for a cancelled request.
+        if !self.is_current(&request.token) {
+            self.release_idle_streams();
+            return;
+        }
+
+        self.cancel_previous_pad(request.pad);
+        let mut players = Vec::with_capacity(if monitor.is_some() { 2 } else { 1 });
+
+        if let Some(stream) = self.streams.get(&primary.id) {
+            let player = Player::connect_new(stream.mixer());
+            player.set_volume(f32::from(request.volume_percent.min(150)) / 100.0);
+            primary_decoder.append_to(&player);
+            players.push(player);
+        }
+
+        if let (Some(monitor_device), Some(decoder)) = (&monitor, monitor_decoder) {
+            if let Some(stream) = self.streams.get(&monitor_device.id) {
+                let player = Player::connect_new(stream.mixer());
+                player.set_volume(f32::from(request.volume_percent.min(150)) / 100.0);
+                decoder.append_to(&player);
+                players.push(player);
+            }
+        }
+
+        let pad_key = request.pad.to_key();
+        self.active.insert(
+            pad_key,
+            ActivePlayers {
+                pad: request.pad,
+                players,
+            },
+        );
+        let _ = self.events.send(AudioEvent::PlaybackStarted { pad: request.pad });
+    }
+
+    fn ensure_stream(&mut self, device_id: &str) -> Result<(), String> {
+        if self.streams.contains_key(device_id) {
+            return Ok(());
+        }
+
+        let host = selected_host()?;
+        let devices = host.output_devices().map_err(|error| error.to_string())?;
+        let device = devices
+            .filter(|device| {
+                device
+                    .id()
+                    .is_ok_and(|id| id.to_string() == device_id)
+            })
+            .next()
+            .ok_or_else(|| "device disappeared during stream creation".to_owned())?;
+
+        let mut stream = DeviceSinkBuilder::from_device(device)
+            .map_err(|error| error.to_string())?
+            .open_stream()
+            .map_err(|error| error.to_string())?;
+        stream.log_on_drop(false);
+        self.streams.insert(device_id.to_owned(), stream);
+        Ok(())
+    }
+
+    fn cancel_previous_pad(&mut self, pad: PadKey) {
+        if let Some(active) = self.active.remove(&pad.to_key()) {
+            for player in active.players {
+                player.stop();
+            }
+            let _ = self.events.send(AudioEvent::PlaybackFinished { pad });
+        }
+    }
+
+    fn stop_pad(&mut self, pad: PadKey) {
+        self.cancel_previous_pad(pad);
+        self.release_idle_streams();
+    }
+
+    fn stop_everything(&mut self) {
+        for (_, active) in self.active.drain() {
+            for player in active.players {
+                player.stop();
+            }
+            let _ = self.events.send(AudioEvent::PlaybackFinished { pad: active.pad });
+        }
+        self.streams.clear();
+    }
+
+    fn reap_finished(&mut self) {
+        let finished: Vec<(String, PadKey)> = self
+            .active
+            .iter()
+            .filter(|(_, active)| active.players.iter().all(Player::empty))
+            .map(|(key, active)| (key.clone(), active.pad))
+            .collect();
+
+        for (key, pad) in finished {
+            self.active.remove(&key);
+            let _ = self.events.send(AudioEvent::PlaybackFinished { pad });
+        }
+        self.release_idle_streams();
+    }
+
+    fn release_idle_streams(&mut self) {
+        if self.active.is_empty() {
+            self.streams.clear();
+        }
+    }
+
+    fn fail(&self, pad: PadKey, message: String) {
+        let _ = self.events.send(AudioEvent::PlaybackFailed { pad, message });
+    }
+}
+
+enum DecodedSource {
+    Single(Decoder<std::io::BufReader<File>>),
+    Looped(rodio::decoder::LoopedDecoder<std::io::BufReader<File>>),
+}
+
+impl DecodedSource {
+    fn append_to(self, player: &Player) {
+        match self {
+            Self::Single(source) => player.append(source),
+            Self::Looped(source) => player.append(source),
+        }
+    }
+}
+
+fn selected_host() -> Result<cpal::Host, String> {
+    #[cfg(target_os = "linux")]
+    {
+        // Preserve the released Linux behavior: select PipeWire's supported
+        // PulseAudio compatibility host so named sink identities stay usable.
+        let pulse = cpal::available_hosts()
+            .into_iter()
+            .find(|id| id.to_string().to_ascii_lowercase().contains("pulseaudio"));
+        if let Some(id) = pulse {
+            return cpal::host_from_id(id).map_err(|error| error.to_string());
+        }
+    }
+    Ok(cpal::default_host())
+}
+
+pub fn enumerate_output_devices() -> Result<Vec<OutputDevice>, String> {
+    let host = selected_host()?;
+    let default_id = host
+        .default_output_device()
+        .and_then(|device| device.id().ok())
+        .map(|id| id.to_string());
+
+    let devices = host.output_devices().map_err(|error| error.to_string())?;
+    let mut results = Vec::new();
+    for device in devices {
+        let id = match device.id() {
+            Ok(id) => id.to_string(),
+            Err(_) => continue,
+        };
+        let name = device
+            .description()
+            .map(|description| description.name().to_owned())
+            .unwrap_or_else(|_| device.to_string());
+        results.push(OutputDevice {
+            is_default: default_id.as_deref() == Some(id.as_str()),
+            id,
+            name,
+        });
+    }
+    Ok(results)
+}
+
+pub fn audio_backend_name() -> String {
+    selected_host()
+        .map(|host| host.id().to_string())
+        .unwrap_or_else(|error| format!("Unavailable: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decoded_source_types_remain_distinct_for_loop_and_single_playback() {
+        let _: fn(DecodedSource, &Player) = DecodedSource::append_to;
+        assert!(!audio_backend_name().is_empty());
+    }
+}

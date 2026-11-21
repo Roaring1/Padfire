@@ -14,3 +14,7 @@ coverage.xml
 build/
 dist/
 *.egg-info/
+
+# Rust / Cargo build output
+**/target/
+**/*.rs.bk
