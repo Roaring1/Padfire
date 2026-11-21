@@ -329,10 +329,7 @@ impl AppConfig {
             .and_then(Value::as_str)
             .is_some_and(|value| matches!(value, "restart" | "toggle"));
         if !retrigger_is_valid {
-            root.insert(
-                "retrigger".to_owned(),
-                Value::String("restart".to_owned()),
-            );
+            root.insert("retrigger".to_owned(), Value::String("restart".to_owned()));
         }
         root.insert("version".to_owned(), Value::from(CONFIG_VERSION));
 

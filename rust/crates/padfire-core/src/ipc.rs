@@ -221,10 +221,19 @@ mod tests {
     #[test]
     fn malformed_unterminated_oversized_and_extra_frames_are_rejected() {
         assert_eq!(decode_request(b"status"), Err(IpcError::MissingDelimiter));
-        assert_eq!(decode_request(b"status\nquit\n"), Err(IpcError::ExtraFrameData));
-        assert_eq!(decode_request(&[b'a'; MAX_IPC_REQUEST_BYTES + 1]), Err(IpcError::TooLarge));
+        assert_eq!(
+            decode_request(b"status\nquit\n"),
+            Err(IpcError::ExtraFrameData)
+        );
+        assert_eq!(
+            decode_request(&[b'a'; MAX_IPC_REQUEST_BYTES + 1]),
+            Err(IpcError::TooLarge)
+        );
         assert_eq!(decode_request(b"\xff\n"), Err(IpcError::InvalidUtf8));
-        assert_eq!(decode_request(b"shell:true\n"), Err(IpcError::UnknownCommand));
+        assert_eq!(
+            decode_request(b"shell:true\n"),
+            Err(IpcError::UnknownCommand)
+        );
     }
 
     #[test]
@@ -238,13 +247,8 @@ mod tests {
 
     #[test]
     fn stopped_status_matches_the_existing_cli_shape() {
-        let status = StatusResponse::stopped("3.0.0-alpha.1")
-            .to_json()
-            .unwrap();
-        assert_eq!(
-            status,
-            r#"{"running":false,"version":"3.0.0-alpha.1"}"#
-        );
+        let status = StatusResponse::stopped("3.0.0-alpha.1").to_json().unwrap();
+        assert_eq!(status, r#"{"running":false,"version":"3.0.0-alpha.1"}"#);
     }
 
     #[test]
@@ -288,10 +292,7 @@ mod tests {
 
     #[test]
     fn cli_actions_map_to_the_fixed_ipc_protocol() {
-        assert_eq!(
-            CliAction::StopAll.ipc_command(),
-            Some(IpcCommand::StopAll)
-        );
+        assert_eq!(CliAction::StopAll.ipc_command(), Some(IpcCommand::StopAll));
         assert_eq!(
             CliAction::LaunchOrFocus.ipc_command(),
             Some(IpcCommand::Show)

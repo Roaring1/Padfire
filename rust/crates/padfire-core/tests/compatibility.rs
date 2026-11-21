@@ -1,8 +1,7 @@
 use padfire_core::{
-    decode_midi, is_supported_launchpad_port, led_velocity, AppConfig, Control, MidiEvent,
-    MidiPacket, PadAction, PadAssignment, PadKey, RetriggerMode, LED_AMBER, LED_DIM,
-    LED_GREEN, LED_OFF, LED_ORANGE, LED_PG_HAS, LED_RED, MIDI_PAGE_CC_FIRST,
-    MIDI_PAGE_CC_LAST,
+    AppConfig, Control, LED_AMBER, LED_DIM, LED_GREEN, LED_OFF, LED_ORANGE, LED_PG_HAS, LED_RED,
+    MIDI_PAGE_CC_FIRST, MIDI_PAGE_CC_LAST, MidiEvent, MidiPacket, PadAction, PadAssignment, PadKey,
+    RetriggerMode, decode_midi, is_supported_launchpad_port, led_velocity,
 };
 
 #[test]
@@ -65,10 +64,7 @@ fn migration_preserves_valid_global_retrigger_and_resets_invalid_values() {
 
 #[test]
 fn malformed_shapes_are_normalized_without_crashing() {
-    let config = AppConfig::from_json(
-        br#"{"version":5,"pages":[null,7,{"0":false}]}"#,
-    )
-    .unwrap();
+    let config = AppConfig::from_json(br#"{"version":5,"pages":[null,7,{"0":false}]}"#).unwrap();
     assert_eq!(config.pages.len(), 8);
     assert!(config.pages[0].is_empty());
     assert!(config.pages[1].is_empty());
@@ -100,7 +96,10 @@ fn all_current_and_unknown_actions_are_classified_safely() {
         ("stop_all", PadAction::StopAll),
         ("stop_key", PadAction::StopKey),
         ("crosshair_toggle", PadAction::CrosshairToggle),
-        ("future_action", PadAction::Unsupported("future_action".to_owned())),
+        (
+            "future_action",
+            PadAction::Unsupported("future_action".to_owned()),
+        ),
     ];
     for (name, expected) in cases {
         assert_eq!(PadAction::from_config(name), expected);
@@ -148,11 +147,17 @@ fn pad_control_note_mapping_covers_grid_and_right_side() {
 #[test]
 fn midi_note_on_zero_velocity_is_release_and_top_row_selects_pages() {
     assert_eq!(
-        decode_midi(MidiPacket::NoteOn { note: 17, velocity: 90 }),
+        decode_midi(MidiPacket::NoteOn {
+            note: 17,
+            velocity: 90
+        }),
         MidiEvent::PadPressed(Control::Grid { row: 1, column: 1 })
     );
     assert_eq!(
-        decode_midi(MidiPacket::NoteOn { note: 17, velocity: 0 }),
+        decode_midi(MidiPacket::NoteOn {
+            note: 17,
+            velocity: 0
+        }),
         MidiEvent::PadReleased(Control::Grid { row: 1, column: 1 })
     );
     assert_eq!(
@@ -193,7 +198,9 @@ fn midi_note_on_zero_velocity_is_release_and_top_row_selects_pages() {
 fn mk3_is_never_selected_but_mk1_and_mk2_names_are_accepted() {
     assert!(is_supported_launchpad_port("Launchpad Mini MIDI 1"));
     assert!(is_supported_launchpad_port("Novation Launchpad Mini MK1"));
-    assert!(is_supported_launchpad_port("Novation Launchpad Mini mk2 MIDI"));
+    assert!(is_supported_launchpad_port(
+        "Novation Launchpad Mini mk2 MIDI"
+    ));
     assert!(!is_supported_launchpad_port("Launchpad Mini MK3 MIDI 1"));
     assert!(!is_supported_launchpad_port("Launchpad Mini mk3"));
     assert!(!is_supported_launchpad_port("Launchpad Pro"));
@@ -202,13 +209,7 @@ fn mk3_is_never_selected_but_mk1_and_mk2_names_are_accepted() {
 #[test]
 fn every_published_led_constant_retains_double_buffer_flags() {
     for value in [
-        LED_OFF,
-        LED_DIM,
-        LED_GREEN,
-        LED_RED,
-        LED_ORANGE,
-        LED_AMBER,
-        LED_PG_HAS,
+        LED_OFF, LED_DIM, LED_GREEN, LED_RED, LED_ORANGE, LED_AMBER, LED_PG_HAS,
     ] {
         assert_eq!(value & 0x0c, 0x0c);
     }

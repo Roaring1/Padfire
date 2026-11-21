@@ -113,19 +113,20 @@ impl ConfigStore {
             let base = std::env::var_os("APPDATA")
                 .map(PathBuf::from)
                 .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
-                .ok_or_else(|| StoreError::UnsafePath(
-                    "APPDATA and LOCALAPPDATA are both unavailable".to_owned()
-                ))?;
+                .ok_or_else(|| {
+                    StoreError::UnsafePath(
+                        "APPDATA and LOCALAPPDATA are both unavailable".to_owned(),
+                    )
+                })?;
             Ok(Self::new(base.join("Padfire")))
         }
         #[cfg(not(any(target_os = "linux", windows)))]
         {
             Err(StoreError::UnsafePath(
-                "Padfire config storage is not implemented for this operating system".to_owned()
+                "Padfire config storage is not implemented for this operating system".to_owned(),
             ))
         }
     }
-
 
     /// Development-only namespace for side-by-side testing while v2.4.0
     /// remains installed. It reads/imports the released config once but all
@@ -143,9 +144,15 @@ impl ConfigStore {
         })
     }
 
-    pub fn directory(&self) -> &Path { &self.directory }
-    pub fn config_path(&self) -> &Path { &self.config_path }
-    pub fn backup_path(&self) -> &Path { &self.backup_path }
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
+    }
+    pub fn backup_path(&self) -> &Path {
+        &self.backup_path
+    }
 
     /// Ensure the final directory is real and controlled by the current user.
     pub fn ensure_private_directory(&self) -> Result<(), StoreError> {
@@ -218,8 +225,9 @@ impl ConfigStore {
                 if let Some(legacy_path) = &self.legacy_path {
                     match read_private_file(legacy_path, MAX_CONFIG_BYTES) {
                         Ok(bytes) => {
-                            let import = write_atomic(&self.config_path, &bytes)
-                                .and_then(|()| AppConfig::from_json(&bytes).map_err(StoreError::from));
+                            let import = write_atomic(&self.config_path, &bytes).and_then(|()| {
+                                AppConfig::from_json(&bytes).map_err(StoreError::from)
+                            });
                             return match import {
                                 Ok(config) => ConfigLoad {
                                     config,
@@ -388,7 +396,9 @@ fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), StoreError> {
             .as_nanos();
         let name = format!(
             ".{}.{}.{}.{}.tmp",
-            path.file_name().and_then(|s| s.to_str()).unwrap_or("padfire"),
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("padfire"),
             std::process::id(),
             nanos,
             sequence
@@ -400,7 +410,9 @@ fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), StoreError> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600).custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
         }
 
         match options.open(&candidate) {
@@ -461,10 +473,8 @@ mod tests {
 
     fn test_store() -> ConfigStore {
         let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "padfire-store-test-{}-{id}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("padfire-store-test-{}-{id}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         ConfigStore::new(path)
     }
@@ -485,11 +495,19 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(
-                fs::metadata(store.directory()).unwrap().permissions().mode() & 0o777,
+                fs::metadata(store.directory())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
                 0o700
             );
             assert_eq!(
-                fs::metadata(store.config_path()).unwrap().permissions().mode() & 0o777,
+                fs::metadata(store.config_path())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
                 0o600
             );
         }
@@ -539,10 +557,12 @@ mod tests {
         assert_eq!(loaded.state, LoadState::DefaultAfterError);
         assert!(loaded.warning.is_some());
         store.save(&AppConfig::default()).unwrap();
-        assert!(!fs::symlink_metadata(store.config_path())
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(
+            !fs::symlink_metadata(store.config_path())
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(
             fs::read_to_string(&target).unwrap(),
             r#"{"version":5,"default_sink":"outside"}"#
@@ -570,10 +590,8 @@ mod tests {
     fn config_directory_symlink_is_rejected() {
         use std::os::unix::fs::symlink;
         let store = test_store();
-        let target = std::env::temp_dir().join(format!(
-            "padfire-store-target-{}",
-            std::process::id()
-        ));
+        let target =
+            std::env::temp_dir().join(format!("padfire-store-target-{}", std::process::id()));
         fs::create_dir_all(&target).unwrap();
         let _ = fs::remove_dir_all(store.directory());
         symlink(&target, store.directory()).unwrap();

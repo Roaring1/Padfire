@@ -11,16 +11,14 @@ pub mod ipc;
 pub mod midi;
 pub mod runtime;
 
-pub use actions::{plan_pad_press, ActionEffect, PadActivity};
+pub use actions::{ActionEffect, PadActivity, plan_pad_press};
 pub use config::{
-    AppConfig, ConfigError, PadAction, PadAssignment, PadPage, RetriggerMode,
-    ValidationIssue, CONFIG_VERSION, MAX_CONFIG_BYTES, PAGE_COUNT,
+    AppConfig, CONFIG_VERSION, ConfigError, MAX_CONFIG_BYTES, PAGE_COUNT, PadAction, PadAssignment,
+    PadPage, RetriggerMode, ValidationIssue,
 };
 pub use midi::{
-    decode_midi, is_supported_launchpad_port, led_velocity, Control, MidiEvent,
-    MidiPacket, PadKey, LED_AMBER, LED_DIM, LED_GREEN, LED_OFF, LED_ORANGE,
-    LED_PG_HAS, LED_RED, MIDI_PAGE_CC_FIRST, MIDI_PAGE_CC_LAST, SIDE_COLUMN,
+    Control, LED_AMBER, LED_DIM, LED_GREEN, LED_OFF, LED_ORANGE, LED_PG_HAS, LED_RED,
+    MIDI_PAGE_CC_FIRST, MIDI_PAGE_CC_LAST, MidiEvent, MidiPacket, PadKey, SIDE_COLUMN, decode_midi,
+    is_supported_launchpad_port, led_velocity,
 };
-pub use runtime::{
-    GenerationTracker, OperationKey, OperationKind, OperationToken,
-};
+pub use runtime::{GenerationTracker, OperationKey, OperationKind, OperationToken};

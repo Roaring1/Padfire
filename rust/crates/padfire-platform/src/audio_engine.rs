@@ -5,11 +5,9 @@
 //! actor blocks on its receiver and releases all device streams.
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use padfire_core::audio::{
-    resolve_route_pair, OutputDevice, OutputResolution,
-};
-use padfire_core::runtime::{GenerationTracker, OperationToken};
 use padfire_core::PadKey;
+use padfire_core::audio::{OutputDevice, OutputResolution, resolve_route_pair};
+use padfire_core::runtime::{GenerationTracker, OperationToken};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 use std::collections::HashMap;
 use std::fs::File;
@@ -116,10 +114,7 @@ struct AudioActor {
 }
 
 impl AudioActor {
-    fn new(
-        generations: Arc<Mutex<GenerationTracker>>,
-        events: Sender<AudioEvent>,
-    ) -> Self {
+    fn new(generations: Arc<Mutex<GenerationTracker>>, events: Sender<AudioEvent>) -> Self {
         Self {
             generations,
             events,
@@ -180,7 +175,10 @@ impl AudioActor {
         let primary = match &routes.primary {
             OutputResolution::Default { device } => device.clone(),
             OutputResolution::Matched { device, .. } => Some(device.clone()),
-            OutputResolution::Missing { requested, fallback } => {
+            OutputResolution::Missing {
+                requested,
+                fallback,
+            } => {
                 let _ = self.events.send(AudioEvent::DeviceUnavailable {
                     requested: requested.clone(),
                 });
@@ -189,7 +187,10 @@ impl AudioActor {
         };
 
         let Some(primary) = primary else {
-            self.fail(request.pad, "no usable audio output device is available".to_owned());
+            self.fail(
+                request.pad,
+                "no usable audio output device is available".to_owned(),
+            );
             return;
         };
 
@@ -201,13 +202,24 @@ impl AudioActor {
         }
 
         let monitor = if routes.separate_monitor_stream {
-            routes.monitor.as_ref().and_then(OutputResolution::device).cloned()
+            routes
+                .monitor
+                .as_ref()
+                .and_then(OutputResolution::device)
+                .cloned()
         } else {
             None
         };
 
-        if let Some(OutputResolution::Missing { requested, fallback }) = routes.monitor.as_ref() {
-            let selected = fallback.as_ref().map(|device| device.name.clone()).unwrap_or_default();
+        if let Some(OutputResolution::Missing {
+            requested,
+            fallback,
+        }) = routes.monitor.as_ref()
+        {
+            let selected = fallback
+                .as_ref()
+                .map(|device| device.name.clone())
+                .unwrap_or_default();
             let _ = self.events.send(AudioEvent::RouteFallback {
                 requested: requested.clone(),
                 selected,
@@ -245,7 +257,10 @@ impl AudioActor {
             let monitor_file = match File::open(&request.file) {
                 Ok(file) => file,
                 Err(error) => {
-                    self.fail(request.pad, format!("could not reopen sound for monitor: {error}"));
+                    self.fail(
+                        request.pad,
+                        format!("could not reopen sound for monitor: {error}"),
+                    );
                     return;
                 }
             };
@@ -253,7 +268,10 @@ impl AudioActor {
                 match Decoder::new_looped(std::io::BufReader::new(monitor_file)) {
                     Ok(decoder) => Some(DecodedSource::Looped(decoder)),
                     Err(error) => {
-                        self.fail(request.pad, format!("could not decode monitor sound: {error}"));
+                        self.fail(
+                            request.pad,
+                            format!("could not decode monitor sound: {error}"),
+                        );
                         return;
                     }
                 }
@@ -261,7 +279,10 @@ impl AudioActor {
                 match Decoder::try_from(monitor_file) {
                     Ok(decoder) => Some(DecodedSource::Single(decoder)),
                     Err(error) => {
-                        self.fail(request.pad, format!("could not decode monitor sound: {error}"));
+                        self.fail(
+                            request.pad,
+                            format!("could not decode monitor sound: {error}"),
+                        );
                         return;
                     }
                 }
@@ -275,7 +296,10 @@ impl AudioActor {
         }
 
         if let Err(error) = self.ensure_stream(&primary.id) {
-            self.fail(request.pad, format!("could not open output '{}': {error}", primary.name));
+            self.fail(
+                request.pad,
+                format!("could not open output '{}': {error}", primary.name),
+            );
             return;
         }
 
@@ -283,7 +307,10 @@ impl AudioActor {
             if let Err(error) = self.ensure_stream(&monitor_device.id) {
                 self.fail(
                     request.pad,
-                    format!("could not open monitor output '{}': {error}", monitor_device.name),
+                    format!(
+                        "could not open monitor output '{}': {error}",
+                        monitor_device.name
+                    ),
                 );
                 return;
             }
@@ -323,7 +350,9 @@ impl AudioActor {
                 players,
             },
         );
-        let _ = self.events.send(AudioEvent::PlaybackStarted { pad: request.pad });
+        let _ = self
+            .events
+            .send(AudioEvent::PlaybackStarted { pad: request.pad });
     }
 
     fn ensure_stream(&mut self, device_id: &str) -> Result<(), String> {
@@ -334,11 +363,7 @@ impl AudioActor {
         let host = selected_host()?;
         let devices = host.output_devices().map_err(|error| error.to_string())?;
         let device = devices
-            .filter(|device| {
-                device
-                    .id()
-                    .is_ok_and(|id| id.to_string() == device_id)
-            })
+            .filter(|device| device.id().is_ok_and(|id| id.to_string() == device_id))
             .next()
             .ok_or_else(|| "device disappeared during stream creation".to_owned())?;
 
@@ -370,7 +395,9 @@ impl AudioActor {
             for player in active.players {
                 player.stop();
             }
-            let _ = self.events.send(AudioEvent::PlaybackFinished { pad: active.pad });
+            let _ = self
+                .events
+                .send(AudioEvent::PlaybackFinished { pad: active.pad });
         }
         self.streams.clear();
     }
@@ -397,7 +424,9 @@ impl AudioActor {
     }
 
     fn fail(&self, pad: PadKey, message: String) {
-        let _ = self.events.send(AudioEvent::PlaybackFailed { pad, message });
+        let _ = self
+            .events
+            .send(AudioEvent::PlaybackFailed { pad, message });
     }
 }
 

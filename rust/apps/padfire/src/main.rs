@@ -1,14 +1,12 @@
 mod runtime;
 
-use eframe::egui::{
-    self, Align, Color32, Context, Grid, Layout, RichText, Stroke, Vec2,
-};
+use eframe::egui::{self, Align, Color32, Context, Grid, Layout, RichText, Stroke, Vec2};
+use padfire_core::audio::OutputDevice;
 use padfire_core::ipc::{CliAction, IpcCommand, StatusResponse};
-use padfire_core::{AppConfig, PadAction, PadAssignment, PadKey, PAGE_COUNT};
+use padfire_core::{AppConfig, PAGE_COUNT, PadAction, PadAssignment, PadKey};
 use padfire_platform::audio_engine::enumerate_output_devices;
 use padfire_platform::config_store::{ConfigStore, LoadState};
 use padfire_platform::ipc_server;
-use padfire_core::audio::OutputDevice;
 use runtime::AppRuntime;
 use std::path::Path;
 
@@ -32,14 +30,16 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let action = CliAction::parse_args(args.iter().map(String::as_str))
-        .map_err(str::to_owned)?;
+    let action = CliAction::parse_args(args.iter().map(String::as_str)).map_err(str::to_owned)?;
     let store = ConfigStore::for_development().map_err(|error| error.to_string())?;
     let socket_path = store.directory().join("padfire-rust.sock");
 
     if let Some(action) = action {
         if action == CliAction::Install {
-            return Err("desktop integration installer is not included in this development build".to_owned());
+            return Err(
+                "desktop integration installer is not included in this development build"
+                    .to_owned(),
+            );
         }
         if action == CliAction::Version {
             println!("Padfire {VERSION}");
@@ -71,7 +71,9 @@ fn run() -> Result<(), String> {
     let startup_status = warning.unwrap_or_else(|| match loaded.state {
         LoadState::Loaded => "Ready".to_owned(),
         LoadState::ImportedLegacy => "Imported the previous Padfire configuration".to_owned(),
-        LoadState::CreatedDefault => "New configuration - right-click a pad to assign it".to_owned(),
+        LoadState::CreatedDefault => {
+            "New configuration - right-click a pad to assign it".to_owned()
+        }
         LoadState::DefaultAfterError => "Configuration could not be loaded safely".to_owned(),
     });
 
@@ -283,12 +285,16 @@ impl PadfireApp {
 
     fn choose_audio_file(&mut self) {
         let path = rfd::FileDialog::new()
-            .add_filter("Audio", &["wav", "mp3", "flac", "ogg", "opus", "m4a", "aac"])
+            .add_filter(
+                "Audio",
+                &["wav", "mp3", "flac", "ogg", "opus", "m4a", "aac"],
+            )
             .pick_file();
         if let Some(path) = path {
             self.editor.file = path.display().to_string();
             if self.editor.label.trim().is_empty() {
-                self.editor.label = path.file_stem()
+                self.editor.label = path
+                    .file_stem()
                     .and_then(|stem| stem.to_str())
                     .unwrap_or_default()
                     .to_owned();
@@ -520,7 +526,11 @@ impl PadfireApp {
             ui.add_space(6.0);
             ui.label(RichText::new("PADFIRE").strong().size(14.0));
             ui.separator();
-            let state = if self.runtime.midi_connected() { "Launchpad connected" } else { "Launchpad unavailable" };
+            let state = if self.runtime.midi_connected() {
+                "Launchpad connected"
+            } else {
+                "Launchpad unavailable"
+            };
             let color = if self.runtime.midi_connected() {
                 Color32::from_rgb(110, 185, 130)
             } else {
@@ -535,11 +545,13 @@ impl PadfireApp {
                 if ui.checkbox(&mut monitor, "Mon").changed() {
                     self.config.monitor_enabled = monitor;
                     match self.runtime.save_config(&self.config) {
-                        Ok(()) => self.status = if monitor {
-                            "Audio monitoring enabled".to_owned()
-                        } else {
-                            "Audio monitoring disabled".to_owned()
-                        },
+                        Ok(()) => {
+                            self.status = if monitor {
+                                "Audio monitoring enabled".to_owned()
+                            } else {
+                                "Audio monitoring disabled".to_owned()
+                            }
+                        }
                         Err(error) => self.status = format!("Could not save settings: {error}"),
                     }
                 }
@@ -555,12 +567,9 @@ impl PadfireApp {
         ui.horizontal(|ui| {
             for index in 0..PAGE_COUNT {
                 let selected = self.page == index;
-                let mut button = egui::Button::new(
-                    RichText::new((index + 1).to_string())
-                        .size(12.0)
-                        .strong(),
-                )
-                .min_size(Vec2::new(43.0, 25.0));
+                let mut button =
+                    egui::Button::new(RichText::new((index + 1).to_string()).size(12.0).strong())
+                        .min_size(Vec2::new(43.0, 25.0));
                 if selected {
                     button = button.fill(Color32::from_rgb(36, 91, 147));
                 }
@@ -590,18 +599,23 @@ impl PadfireApp {
         let label = self.pad_name(note);
         let color = self.pad_color(note);
         let text = if label.is_empty() { " " } else { &label };
-        let response = ui.add_sized(
-            Vec2::new(49.0, 49.0),
-            egui::Button::new(
-                RichText::new(text)
-                    .size(9.0)
-                    .color(Color32::from_rgb(226, 231, 237)),
+        let response = ui
+            .add_sized(
+                Vec2::new(49.0, 49.0),
+                egui::Button::new(
+                    RichText::new(text)
+                        .size(9.0)
+                        .color(Color32::from_rgb(226, 231, 237)),
+                )
+                .fill(color)
+                .stroke(Stroke::new(1.0, Color32::from_rgb(65, 71, 80))),
             )
-            .fill(color)
-            .stroke(Stroke::new(1.0, Color32::from_rgb(65, 71, 80))),
-        ).interact(egui::Sense::click_and_drag());
+            .interact(egui::Sense::click_and_drag());
 
-        response.dnd_set_drag_payload(PadDragPayload { page: self.page, note });
+        response.dnd_set_drag_payload(PadDragPayload {
+            page: self.page,
+            note,
+        });
         if response.dnd_hover_payload::<PadDragPayload>().is_some() {
             ui.painter().rect_stroke(
                 response.rect,
@@ -612,7 +626,9 @@ impl PadfireApp {
         }
         if let Some(source) = response.dnd_release_payload::<PadDragPayload>() {
             if source.page != self.page || source.note != note {
-                let source_assignment = self.config.pages
+                let source_assignment = self
+                    .config
+                    .pages
                     .get(source.page)
                     .and_then(|page| page.get(&source.note.to_string()))
                     .cloned();
@@ -620,16 +636,26 @@ impl PadfireApp {
                     self.runtime.stop_pad(PadKey::new(self.page as u8, note));
                     let copy = ui.ctx().input(|input| input.modifiers.ctrl);
                     if !copy {
-                        self.runtime.stop_pad(PadKey::new(source.page as u8, source.note));
+                        self.runtime
+                            .stop_pad(PadKey::new(source.page as u8, source.note));
                         self.config.pages[source.page].remove(&source.note.to_string());
                     }
                     self.config.pages[self.page].insert(note.to_string(), assignment);
                     match self.runtime.save_config(&self.config) {
-                        Ok(()) => self.status = if copy {
-                            format!("Copied pad {} to {}", PadKey::new(source.page as u8, source.note).to_key(), PadKey::new(self.page as u8, note).to_key())
-                        } else {
-                            format!("Moved pad to {}", PadKey::new(self.page as u8, note).to_key())
-                        },
+                        Ok(()) => {
+                            self.status = if copy {
+                                format!(
+                                    "Copied pad {} to {}",
+                                    PadKey::new(source.page as u8, source.note).to_key(),
+                                    PadKey::new(self.page as u8, note).to_key()
+                                )
+                            } else {
+                                format!(
+                                    "Moved pad to {}",
+                                    PadKey::new(self.page as u8, note).to_key()
+                                )
+                            }
+                        }
                         Err(error) => self.status = format!("Could not save pad move: {error}"),
                     }
                 }
@@ -638,7 +664,8 @@ impl PadfireApp {
 
         if response.clicked() {
             if self.config.pages[self.page].contains_key(&note.to_string()) {
-                self.runtime.trigger_pad(&self.config, self.page, note, &mut self.status);
+                self.runtime
+                    .trigger_pad(&self.config, self.page, note, &mut self.status);
             } else {
                 self.begin_edit(note);
             }
@@ -672,11 +699,15 @@ impl PadfireApp {
             self.begin_edit(note);
         }
         if menu_trigger && self.config.pages[self.page].contains_key(&note.to_string()) {
-            self.runtime.trigger_pad(&self.config, self.page, note, &mut self.status);
+            self.runtime
+                .trigger_pad(&self.config, self.page, note, &mut self.status);
         }
         if menu_stop {
             self.runtime.stop_pad(PadKey::new(self.page as u8, note));
-            self.status = format!("Stopped pad {}", PadKey::new(self.page as u8, note).to_key());
+            self.status = format!(
+                "Stopped pad {}",
+                PadKey::new(self.page as u8, note).to_key()
+            );
         }
         if menu_clear {
             self.clear_pad(note);
@@ -687,7 +718,11 @@ impl PadfireApp {
         // reviewed before the assignment is saved.
         let dropped_path = if response.hovered() {
             ui.ctx().input(|input| {
-                input.raw.dropped_files.first().map(|file| file.path().to_path_buf())
+                input
+                    .raw
+                    .dropped_files
+                    .first()
+                    .map(|file| file.path().to_path_buf())
             })
         } else {
             None
@@ -701,7 +736,11 @@ impl PadfireApp {
             assignment.action = "play".to_owned();
             assignment.file = file;
             if assignment.label.trim().is_empty() {
-                assignment.label = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_owned();
+                assignment.label = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or_default()
+                    .to_owned();
             }
             self.selected_note = Some(note);
             self.editor = assignment;
@@ -757,7 +796,8 @@ impl eframe::App for PadfireApp {
         // low-frequency poll instead of leaving those commands stranded.
         context.request_repaint_after(std::time::Duration::from_millis(200));
 
-        self.runtime.poll(&mut self.config, &mut self.page, &mut self.status);
+        self.runtime
+            .poll(&mut self.config, &mut self.page, &mut self.status);
         let signals = self.runtime.take_signals();
         if signals.show_requested {
             context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -791,9 +831,11 @@ impl eframe::App for PadfireApp {
             self.draw_grid(ui);
             ui.add_space(7.0);
             ui.label(
-                RichText::new("Click an assigned pad to play. Right-click an empty or assigned pad to edit.")
-                    .size(10.0)
-                    .color(Color32::from_rgb(143, 150, 161)),
+                RichText::new(
+                    "Click an assigned pad to play. Right-click an empty or assigned pad to edit.",
+                )
+                .size(10.0)
+                .color(Color32::from_rgb(143, 150, 161)),
             );
         });
 
@@ -843,7 +885,9 @@ fn action_description(action: &str) -> &str {
     match action {
         "stop_sfx" => "Stop all current audio playback. Script pads are not affected.",
         "stop_all" => "Stop audio playback and terminate all Padfire-managed script processes.",
-        "crosshair_toggle" => "Run crosshair --toggle using a direct process launch, without a shell.",
+        "crosshair_toggle" => {
+            "Run crosshair --toggle using a direct process launch, without a shell."
+        }
         _ => "",
     }
 }

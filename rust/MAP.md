@@ -1,34 +1,33 @@
 # Rust migration map
 
-Legend: not started, in progress, implemented, verified, blocked.
+Status key: **implemented** = code exists; **verified** = automated tests or smoke evidence pass; **manual** = requires physical/device acceptance; **not started** = no implementation yet.
 
-| Unit | State | Owner crate/module | Gate |
+| Area | Current state | Implementation / evidence | Remaining gate |
 |---|---|---|---|
-| Config v5 model and migration | implemented | padfire-core::config | Rust fixture tests pass; compare real legacy fixture data without exposing its contents |
-| MIDI packet decoder and Mini profile safety | implemented | padfire-core::midi | deterministic protocol tests pass |
-| App state and pad action dispatcher | not started | padfire-core::actions | behavior/race parity tests |
-| Secure config store and backup | not started | padfire-platform::config_store | symlink/hardlink/ACL/atomic replacement tests |
-| Local IPC and CLI compatibility | not started | padfire-platform::ipc, padfire | golden JSON plus Unix socket/named pipe integration |
-| MIDI backend and reconnect supervisor | not started | padfire-platform::midi | mock state machine, both OS builds and physical MK1/MK2 |
-| Audio decode/mixer/routing | not started | padfire-platform::audio | fake backend plus PipeWire/WASAPI integration |
-| VU capture | not started | padfire-platform::meter | PCM/RMS and idle lifecycle tests |
-| Process supervision/script actions | not started | padfire-platform::process | shell-free Crosshair plus script process-tree tests |
-| Loudness analyzer | not started | padfire-platform::loudness | compare against FFmpeg reference fixtures |
-| Native UI shell and visual design | not started | padfire-ui | headless layout tests plus visual acceptance |
-| Pad editor/settings | not started | padfire-ui | preserve editor fields and compact layouts |
-| Tray, window controls and keyboard | not started | padfire-ui::integration | KDE/Windows visible acceptance |
-| Linux packaging | not started | packaging/linux | clean Nobara install/upgrade/rollback |
-| Windows packaging | not started | packaging/windows | clean Windows 11 install/upgrade/uninstall |
-| CI, security and release pipeline | not started | .github/workflows | Linux + Windows matrix, fmt/clippy/tests, CodeQL and audit |
+| v5 configuration model and migration | verified | `padfire-core::config`; compatibility fixtures cover v1-v5, unknown-field preservation, malformed normalization and released defaults | Compare additional real-world v2.4.0 config fixtures on both OSs |
+| Secure configuration storage | implemented, Linux-tested | `padfire-platform::config_store`; atomic replacement, backups, size limits, symlink/hardlink checks and Unix ownership/mode checks | Windows ACL/reparse-point review and native tests; crash/power-loss test |
+| App state and pad action dispatch | verified | `padfire-core::actions` and `runtime`; generation-safe stop/retrigger and per-pad routing tests | Full legacy behavior matrix comparison |
+| CLI and single-instance IPC | Linux verified; Windows implemented, unverified | fixed command protocol, bounded framing, Unix owner-only socket, Windows named pipe with first-instance and remote-client rejection | Windows CI compile/test; compare CLI JSON and command behavior with v2.4.0 |
+| MIDI protocol and Launchpad Mini profile | decoder verified; backend implemented | `padfire-core::midi`, `padfire-platform::midi`; MK3 excluded, pair selection avoids guessing, reconnect supervisor and LED protocol | Physical MK1/MK2 input, LED, unplug/replug and reconnect on Nobara and Windows |
+| Audio decoding, playback and routing | implemented; automated logic tested | `padfire-platform::audio_engine`; decode/play/loop/retrigger, per-pad/global output, monitor stream and cancellation | Physical PipeWire and WASAPI tests, simultaneous playback, device removal and audio-server restart |
+| VU / output meter | not started | No meter/capture module exists yet | Design low-overhead per-output RMS/peak capture with explicit device lifecycle |
+| Script process supervision | implemented; Linux-tested | `padfire-platform::process_manager`; bounded output, generation cancellation, process-group/tree termination and Crosshair resolver | Windows process-tree tests; verify no orphan descendants on both OSs |
+| Loudness analyzer | not started | No analyzer module or reference fixtures yet | Decide whether this remains in v3 scope; if retained, compare against FFmpeg reference output |
+| Native UI shell | implemented; basic Linux smoke | eframe/egui shell in `apps/padfire/src/main.rs`; pad grid, page selection, editor and settings surfaces | Visual/keyboard/focus/resize acceptance on KDE Wayland and Windows 11 |
+| Tray and window integration | not started | No tray controller or hide-to-tray behavior wired | Implement menu/actions and verify native event-loop integration on both OSs |
+| Install / update / uninstall | not started | `--install` explicitly reports unavailable | Side-by-side install, shortcuts, clean uninstall, no autostart, rollback and signed Windows packaging |
+| CI | implemented; currently failing format gate | `.github/workflows/rust.yml` runs Ubuntu and Windows stable toolchains, fmt, tests, Clippy and release builds | Formatting is now applied locally; push and verify all matrix jobs pass |
+| Security / supply-chain gates | not started | Locked dependencies and bounded input handling exist | cargo-deny/license audit, dependency review, CodeQL/SAST and release provenance |
+| Dual-machine acceptance / release | not started | Cutover and rollback checklist in `CUTOVER.md` | Real-device acceptance on Nobara and Windows, artifacts/checksums and rollback rehearsal |
 
 ## Dependency order
 
-1. Shared domain and config compatibility.
-2. Filesystem/security and process lifecycle.
-3. IPC/CLI and MIDI lifecycle.
-4. Audio backend and VU.
-5. UI, tray and native desktop integration.
-6. Packaging, CI, dual-machine acceptance and v3.0 release.
+1. Stabilize shared domain/config behavior and keep the released v2.4.0 app as the reference.
+2. Complete platform storage, IPC and process lifecycle on both OSs.
+3. Verify MIDI discovery/reconnect and hardware protocol on actual Mini MK1/MK2 devices.
+4. Verify audio decoding, mixing, routing, monitor and stop races on PipeWire and WASAPI.
+5. Complete the tray/window experience, meter and remaining UI parity.
+6. Add installer/updater/uninstaller, security gates and signed release artifacts.
+7. Perform dual-machine acceptance and only then cut over the default launcher.
 
-Parallel work is safe only after the core types/events have stabilized. Audio
-and GUI must not invent separate action/config models.
+Parallel work is safe only where the shared core contracts are stable. Do not let UI, audio and MIDI invent independent config or action models.

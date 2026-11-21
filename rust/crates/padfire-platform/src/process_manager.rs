@@ -5,8 +5,8 @@
 //! token, a hard deadline and bounded output capture. Crosshair is different:
 //! it is always invoked directly with the --toggle argument, never through a shell.
 
-use padfire_core::runtime::{GenerationTracker, OperationToken};
 use padfire_core::PadKey;
+use padfire_core::runtime::{GenerationTracker, OperationToken};
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -31,19 +31,49 @@ pub enum ProcessKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessEvent {
-    Started { pad: Option<PadKey>, kind: ProcessKind },
-    Output { pad: Option<PadKey>, kind: ProcessKind, line: String },
-    Exited { pad: Option<PadKey>, kind: ProcessKind, code: Option<i32> },
-    TimedOut { pad: Option<PadKey>, kind: ProcessKind },
-    Stopped { pad: Option<PadKey>, kind: ProcessKind },
-    Failed { pad: Option<PadKey>, kind: ProcessKind, message: String },
+    Started {
+        pad: Option<PadKey>,
+        kind: ProcessKind,
+    },
+    Output {
+        pad: Option<PadKey>,
+        kind: ProcessKind,
+        line: String,
+    },
+    Exited {
+        pad: Option<PadKey>,
+        kind: ProcessKind,
+        code: Option<i32>,
+    },
+    TimedOut {
+        pad: Option<PadKey>,
+        kind: ProcessKind,
+    },
+    Stopped {
+        pad: Option<PadKey>,
+        kind: ProcessKind,
+    },
+    Failed {
+        pad: Option<PadKey>,
+        kind: ProcessKind,
+        message: String,
+    },
 }
 
 enum ProcessCommand {
-    StartScript { token: OperationToken, pad: PadKey, command: String, test_run: bool },
-    StopScript { pad: PadKey },
+    StartScript {
+        token: OperationToken,
+        pad: PadKey,
+        command: String,
+        test_run: bool,
+    },
+    StopScript {
+        pad: PadKey,
+    },
     StopAllScripts,
-    ToggleCrosshair { pad: PadKey },
+    ToggleCrosshair {
+        pad: PadKey,
+    },
     Shutdown,
 }
 
@@ -62,7 +92,10 @@ impl ProcessEngine {
             .name("padfire-process".to_owned())
             .spawn(move || ProcessActor::new(generations, events).run(receiver))
             .map_err(|error| format!("could not start process supervisor: {error}"))?;
-        Ok(Self { sender, worker: Some(worker) })
+        Ok(Self {
+            sender,
+            worker: Some(worker),
+        })
     }
 
     fn enqueue(&self, command: ProcessCommand) -> Result<(), String> {
@@ -80,7 +113,10 @@ impl ProcessEngine {
         test_run: bool,
     ) -> Result<(), String> {
         self.enqueue(ProcessCommand::StartScript {
-            token, pad, command: command.into(), test_run,
+            token,
+            pad,
+            command: command.into(),
+            test_run,
         })
     }
 
@@ -128,7 +164,12 @@ struct ProcessActor {
 
 impl ProcessActor {
     fn new(generations: Arc<Mutex<GenerationTracker>>, events: Sender<ProcessEvent>) -> Self {
-        Self { generations, events, active: HashMap::new(), next_id: 0 }
+        Self {
+            generations,
+            events,
+            active: HashMap::new(),
+            next_id: 0,
+        }
     }
 
     fn run(mut self, receiver: Receiver<ProcessCommand>) {
@@ -139,7 +180,12 @@ impl ProcessActor {
                 receiver.recv_timeout(POLL_INTERVAL)
             };
             match message {
-                Ok(ProcessCommand::StartScript { token, pad, command, test_run }) => {
+                Ok(ProcessCommand::StartScript {
+                    token,
+                    pad,
+                    command,
+                    test_run,
+                }) => {
                     self.start_script(token, pad, command, test_run);
                 }
                 Ok(ProcessCommand::StopScript { pad }) => self.stop_script(pad),
@@ -153,7 +199,8 @@ impl ProcessActor {
     }
 
     fn token_is_current(&self, token: &OperationToken) -> bool {
-        self.generations.lock()
+        self.generations
+            .lock()
             .map(|tracker| tracker.is_current(token))
             .unwrap_or(false)
     }
@@ -189,12 +236,16 @@ impl ProcessActor {
         let mut command = {
             use std::os::windows::process::CommandExt;
             let mut command = Command::new("cmd.exe");
-            command.args(["/D", "/S", "/C", command_line])
+            command
+                .args(["/D", "/S", "/C", command_line])
                 .creation_flags(0x0000_0200);
             command
         };
 
-        command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         #[cfg(windows)]
         let job = match winjob::JobGuard::new() {
@@ -208,7 +259,11 @@ impl ProcessActor {
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                self.fail(Some(pad), ProcessKind::Script, format!("could not start script: {error}"));
+                self.fail(
+                    Some(pad),
+                    ProcessKind::Script,
+                    format!("could not start script: {error}"),
+                );
                 return;
             }
         };
@@ -229,15 +284,30 @@ impl ProcessActor {
             return;
         }
 
-        let kind = if test_run { ProcessKind::ScriptTest } else { ProcessKind::Script };
-        let deadline = Instant::now() + if test_run { TEST_TIMEOUT } else { SCRIPT_TIMEOUT };
+        let kind = if test_run {
+            ProcessKind::ScriptTest
+        } else {
+            ProcessKind::Script
+        };
+        let deadline = Instant::now()
+            + if test_run {
+                TEST_TIMEOUT
+            } else {
+                SCRIPT_TIMEOUT
+            };
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        self.active.insert(key, ManagedProcess {
-            pad: Some(pad), kind, child, deadline,
-            #[cfg(windows)]
-            job,
-        });
+        self.active.insert(
+            key,
+            ManagedProcess {
+                pad: Some(pad),
+                kind,
+                child,
+                deadline,
+                #[cfg(windows)]
+                job,
+            },
+        );
 
         if let Some(stdout) = stdout {
             spawn_output_reader(stdout, Some(pad), kind, self.events.clone());
@@ -245,21 +315,30 @@ impl ProcessActor {
         if let Some(stderr) = stderr {
             spawn_output_reader(stderr, Some(pad), kind, self.events.clone());
         }
-        let _ = self.events.send(ProcessEvent::Started { pad: Some(pad), kind });
+        let _ = self.events.send(ProcessEvent::Started {
+            pad: Some(pad),
+            kind,
+        });
     }
 
     fn toggle_crosshair(&mut self, pad: PadKey) {
         let Some(executable) = resolve_crosshair_executable() else {
-            self.fail(Some(pad), ProcessKind::Crosshair,
-                "Crosshair CLI was not found on PATH or in its user-local install path");
+            self.fail(
+                Some(pad),
+                ProcessKind::Crosshair,
+                "Crosshair CLI was not found on PATH or in its user-local install path",
+            );
             return;
         };
 
         let key = format!("crosshair:{}:{}", pad.to_key(), self.next_id);
         self.next_id = self.next_id.saturating_add(1);
         let mut command = Command::new(&executable);
-        command.arg("--toggle").stdin(Stdio::null())
-            .stdout(Stdio::piped()).stderr(Stdio::piped());
+        command
+            .arg("--toggle")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         #[cfg(unix)]
         {
@@ -284,8 +363,11 @@ impl ProcessActor {
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                self.fail(Some(pad), ProcessKind::Crosshair,
-                    format!("could not start {}: {error}", executable.display()));
+                self.fail(
+                    Some(pad),
+                    ProcessKind::Crosshair,
+                    format!("could not start {}: {error}", executable.display()),
+                );
                 return;
             }
         };
@@ -300,20 +382,36 @@ impl ProcessActor {
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        self.active.insert(key, ManagedProcess {
-            pad: Some(pad), kind: ProcessKind::Crosshair, child,
-            deadline: Instant::now() + CROSSHAIR_TIMEOUT,
-            #[cfg(windows)]
-            job,
-        });
+        self.active.insert(
+            key,
+            ManagedProcess {
+                pad: Some(pad),
+                kind: ProcessKind::Crosshair,
+                child,
+                deadline: Instant::now() + CROSSHAIR_TIMEOUT,
+                #[cfg(windows)]
+                job,
+            },
+        );
         if let Some(stdout) = stdout {
-            spawn_output_reader(stdout, Some(pad), ProcessKind::Crosshair, self.events.clone());
+            spawn_output_reader(
+                stdout,
+                Some(pad),
+                ProcessKind::Crosshair,
+                self.events.clone(),
+            );
         }
         if let Some(stderr) = stderr {
-            spawn_output_reader(stderr, Some(pad), ProcessKind::Crosshair, self.events.clone());
+            spawn_output_reader(
+                stderr,
+                Some(pad),
+                ProcessKind::Crosshair,
+                self.events.clone(),
+            );
         }
         let _ = self.events.send(ProcessEvent::Started {
-            pad: Some(pad), kind: ProcessKind::Crosshair,
+            pad: Some(pad),
+            kind: ProcessKind::Crosshair,
         });
     }
 
@@ -322,15 +420,24 @@ impl ProcessActor {
     }
 
     fn stop_all_scripts(&mut self) {
-        let keys: Vec<String> = self.active.iter()
-            .filter(|(_, process)| matches!(process.kind, ProcessKind::Script | ProcessKind::ScriptTest))
-            .map(|(key, _)| key.clone()).collect();
-        for key in keys { self.terminate_by_key(&key); }
+        let keys: Vec<String> = self
+            .active
+            .iter()
+            .filter(|(_, process)| {
+                matches!(process.kind, ProcessKind::Script | ProcessKind::ScriptTest)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in keys {
+            self.terminate_by_key(&key);
+        }
     }
 
     fn stop_all(&mut self) {
         let keys: Vec<String> = self.active.keys().cloned().collect();
-        for key in keys { self.terminate_by_key(&key); }
+        for key in keys {
+            self.terminate_by_key(&key);
+        }
     }
 
     fn terminate_by_key(&mut self, key: &str) {
@@ -345,7 +452,9 @@ impl ProcessActor {
     fn poll_children(&mut self) {
         let keys: Vec<String> = self.active.keys().cloned().collect();
         for key in keys {
-            let Some(process) = self.active.get_mut(&key) else { continue };
+            let Some(process) = self.active.get_mut(&key) else {
+                continue;
+            };
 
             if Instant::now() >= process.deadline {
                 if let Some(mut process) = self.active.remove(&key) {
@@ -364,7 +473,9 @@ impl ProcessActor {
                         let kind = process.kind;
                         terminate_managed(&mut process);
                         let _ = self.events.send(ProcessEvent::Exited {
-                            pad, kind, code: status.code(),
+                            pad,
+                            kind,
+                            code: status.code(),
                         });
                     }
                 }
@@ -374,7 +485,11 @@ impl ProcessActor {
                         let pad = process.pad;
                         let kind = process.kind;
                         terminate_managed(&mut process);
-                        self.fail(pad, kind, format!("could not query child process state: {error}"));
+                        self.fail(
+                            pad,
+                            kind,
+                            format!("could not query child process state: {error}"),
+                        );
                     }
                 }
             }
@@ -382,7 +497,11 @@ impl ProcessActor {
     }
 
     fn fail(&self, pad: Option<PadKey>, kind: ProcessKind, message: impl Into<String>) {
-        let _ = self.events.send(ProcessEvent::Failed { pad, kind, message: message.into() });
+        let _ = self.events.send(ProcessEvent::Failed {
+            pad,
+            kind,
+            message: message.into(),
+        });
     }
 }
 
@@ -438,38 +557,54 @@ fn spawn_output_reader<R>(
     pad: Option<PadKey>,
     kind: ProcessKind,
     events: Sender<ProcessEvent>,
-) where R: std::io::Read + Send + 'static {
-    let _ = thread::Builder::new().name("padfire-script-output".to_owned()).spawn(move || {
-        let mut reader = BufReader::new(reader);
-        let mut buffer = Vec::with_capacity(MAX_OUTPUT_LINE_CHARS);
-        for index in 0.. {
-            let line = match read_bounded_line(&mut reader, &mut buffer, MAX_OUTPUT_LINE_CHARS) {
-                Ok(Some(line)) => line,
-                Ok(None) | Err(_) => break,
-            };
-            if index >= MAX_OUTPUT_LINES {
-                continue; // keep draining the pipe without retaining more output
+) where
+    R: std::io::Read + Send + 'static,
+{
+    let _ = thread::Builder::new()
+        .name("padfire-script-output".to_owned())
+        .spawn(move || {
+            let mut reader = BufReader::new(reader);
+            let mut buffer = Vec::with_capacity(MAX_OUTPUT_LINE_CHARS);
+            for index in 0.. {
+                let line = match read_bounded_line(&mut reader, &mut buffer, MAX_OUTPUT_LINE_CHARS)
+                {
+                    Ok(Some(line)) => line,
+                    Ok(None) | Err(_) => break,
+                };
+                if index >= MAX_OUTPUT_LINES {
+                    continue; // keep draining the pipe without retaining more output
+                }
+                let _ = events.send(ProcessEvent::Output { pad, kind, line });
             }
-            let _ = events.send(ProcessEvent::Output { pad, kind, line });
-        }
-    });
+        });
 }
 
 pub fn resolve_crosshair_executable() -> Option<std::path::PathBuf> {
-    let name = if cfg!(windows) { "crosshair.exe" } else { "crosshair" };
-    if let Some(path) = find_on_path(name) { return Some(path); }
+    let name = if cfg!(windows) {
+        "crosshair.exe"
+    } else {
+        "crosshair"
+    };
+    if let Some(path) = find_on_path(name) {
+        return Some(path);
+    }
 
     #[cfg(unix)]
     if let Some(home) = std::env::var_os("HOME") {
         let candidate = std::path::PathBuf::from(home).join(".local/bin").join(name);
-        if is_executable_file(&candidate) { return Some(candidate); }
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
     }
 
     #[cfg(windows)]
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         let candidate = std::path::PathBuf::from(local)
-            .join("Programs/Crosshair").join(name);
-        if candidate.is_file() { return Some(candidate); }
+            .join("Programs/Crosshair")
+            .join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
     }
     None
 }
@@ -481,15 +616,20 @@ fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
 }
 
 fn is_executable_file(path: &std::path::Path) -> bool {
-    if !path.is_file() { return false; }
+    if !path.is_file() {
+        return false;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path).ok()
+        std::fs::metadata(path)
+            .ok()
             .is_some_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
     }
     #[cfg(windows)]
-    { true }
+    {
+        true
+    }
 }
 
 fn terminate_managed(process: &mut ManagedProcess) {
@@ -505,11 +645,13 @@ fn process_group_id(child_id: u32) -> Option<i32> {
 }
 
 #[cfg(not(unix))]
-fn process_group_id(_child_id: u32) -> Option<i32> { None }
+fn process_group_id(_child_id: u32) -> Option<i32> {
+    None
+}
 
 #[cfg(unix)]
 fn terminate_child(child: &mut Child, group: Option<i32>) {
-    use nix::sys::signal::{killpg, Signal};
+    use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
 
     if let Some(group) = group {
@@ -519,7 +661,9 @@ fn terminate_child(child: &mut Child, group: Option<i32>) {
     }
     let until = Instant::now() + Duration::from_millis(300);
     while Instant::now() < until {
-        if child.try_wait().ok().flatten().is_some() { break; }
+        if child.try_wait().ok().flatten().is_some() {
+            break;
+        }
         thread::sleep(Duration::from_millis(10));
     }
     if let Some(group) = group {
@@ -545,18 +689,22 @@ mod winjob {
     use std::process::Child;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject, TerminateJobObject,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JobObjectExtendedLimitInformation,
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject,
     };
 
-    pub struct JobGuard { handle: HANDLE }
+    pub struct JobGuard {
+        handle: HANDLE,
+    }
 
     impl JobGuard {
         pub fn new() -> Result<Self, String> {
             // SAFETY: Null attributes/name request a new unnamed job. Handle is checked below.
             let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-            if handle.is_null() { return Err(std::io::Error::last_os_error().to_string()); }
+            if handle.is_null() {
+                return Err(std::io::Error::last_os_error().to_string());
+            }
 
             // SAFETY: The job information structure is a POD type with a valid all-zero state.
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
@@ -582,9 +730,8 @@ mod winjob {
 
         pub fn assign(&self, child: &Child) -> Result<(), String> {
             // SAFETY: Child holds a live process handle for the duration of this call.
-            let result = unsafe {
-                AssignProcessToJobObject(self.handle, child.as_raw_handle() as HANDLE)
-            };
+            let result =
+                unsafe { AssignProcessToJobObject(self.handle, child.as_raw_handle() as HANDLE) };
             if result == 0 {
                 Err(std::io::Error::last_os_error().to_string())
             } else {
@@ -628,20 +775,42 @@ mod tests {
         let data = format!("{}\nnext\n", "x".repeat(100_000));
         let mut reader = std::io::Cursor::new(data.into_bytes());
         let mut buffer = Vec::new();
-        let first = read_bounded_line(&mut reader, &mut buffer, 32).unwrap().unwrap();
+        let first = read_bounded_line(&mut reader, &mut buffer, 32)
+            .unwrap()
+            .unwrap();
         assert_eq!(first, "x".repeat(32));
-        let second = read_bounded_line(&mut reader, &mut buffer, 32).unwrap().unwrap();
+        let second = read_bounded_line(&mut reader, &mut buffer, 32)
+            .unwrap()
+            .unwrap();
         assert_eq!(second, "next");
-        assert!(read_bounded_line(&mut reader, &mut buffer, 32).unwrap().is_none());
+        assert!(
+            read_bounded_line(&mut reader, &mut buffer, 32)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn bounded_line_reader_handles_crlf_and_unterminated_eof() {
         let mut reader = std::io::Cursor::new(b"one\r\ntwo".to_vec());
         let mut buffer = Vec::new();
-        assert_eq!(read_bounded_line(&mut reader, &mut buffer, 8).unwrap().as_deref(), Some("one"));
-        assert_eq!(read_bounded_line(&mut reader, &mut buffer, 8).unwrap().as_deref(), Some("two"));
-        assert!(read_bounded_line(&mut reader, &mut buffer, 8).unwrap().is_none());
+        assert_eq!(
+            read_bounded_line(&mut reader, &mut buffer, 8)
+                .unwrap()
+                .as_deref(),
+            Some("one")
+        );
+        assert_eq!(
+            read_bounded_line(&mut reader, &mut buffer, 8)
+                .unwrap()
+                .as_deref(),
+            Some("two")
+        );
+        assert!(
+            read_bounded_line(&mut reader, &mut buffer, 8)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[cfg(unix)]
@@ -652,13 +821,20 @@ mod tests {
 
         let pad = PadKey { page: 0, note: 17 };
         let generations = Arc::new(Mutex::new(GenerationTracker::default()));
-        let token = generations.lock().unwrap().begin(OperationKey::new(
-            OperationKind::Script,
-            pad.to_key(),
-        ));
+        let token = generations
+            .lock()
+            .unwrap()
+            .begin(OperationKey::new(OperationKind::Script, pad.to_key()));
         let (events_tx, events_rx) = channel();
         let mut engine = ProcessEngine::spawn(generations, events_tx).unwrap();
-        engine.start_script(token, pad, "printf 'padfire-process-test\\n'; sleep 30", true).unwrap();
+        engine
+            .start_script(
+                token,
+                pad,
+                "printf 'padfire-process-test\\n'; sleep 30",
+                true,
+            )
+            .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(3);
         let mut saw_started = false;
@@ -666,8 +842,13 @@ mod tests {
         while Instant::now() < deadline && !(saw_started && saw_output) {
             if let Ok(event) = events_rx.recv_timeout(Duration::from_millis(250)) {
                 match event {
-                    ProcessEvent::Started { kind: ProcessKind::ScriptTest, .. } => saw_started = true,
-                    ProcessEvent::Output { line, .. } if line == "padfire-process-test" => saw_output = true,
+                    ProcessEvent::Started {
+                        kind: ProcessKind::ScriptTest,
+                        ..
+                    } => saw_started = true,
+                    ProcessEvent::Output { line, .. } if line == "padfire-process-test" => {
+                        saw_output = true
+                    }
                     other => panic!("unexpected process event: {other:?}"),
                 }
             }
@@ -677,7 +858,13 @@ mod tests {
 
         engine.stop_script(pad).unwrap();
         let stopped = events_rx.recv_timeout(Duration::from_secs(3)).unwrap();
-        assert_eq!(stopped, ProcessEvent::Stopped { pad: Some(pad), kind: ProcessKind::ScriptTest });
+        assert_eq!(
+            stopped,
+            ProcessEvent::Stopped {
+                pad: Some(pad),
+                kind: ProcessKind::ScriptTest
+            }
+        );
         engine.shutdown();
     }
 
@@ -694,7 +881,9 @@ mod tests {
         generations.lock().unwrap().cancel(key);
         let (events_tx, events_rx) = channel();
         let mut engine = ProcessEngine::spawn(generations, events_tx).unwrap();
-        engine.start_script(token, pad, "touch /tmp/padfire-should-not-run", true).unwrap();
+        engine
+            .start_script(token, pad, "touch /tmp/padfire-should-not-run", true)
+            .unwrap();
         assert!(events_rx.recv_timeout(Duration::from_millis(350)).is_err());
         engine.shutdown();
         assert!(!std::path::Path::new("/tmp/padfire-should-not-run").exists());

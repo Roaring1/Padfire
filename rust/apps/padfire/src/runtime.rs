@@ -2,10 +2,9 @@
 
 use padfire_core::ipc::{IpcCommand, PlayingInfo, RunningStatus, StatusResponse};
 use padfire_core::{
-    plan_pad_press, AppConfig, PadAction, PadActivity, PadAssignment, PadKey,
-    ActionEffect, Control, GenerationTracker, MidiEvent, OperationKey, OperationKind,
-    LED_AMBER, LED_DIM, LED_GREEN, LED_OFF,
-    LED_ORANGE, LED_PG_HAS, LED_RED, PAGE_COUNT,
+    ActionEffect, AppConfig, Control, GenerationTracker, LED_AMBER, LED_DIM, LED_GREEN, LED_OFF,
+    LED_ORANGE, LED_PG_HAS, LED_RED, MidiEvent, OperationKey, OperationKind, PAGE_COUNT, PadAction,
+    PadActivity, PadAssignment, PadKey, plan_pad_press,
 };
 use padfire_platform::audio_engine::{AudioEngine, AudioEvent, PlaybackRequest};
 use padfire_platform::config_store::{ConfigStore, LoadState};
@@ -93,8 +92,11 @@ impl AppRuntime {
         let ipc = match IpcServer::spawn(ipc_path, move |command| match command {
             IpcCommand::Status => ipc_snapshot
                 .lock()
-                .map(|status| StatusResponse::running(status.clone()).to_json()
-                    .unwrap_or_else(|_| "{}".to_owned()))
+                .map(|status| {
+                    StatusResponse::running(status.clone())
+                        .to_json()
+                        .unwrap_or_else(|_| "{}".to_owned())
+                })
                 .unwrap_or_else(|_| "{}".to_owned()),
             IpcCommand::StopAll => {
                 let _ = ipc_commands.send(AppCommand::StopAll);
@@ -176,12 +178,7 @@ impl AppRuntime {
         self.store.save(config).map_err(|error| error.to_string())
     }
 
-    pub fn poll(
-        &mut self,
-        config: &mut AppConfig,
-        page: &mut usize,
-        status: &mut String,
-    ) {
+    pub fn poll(&mut self, config: &mut AppConfig, page: &mut usize, status: &mut String) {
         self.poll_commands(config, status);
         self.poll_midi(config, page, status);
         self.poll_audio(status);
@@ -203,9 +200,15 @@ impl AppRuntime {
                     let loaded = self.store.load();
                     *config = loaded.config;
                     *status = loaded.warning.unwrap_or_else(|| match loaded.state {
-                        LoadState::Loaded | LoadState::ImportedLegacy => "Configuration reloaded".to_owned(),
-                        LoadState::CreatedDefault => "Created a new default configuration".to_owned(),
-                        LoadState::DefaultAfterError => "Configuration could not be loaded safely".to_owned(),
+                        LoadState::Loaded | LoadState::ImportedLegacy => {
+                            "Configuration reloaded".to_owned()
+                        }
+                        LoadState::CreatedDefault => {
+                            "Created a new default configuration".to_owned()
+                        }
+                        LoadState::DefaultAfterError => {
+                            "Configuration could not be loaded safely".to_owned()
+                        }
                     });
                     self.last_pad_leds.clear();
                     self.last_page_leds = [u8::MAX; PAGE_COUNT];
@@ -279,7 +282,10 @@ impl AppRuntime {
                     self.playing_audio.remove(&pad);
                     self.last_pad_leds.remove(&pad.note);
                 }
-                Ok(AudioEvent::RouteFallback { requested, selected }) => {
+                Ok(AudioEvent::RouteFallback {
+                    requested,
+                    selected,
+                }) => {
                     *status = format!("Output '{requested}' unavailable - using '{selected}'");
                 }
                 Ok(AudioEvent::DeviceUnavailable { requested }) => {
@@ -302,14 +308,21 @@ impl AppRuntime {
     fn poll_processes(&mut self, status: &mut String) {
         loop {
             match self.process_events.try_recv() {
-                Ok(ProcessEvent::Started { pad: Some(pad), kind }) => {
+                Ok(ProcessEvent::Started {
+                    pad: Some(pad),
+                    kind,
+                }) => {
                     if matches!(kind, ProcessKind::Script | ProcessKind::ScriptTest) {
                         self.running_scripts.insert(pad);
                     }
                     *status = format!("{} started on {}", process_kind_label(kind), pad.to_key());
                     self.last_pad_leds.remove(&pad.note);
                 }
-                Ok(ProcessEvent::Output { pad: Some(pad), kind, line }) => {
+                Ok(ProcessEvent::Output {
+                    pad: Some(pad),
+                    kind,
+                    line,
+                }) => {
                     *status = format!("{} {}: {}", process_kind_label(kind), pad.to_key(), line);
                 }
                 Ok(ProcessEvent::Exited { pad, kind, code }) => {
@@ -318,7 +331,11 @@ impl AppRuntime {
                             self.running_scripts.remove(&pad);
                         }
                         self.last_pad_leds.remove(&pad.note);
-                        *status = format!("{} exited ({})", process_kind_label(kind), code.unwrap_or(-1));
+                        *status = format!(
+                            "{} exited ({})",
+                            process_kind_label(kind),
+                            code.unwrap_or(-1)
+                        );
                     }
                 }
                 Ok(ProcessEvent::Stopped { pad, kind }) => {
@@ -334,14 +351,19 @@ impl AppRuntime {
                     if let Some(pad) = pad {
                         self.running_scripts.remove(&pad);
                         self.last_pad_leds.remove(&pad.note);
-                        *status = format!("{} timed out on {}", process_kind_label(kind), pad.to_key());
+                        *status =
+                            format!("{} timed out on {}", process_kind_label(kind), pad.to_key());
                     }
                 }
                 Ok(ProcessEvent::Failed { pad, kind, message }) => {
                     if let Some(pad) = pad {
                         self.running_scripts.remove(&pad);
                         self.last_pad_leds.remove(&pad.note);
-                        *status = format!("{} failed on {}: {message}", process_kind_label(kind), pad.to_key());
+                        *status = format!(
+                            "{} failed on {}: {message}",
+                            process_kind_label(kind),
+                            pad.to_key()
+                        );
                     } else {
                         *status = format!("{} failed: {message}", process_kind_label(kind));
                     }
@@ -352,13 +374,7 @@ impl AppRuntime {
         }
     }
 
-    pub fn trigger_pad(
-        &mut self,
-        config: &AppConfig,
-        page: usize,
-        note: u8,
-        status: &mut String,
-    ) {
+    pub fn trigger_pad(&mut self, config: &AppConfig, page: usize, note: u8, status: &mut String) {
         let Some(pad) = config
             .pages
             .get(page)
@@ -388,10 +404,22 @@ impl AppRuntime {
         for effect in effects {
             match effect {
                 ActionEffect::StartPlayback {
-                    token, pad, file, sink, volume_percent, looping, monitor_sink,
+                    token,
+                    pad,
+                    file,
+                    sink,
+                    volume_percent,
+                    looping,
+                    monitor_sink,
                 } => {
                     let request = PlaybackRequest {
-                        token, pad, file, sink, volume_percent, looping, monitor_sink,
+                        token,
+                        pad,
+                        file,
+                        sink,
+                        volume_percent,
+                        looping,
+                        monitor_sink,
                     };
                     if let Err(error) = self.audio.play(request) {
                         *status = format!("Could not queue playback: {error}");
@@ -413,7 +441,11 @@ impl AppRuntime {
                         *status = "All sound playback stopped".to_owned();
                     }
                 }
-                ActionEffect::StartScript { token, pad, command } => {
+                ActionEffect::StartScript {
+                    token,
+                    pad,
+                    command,
+                } => {
                     if let Err(error) = self.processes.start_script(token, pad, command, false) {
                         *status = format!("Could not queue script: {error}");
                     } else {
@@ -455,9 +487,16 @@ impl AppRuntime {
         }
     }
 
-    pub fn test_script(&mut self, page: usize, note: u8, command: impl Into<String>) -> Result<(), String> {
+    pub fn test_script(
+        &mut self,
+        page: usize,
+        note: u8,
+        command: impl Into<String>,
+    ) -> Result<(), String> {
         let pad = PadKey::new(page as u8, note);
-        let token = self.generations.lock()
+        let token = self
+            .generations
+            .lock()
             .map_err(|_| "script generation tracker is unavailable".to_owned())?
             .begin(OperationKey::new(OperationKind::Script, pad.to_key()));
         self.processes.start_script(token, pad, command, true)
@@ -510,7 +549,11 @@ impl AppRuntime {
         for page_index in 0..PAGE_COUNT {
             let velocity = if page_index == page {
                 LED_AMBER
-            } else if config.pages.get(page_index).is_some_and(|pads| !pads.is_empty()) {
+            } else if config
+                .pages
+                .get(page_index)
+                .is_some_and(|pads| !pads.is_empty())
+            {
                 LED_PG_HAS
             } else {
                 LED_OFF
@@ -534,7 +577,11 @@ impl AppRuntime {
             .map(|pad| self.pad_led_velocity(pad, PadKey::new(page as u8, note)))
             .unwrap_or(LED_OFF);
         if self.last_pad_leds.get(&note).copied() != Some(velocity) {
-            if self.midi.set_led(Control::from_note(note).unwrap(), velocity).is_ok() {
+            if self
+                .midi
+                .set_led(Control::from_note(note).unwrap(), velocity)
+                .is_ok()
+            {
                 self.last_pad_leds.insert(note, velocity);
             }
         }
@@ -551,49 +598,82 @@ impl AppRuntime {
         };
         match pad.action_kind() {
             PadAction::StopSfx | PadAction::StopAll | PadAction::StopKey => {
-                if configured != 0 { configured } else { LED_RED }
+                if configured != 0 {
+                    configured
+                } else {
+                    LED_RED
+                }
             }
             PadAction::CrosshairToggle => {
-                if configured != 0 { configured } else { LED_AMBER }
+                if configured != 0 {
+                    configured
+                } else {
+                    LED_AMBER
+                }
             }
             PadAction::Script => {
-                if self.running_scripts.contains(&key) { LED_GREEN }
-                else if configured != 0 { configured } else { LED_ORANGE }
+                if self.running_scripts.contains(&key) {
+                    LED_GREEN
+                } else if configured != 0 {
+                    configured
+                } else {
+                    LED_ORANGE
+                }
             }
             PadAction::Play => {
-                if self.playing_audio.contains(&key) { LED_GREEN }
-                else if configured != 0 { configured } else { LED_DIM }
+                if self.playing_audio.contains(&key) {
+                    LED_GREEN
+                } else if configured != 0 {
+                    configured
+                } else {
+                    LED_DIM
+                }
             }
             PadAction::Unsupported(_) => LED_RED,
         }
     }
 
     fn update_status_snapshot(&self, config: &AppConfig, page: usize) {
-        let playing_info: Vec<PlayingInfo> = self.playing_audio.iter().map(|key| {
-            let assignment = config.pages
-                .get(key.page as usize)
-                .and_then(|page| page.get(&key.note.to_string()));
-            let label = assignment.map(|pad| {
-                if !pad.label.trim().is_empty() {
-                    pad.label.trim().to_owned()
-                } else if !pad.file.trim().is_empty() {
-                    std::path::Path::new(&pad.file).file_stem()
-                        .and_then(|stem| stem.to_str()).unwrap_or(&pad.file).to_owned()
-                } else {
-                    key.to_key()
+        let playing_info: Vec<PlayingInfo> = self
+            .playing_audio
+            .iter()
+            .map(|key| {
+                let assignment = config
+                    .pages
+                    .get(key.page as usize)
+                    .and_then(|page| page.get(&key.note.to_string()));
+                let label = assignment
+                    .map(|pad| {
+                        if !pad.label.trim().is_empty() {
+                            pad.label.trim().to_owned()
+                        } else if !pad.file.trim().is_empty() {
+                            std::path::Path::new(&pad.file)
+                                .file_stem()
+                                .and_then(|stem| stem.to_str())
+                                .unwrap_or(&pad.file)
+                                .to_owned()
+                        } else {
+                            key.to_key()
+                        }
+                    })
+                    .unwrap_or_else(|| key.to_key());
+                let sink = assignment
+                    .map(|pad| {
+                        if pad.sink.trim().is_empty() {
+                            config.default_sink.clone()
+                        } else {
+                            pad.sink.clone()
+                        }
+                    })
+                    .unwrap_or_default();
+                PlayingInfo {
+                    key: key.to_key(),
+                    label,
+                    sink,
+                    page: key.page,
                 }
-            }).unwrap_or_else(|| key.to_key());
-            let sink = assignment.map(|pad| {
-                if pad.sink.trim().is_empty() { config.default_sink.clone() }
-                else { pad.sink.clone() }
-            }).unwrap_or_default();
-            PlayingInfo {
-                key: key.to_key(),
-                label,
-                sink,
-                page: key.page,
-            }
-        }).collect();
+            })
+            .collect();
 
         let mut playing: Vec<String> = self.playing_audio.iter().map(|key| key.to_key()).collect();
         playing.sort();

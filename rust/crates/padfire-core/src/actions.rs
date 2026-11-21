@@ -51,19 +51,10 @@ pub enum ActionEffect {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PadActivity {
     pub audio_playing: bool,
     pub script_running: bool,
-}
-
-impl Default for PadActivity {
-    fn default() -> Self {
-        Self {
-            audio_playing: false,
-            script_running: false,
-        }
-    }
 }
 
 fn operation_key(kind: OperationKind, pad: PadKey) -> OperationKey {
@@ -115,9 +106,7 @@ pub fn plan_pad_press(
             } else {
                 pad.sink.clone()
             };
-            let monitor_sink = config
-                .monitor_enabled
-                .then(|| config.monitor_sink.clone());
+            let monitor_sink = config.monitor_enabled.then(|| config.monitor_sink.clone());
             let token = tracker.begin(operation_key(OperationKind::Audio, pad_key));
 
             vec![ActionEffect::StartPlayback {
@@ -164,10 +153,7 @@ pub fn plan_pad_press(
                     reason: "The stop-pad target is missing or invalid.".to_owned(),
                 }];
             };
-            vec![
-                stop_audio(tracker, target),
-                stop_script(tracker, target),
-            ]
+            vec![stop_audio(tracker, target), stop_script(tracker, target)]
         }
         PadAction::CrosshairToggle => vec![ActionEffect::ToggleCrosshair { pad: pad_key }],
         PadAction::Unsupported(action) => vec![ActionEffect::InvalidAssignment {
@@ -256,7 +242,10 @@ mod tests {
             },
             &mut tracker,
         );
-        assert!(matches!(effects.as_slice(), [ActionEffect::StartPlayback { .. }]));
+        assert!(matches!(
+            effects.as_slice(),
+            [ActionEffect::StartPlayback { .. }]
+        ));
 
         let mut config = config;
         config.retrigger = "toggle".to_owned();
@@ -270,7 +259,10 @@ mod tests {
             },
             &mut tracker,
         );
-        assert!(matches!(effects.as_slice(), [ActionEffect::StopPlayback { .. }]));
+        assert!(matches!(
+            effects.as_slice(),
+            [ActionEffect::StopPlayback { .. }]
+        ));
     }
 
     #[test]
@@ -315,7 +307,10 @@ mod tests {
             PadActivity::default(),
             &mut tracker,
         );
-        assert!(matches!(effects.as_slice(), [ActionEffect::StopAllPlayback { .. }]));
+        assert!(matches!(
+            effects.as_slice(),
+            [ActionEffect::StopAllPlayback { .. }]
+        ));
         assert!(tracker.is_current(&script));
     }
 
@@ -332,7 +327,10 @@ mod tests {
             PadActivity::default(),
             &mut tracker,
         );
-        assert!(matches!(effects.as_slice(), [ActionEffect::StopEverything { .. }]));
+        assert!(matches!(
+            effects.as_slice(),
+            [ActionEffect::StopEverything { .. }]
+        ));
         assert!(!tracker.is_current(&audio));
         assert!(!tracker.is_current(&script));
     }
@@ -381,7 +379,13 @@ mod tests {
             ActionEffect::InvalidAssignment { .. }
         ));
         assert!(matches!(
-            plan_pad_press(key(), &script, &config, PadActivity::default(), &mut tracker)[0],
+            plan_pad_press(
+                key(),
+                &script,
+                &config,
+                PadActivity::default(),
+                &mut tracker
+            )[0],
             ActionEffect::InvalidAssignment { .. }
         ));
     }

@@ -43,14 +43,18 @@ impl OutputResolution {
     }
 
     pub fn used_default_fallback(&self) -> bool {
-        matches!(self, Self::Missing { fallback: Some(_), .. })
+        matches!(
+            self,
+            Self::Missing {
+                fallback: Some(_),
+                ..
+            }
+        )
     }
 
     pub fn requested_name(&self) -> Option<&str> {
         match self {
-            Self::Matched { requested, .. } | Self::Missing { requested, .. } => {
-                Some(requested)
-            }
+            Self::Matched { requested, .. } | Self::Missing { requested, .. } => Some(requested),
             Self::Default { .. } => None,
         }
     }
@@ -76,8 +80,7 @@ pub fn resolve_output(requested: &str, devices: &[OutputDevice]) -> OutputResolu
 
     let wanted = requested.trim();
     if let Some(device) = devices.iter().find(|device| {
-        device.id.eq_ignore_ascii_case(wanted)
-            || device.name.eq_ignore_ascii_case(wanted)
+        device.id.eq_ignore_ascii_case(wanted) || device.name.eq_ignore_ascii_case(wanted)
     }) {
         return OutputResolution::Matched {
             requested: wanted.to_owned(),
@@ -102,12 +105,14 @@ pub fn resolve_route_pair(
     let primary = resolve_output(primary_name, devices);
     let monitor = monitor_enabled.then(|| resolve_output(monitor_name, devices));
     let separate_monitor_stream = match (&primary, &monitor) {
-        (primary_resolution, Some(monitor_resolution)) => match (primary_resolution.device(), monitor_resolution.device()) {
-            (Some(primary_device), Some(monitor_device)) => {
-                primary_device.id != monitor_device.id
+        (primary_resolution, Some(monitor_resolution)) => {
+            match (primary_resolution.device(), monitor_resolution.device()) {
+                (Some(primary_device), Some(monitor_device)) => {
+                    primary_device.id != monitor_device.id
+                }
+                _ => false,
             }
-            _ => false,
-        },
+        }
         _ => false,
     };
 
@@ -196,7 +201,10 @@ mod tests {
         let plan = resolve_route_pair("Speakers", true, "USB Headset", &devices());
         assert!(plan.separate_monitor_stream);
         assert!(matches!(plan.primary, OutputResolution::Matched { .. }));
-        assert!(matches!(plan.monitor, Some(OutputResolution::Matched { .. })));
+        assert!(matches!(
+            plan.monitor,
+            Some(OutputResolution::Matched { .. })
+        ));
     }
 
     #[test]
@@ -209,7 +217,10 @@ mod tests {
     #[test]
     fn unresolved_monitor_falls_back_to_primary_if_system_default_matches() {
         let plan = resolve_route_pair("Speakers", true, "old-linux-sink", &devices());
-        assert!(matches!(plan.monitor, Some(OutputResolution::Missing { .. })));
+        assert!(matches!(
+            plan.monitor,
+            Some(OutputResolution::Missing { .. })
+        ));
         assert!(!plan.separate_monitor_stream);
     }
 }

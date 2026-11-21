@@ -1,42 +1,38 @@
 # Padfire Rust rewrite
 
-This is the replacement implementation for Padfire 3.x. The released v2.4.0
-application remains the behavioral reference and the production installation
-until the Rust binary has passed the gates in CUTOVER.md.
+This is the parallel replacement implementation for Padfire 3.x. The released v2.4.0 application remains the production reference and must remain installed until every gate in `CUTOVER.md` has passed.
 
-The goal is one pure-Rust application source tree that builds for Windows 11 and
-Linux/Nobara. The UI, configuration model, action semantics and device protocol
-are shared. Operating-system differences belong behind narrow adapters.
+The goal is one shared Rust application source tree for Windows 11 and Linux/Nobara. Domain rules, configuration, pad actions and MIDI protocol are shared. OS-specific storage, process lifecycle, audio devices and IPC stay behind platform adapters.
 
-## Build
+## Workspace
+
+- `crates/padfire-core`: configuration schema/migration, action semantics, audio routing decisions, MIDI packet model and IPC contract.
+- `crates/padfire-platform`: secure config storage, MIDI backend/reconnect worker, audio playback engine, process supervision and local IPC transports.
+- `apps/padfire`: eframe/egui desktop shell, pad editor/settings, app runtime and CLI.
+
+## Build and validate
 
 From this directory:
 
-\`\`\`sh
-cargo test --workspace
+```sh
+cargo test --workspace --locked
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-\`\`\`
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo build --workspace --release --locked
+```
 
-The platform-independent core is being ported first. GUI and platform crates
-are added in stages so the compatibility contract can be tested before it is
-coupled to native windows, audio servers or physical devices.
+CI runs the same gates on Ubuntu and Windows. The current local environment is Nobara Linux; Windows native compilation and behavior must be proven by the Windows CI runner and the actual Windows laptop before cutover.
 
-## Non-negotiable compatibility
+## Compatibility and safety invariants
 
-- Read and write the released v5 JSON configuration format during the port.
-  Do not force a one-way migration while v2.4.0 remains installed.
-- Keep the Mini MK1/MK2 note and LED protocol. Reject MK3 before opening an
-  output port; never probe a device by sending speculative LED messages.
-- Preserve the 8 pages, 8x8 grid, right-side column, CC page selection and
-  per-pad behavior.
-- Keep audio operations cancellable and generation-safe. Stop must defeat a
-  playback that is still decoding, opening a device or registering a worker.
-- User-authored script pads remain an explicit shell-execution feature, with
-  the trust boundary visible in the UI and documentation.
-- IPC stays local-only, owner/user restricted, bounded and version-compatible.
-- A blank/new installation routes to the current system default; never bake
-  this machine's sink names into a portable default config.
-- No automatic startup or always-running helper is introduced by installation.
+- Preserve the released v5 JSON config and allow rollback to v2.4.0 without data loss.
+- Preserve 8 pages, the 8x8 pad grid, right-side column, CC page selection and per-pad behavior.
+- Keep Mini MK1/MK2 note and LED protocol. Reject MK3 before opening an output port; never probe by sending speculative LED messages.
+- Make playback and script operations generation-safe. Stop must defeat work still decoding, opening a device or registering a worker.
+- Keep user-authored shell scripts an explicit feature with a visible trust boundary.
+- Keep IPC local-only, user/owner restricted, bounded and version-compatible.
+- A new installation uses the current system default output; never bake machine-specific sink names into portable defaults.
+- Do not add automatic startup or an always-running helper.
+- Never replace the production launcher or running process during development.
 
-See DECISIONS.md, BEHAVIOR_MATRIX.md, MAP.md and research/STACK.md.
+See `DECISIONS.md`, `BEHAVIOR_MATRIX.md`, `MAP.md`, `CUTOVER.md` and `research/STACK.md`.

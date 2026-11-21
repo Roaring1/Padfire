@@ -6,26 +6,25 @@
 //! newline framing and bounded response contract as the Unix socket.
 
 use padfire_core::ipc::{
-    decode_request, encode_response, IpcCommand, MAX_IPC_REQUEST_BYTES,
-    MAX_IPC_RESPONSE_BYTES,
+    IpcCommand, MAX_IPC_REQUEST_BYTES, MAX_IPC_RESPONSE_BYTES, decode_request, encode_response,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY,
-    ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ,
+    GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL,
-    FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE, OPEN_EXISTING,
+    PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PeekNamedPipe,
-    WaitNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, PeekNamedPipe,
+    WaitNamedPipeW,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -107,7 +106,9 @@ impl IpcServer {
                 stop.store(true, Ordering::Release);
                 let _ = connect_pipe(&name);
                 let _ = worker.join();
-                Err(format!("Windows IPC listener did not become ready: {error}"))
+                Err(format!(
+                    "Windows IPC listener did not become ready: {error}"
+                ))
             }
         }
     }
@@ -227,7 +228,9 @@ fn connect_pipe(name: &[u16]) -> Result<PipeHandle, String> {
         };
         return PipeHandle::new(retry);
     }
-    Err(format!("could not connect to Windows IPC pipe (error {code})"))
+    Err(format!(
+        "could not connect to Windows IPC pipe (error {code})"
+    ))
 }
 
 fn serve<F>(pipe: PipeHandle, stop: Arc<AtomicBool>, handler: Arc<F>)
@@ -374,7 +377,9 @@ fn read_response(pipe: HANDLE) -> Result<Option<String>, String> {
             return if response.is_empty() {
                 Ok(None)
             } else {
-                Err(last_error("Windows IPC pipe closed before response delimiter"))
+                Err(last_error(
+                    "Windows IPC pipe closed before response delimiter",
+                ))
             };
         }
         if available == 0 {
@@ -408,7 +413,9 @@ fn read_response(pipe: HANDLE) -> Result<Option<String>, String> {
         if has_delimiter {
             let delimiter = response.iter().position(|byte| *byte == b'\n').unwrap();
             return Ok(Some(
-                String::from_utf8_lossy(&response[..delimiter]).trim().to_owned()
+                String::from_utf8_lossy(&response[..delimiter])
+                    .trim()
+                    .to_owned(),
             ));
         }
     }

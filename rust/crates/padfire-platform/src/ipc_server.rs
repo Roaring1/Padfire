@@ -4,7 +4,7 @@
 //! directory. Windows uses a per-user named pipe (implemented separately).
 //! Every request is fixed-command, newline-framed, bounded and deadline-limited.
 
-use padfire_core::ipc::{decode_request, encode_response, IpcCommand, MAX_IPC_CLIENTS};
+use padfire_core::ipc::{IpcCommand, MAX_IPC_CLIENTS, decode_request, encode_response};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -52,22 +52,34 @@ mod unix_transport {
             let worker = thread::Builder::new()
                 .name("padfire-ipc".to_owned())
                 .spawn(move || {
-                    let (listener, socket_dev, socket_ino) = match bind_private_listener(&thread_path) {
-                        Ok(bound) => {
-                            let _ = ready_tx.send(Ok(()));
-                            bound
-                        }
-                        Err(error) => {
-                            let _ = ready_tx.send(Err(error));
-                            return;
-                        }
-                    };
-                    serve(listener, thread_path, socket_dev, socket_ino, thread_stop, handler);
+                    let (listener, socket_dev, socket_ino) =
+                        match bind_private_listener(&thread_path) {
+                            Ok(bound) => {
+                                let _ = ready_tx.send(Ok(()));
+                                bound
+                            }
+                            Err(error) => {
+                                let _ = ready_tx.send(Err(error));
+                                return;
+                            }
+                        };
+                    serve(
+                        listener,
+                        thread_path,
+                        socket_dev,
+                        socket_ino,
+                        thread_stop,
+                        handler,
+                    );
                 })
                 .map_err(|error| format!("could not start IPC thread: {error}"))?;
 
             match ready_rx.recv_timeout(Duration::from_secs(3)) {
-                Ok(Ok(())) => Ok(Self { path, stop, worker: Some(worker) }),
+                Ok(Ok(())) => Ok(Self {
+                    path,
+                    stop,
+                    worker: Some(worker),
+                }),
                 Ok(Err(error)) => {
                     let _ = worker.join();
                     Err(error)
@@ -105,14 +117,22 @@ mod unix_transport {
     fn bind_private_listener(path: &Path) -> Result<(UnixListener, u64, u64), String> {
         if let Ok(previous) = fs::symlink_metadata(path) {
             if !previous.file_type().is_socket() {
-                return Err(format!("refusing to replace non-socket IPC path: {}", path.display()));
+                return Err(format!(
+                    "refusing to replace non-socket IPC path: {}",
+                    path.display()
+                ));
             }
             if previous.uid() != Uid::current().as_raw() {
-                return Err(format!("refusing socket owned by another user: {}", path.display()));
+                return Err(format!(
+                    "refusing socket owned by another user: {}",
+                    path.display()
+                ));
             }
 
             match UnixStream::connect(path) {
-                Ok(_) => return Err("another Padfire instance already owns the IPC socket".to_owned()),
+                Ok(_) => {
+                    return Err("another Padfire instance already owns the IPC socket".to_owned());
+                }
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -130,14 +150,15 @@ mod unix_transport {
                     fs::remove_file(path).map_err(|e| e.to_string())?;
                 }
                 Err(error) => {
-                    return Err(format!("could not safely inspect existing IPC socket: {error}"));
+                    return Err(format!(
+                        "could not safely inspect existing IPC socket: {error}"
+                    ));
                 }
             }
         }
 
-        let listener = UnixListener::bind(path).map_err(|error| {
-            format!("could not bind IPC socket {}: {error}", path.display())
-        })?;
+        let listener = UnixListener::bind(path)
+            .map_err(|error| format!("could not bind IPC socket {}: {error}", path.display()))?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("could not secure IPC socket permissions: {error}"))?;
         let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
@@ -154,8 +175,7 @@ mod unix_transport {
         socket_ino: u64,
         stop: Arc<AtomicBool>,
         handler: Arc<F>,
-    )
-    where
+    ) where
         F: Fn(IpcCommand) -> String + Send + Sync + 'static,
     {
         let active = Arc::new(AtomicUsize::new(0));
@@ -286,9 +306,14 @@ mod unix_transport {
             Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return Ok(None),
             Err(error) => return Err(error.to_string()),
         };
-        stream.set_read_timeout(Some(REQUEST_TIMEOUT)).map_err(|e| e.to_string())?;
-        stream.set_write_timeout(Some(REQUEST_TIMEOUT)).map_err(|e| e.to_string())?;
-        stream.write_all(format!("{}\n", command.as_str()).as_bytes())
+        stream
+            .set_read_timeout(Some(REQUEST_TIMEOUT))
+            .map_err(|e| e.to_string())?;
+        stream
+            .set_write_timeout(Some(REQUEST_TIMEOUT))
+            .map_err(|e| e.to_string())?;
+        stream
+            .write_all(format!("{}\n", command.as_str()).as_bytes())
             .map_err(|error| error.to_string())?;
 
         let mut response = Vec::with_capacity(128);
@@ -336,7 +361,10 @@ mod unix_transport {
             std::env::temp_dir().join(format!(
                 "padfire-ipc-{}-{}-{}.sock",
                 std::process::id(),
-                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_nanos(),
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
                 id
             ))
         }
@@ -347,11 +375,15 @@ mod unix_transport {
             let mut server = IpcServer::spawn(&path, |command| match command {
                 IpcCommand::Status => r#"{"connected":false,"page":0}"#.to_owned(),
                 _ => "ok".to_owned(),
-            }).unwrap();
+            })
+            .unwrap();
 
             let response = send(&path, IpcCommand::Status).unwrap().unwrap();
             assert_eq!(response, r#"{"connected":false,"page":0}"#);
-            assert_eq!(send(&path, IpcCommand::StopAll).unwrap().as_deref(), Some("ok"));
+            assert_eq!(
+                send(&path, IpcCommand::StopAll).unwrap().as_deref(),
+                Some("ok")
+            );
 
             let metadata = fs::symlink_metadata(&path).unwrap();
             assert!(metadata.file_type().is_socket());
@@ -394,7 +426,8 @@ mod unix_transport {
             let mut server = IpcServer::spawn(&path, move |_| {
                 target.fetch_add(1, Ordering::Relaxed);
                 "ok".to_owned()
-            }).unwrap();
+            })
+            .unwrap();
 
             let mut stream = UnixStream::connect(&path).unwrap();
             stream.write_all(b"not-a-command\n").unwrap();
@@ -417,10 +450,14 @@ mod unsupported_transport {
     pub struct IpcServer;
     impl IpcServer {
         pub fn spawn<F>(_path: impl Into<PathBuf>, _handler: F) -> Result<Self, String>
-        where F: Fn(IpcCommand) -> String + Send + Sync + 'static {
+        where
+            F: Fn(IpcCommand) -> String + Send + Sync + 'static,
+        {
             Err("local IPC is unsupported on this platform".to_owned())
         }
-        pub fn path(&self) -> &Path { Path::new("") }
+        pub fn path(&self) -> &Path {
+            Path::new("")
+        }
         pub fn shutdown(&mut self) {}
     }
     pub fn send(_path: &Path, _command: IpcCommand) -> Result<Option<String>, String> {
@@ -429,8 +466,8 @@ mod unsupported_transport {
 }
 
 #[cfg(unix)]
-pub use unix_transport::{send, IpcServer};
-#[cfg(windows)]
-pub use windows_transport::{send, IpcServer};
+pub use unix_transport::{IpcServer, send};
 #[cfg(not(any(unix, windows)))]
-pub use unsupported_transport::{send, IpcServer};
+pub use unsupported_transport::{IpcServer, send};
+#[cfg(windows)]
+pub use windows_transport::{IpcServer, send};

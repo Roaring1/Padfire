@@ -6,12 +6,12 @@
 
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use padfire_core::{
-    decode_midi, is_supported_launchpad_port, led_velocity, Control, MidiEvent, MidiPacket,
-    LED_OFF, MIDI_PAGE_CC_FIRST, MIDI_PAGE_CC_LAST,
+    Control, LED_OFF, MIDI_PAGE_CC_FIRST, MIDI_PAGE_CC_LAST, MidiEvent, MidiPacket, decode_midi,
+    is_supported_launchpad_port, led_velocity,
 };
 use std::fmt;
+use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TrySendError};
-use std::sync::{Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -92,12 +92,7 @@ pub fn discover() -> MidiStatus {
     }
 }
 
-fn merge_endpoint(
-    endpoints: &mut Vec<MidiEndpoint>,
-    name: String,
-    input: bool,
-    output: bool,
-) {
+fn merge_endpoint(endpoints: &mut Vec<MidiEndpoint>, name: String, input: bool, output: bool) {
     if let Some(existing) = endpoints
         .iter_mut()
         .find(|endpoint| endpoint.name.eq_ignore_ascii_case(&name))
@@ -105,7 +100,11 @@ fn merge_endpoint(
         existing.input |= input;
         existing.output |= output;
     } else {
-        endpoints.push(MidiEndpoint { name, input, output });
+        endpoints.push(MidiEndpoint {
+            name,
+            input,
+            output,
+        });
     }
 }
 
@@ -270,7 +269,9 @@ impl ControllerConnection {
 
     pub fn set_page_led(&self, page: u8, velocity: u8) -> Result<(), MidiBackendError> {
         if page >= 8 {
-            return Err(MidiBackendError::Backend("page index must be between 0 and 7".to_owned()));
+            return Err(MidiBackendError::Backend(
+                "page index must be between 0 and 7".to_owned(),
+            ));
         }
         let controller = MIDI_PAGE_CC_FIRST + page;
         self.output
@@ -337,13 +338,18 @@ impl MidiSupervisor {
         status_events: Sender<MidiConnectionState>,
     ) -> Result<Self, String> {
         let (commands, receiver) = mpsc::sync_channel(256);
-        let disable_hardware = std::env::var_os("PADFIRE_DISABLE_HARDWARE")
-            .is_some_and(|value| value == "1");
+        let disable_hardware =
+            std::env::var_os("PADFIRE_DISABLE_HARDWARE").is_some_and(|value| value == "1");
         let worker = thread::Builder::new()
             .name("padfire-midi-supervisor".to_owned())
-            .spawn(move || midi_supervisor_loop(receiver, midi_events, status_events, disable_hardware))
+            .spawn(move || {
+                midi_supervisor_loop(receiver, midi_events, status_events, disable_hardware)
+            })
             .map_err(|error| format!("could not start MIDI supervisor: {error}"))?;
-        Ok(Self { commands, worker: Some(worker) })
+        Ok(Self {
+            commands,
+            worker: Some(worker),
+        })
     }
 
     pub fn set_led(&self, control: Control, velocity: u8) -> Result<(), String> {
@@ -362,10 +368,12 @@ impl MidiSupervisor {
     }
 
     fn enqueue(&self, command: MidiCommand) -> Result<(), String> {
-        self.commands.try_send(command).map_err(|error| match error {
-            TrySendError::Full(_) => "MIDI output queue is full".to_owned(),
-            TrySendError::Disconnected(_) => "MIDI supervisor is not running".to_owned(),
-        })
+        self.commands
+            .try_send(command)
+            .map_err(|error| match error {
+                TrySendError::Full(_) => "MIDI output queue is full".to_owned(),
+                TrySendError::Disconnected(_) => "MIDI supervisor is not running".to_owned(),
+            })
     }
 
     pub fn shutdown(&mut self) {
@@ -493,15 +501,20 @@ fn midi_supervisor_loop(
         // reflected even when the user is not triggering pads.
         if !disable_hardware && connection.is_some() && Instant::now() >= next_discovery {
             next_discovery = Instant::now() + Duration::from_secs(1);
-            let still_present = selected.as_ref().is_some_and(|selection| {
-                match find_supported_pair() {
-                    Ok(Some(current)) => {
-                        current.input_name.eq_ignore_ascii_case(&selection.input_name)
-                            && current.output_name.eq_ignore_ascii_case(&selection.output_name)
-                    }
-                    _ => false,
-                }
-            });
+            let still_present =
+                selected
+                    .as_ref()
+                    .is_some_and(|selection| match find_supported_pair() {
+                        Ok(Some(current)) => {
+                            current
+                                .input_name
+                                .eq_ignore_ascii_case(&selection.input_name)
+                                && current
+                                    .output_name
+                                    .eq_ignore_ascii_case(&selection.output_name)
+                        }
+                        _ => false,
+                    });
             if !still_present {
                 connection = None;
                 selected = None;
@@ -540,10 +553,14 @@ fn find_supported_pair() -> Result<Option<MidiSelection>, MidiBackendError> {
         .map_err(|error| MidiBackendError::Backend(error.to_string()))?;
     let output = MidiOutput::new("Padfire Pair Discovery Output")
         .map_err(|error| MidiBackendError::Backend(error.to_string()))?;
-    let inputs: Vec<String> = input.ports().into_iter()
+    let inputs: Vec<String> = input
+        .ports()
+        .into_iter()
         .filter_map(|port| input.port_name(&port).ok())
         .collect();
-    let outputs: Vec<String> = output.ports().into_iter()
+    let outputs: Vec<String> = output
+        .ports()
+        .into_iter()
         .filter_map(|port| output.port_name(&port).ok())
         .collect();
     select_unambiguous_pair(&inputs, &outputs)
@@ -557,11 +574,17 @@ mod tests {
     fn midi_parser_handles_note_on_zero_velocity_note_off_and_page_cc() {
         assert_eq!(
             parse_midi_packet(&[0x90, 17, 100]),
-            Some(MidiPacket::NoteOn { note: 17, velocity: 100 })
+            Some(MidiPacket::NoteOn {
+                note: 17,
+                velocity: 100
+            })
         );
         assert_eq!(
             parse_midi_packet(&[0x90, 17, 0]),
-            Some(MidiPacket::NoteOn { note: 17, velocity: 0 })
+            Some(MidiPacket::NoteOn {
+                note: 17,
+                velocity: 0
+            })
         );
         assert_eq!(
             parse_midi_packet(&[0x82, 8, 64]),
@@ -569,7 +592,10 @@ mod tests {
         );
         assert_eq!(
             parse_midi_packet(&[0xb0, 104, 127]),
-            Some(MidiPacket::ControlChange { controller: 104, value: 127 })
+            Some(MidiPacket::ControlChange {
+                controller: 104,
+                value: 127
+            })
         );
         assert_eq!(parse_midi_packet(&[0xc0, 0]), None);
         assert_eq!(parse_midi_packet(&[0x90, 17]), None);
