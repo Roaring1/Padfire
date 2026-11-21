@@ -440,6 +440,17 @@ pub fn send(path: &Path, command: IpcCommand) -> Result<Option<String>, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
+
+    fn test_path() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "padfire-pipe-test-{}-{}",
+            std::process::id(),
+            NEXT_PATH.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
 
     #[test]
     fn pipe_name_is_stable_for_one_install_and_separate_for_side_by_side_install() {
@@ -447,5 +458,38 @@ mod tests {
         let second = Path::new("alpha/Padfire/padfire.sock");
         assert_eq!(pipe_name(first), pipe_name(first));
         assert_ne!(pipe_name(first), pipe_name(second));
+    }
+
+    #[test]
+    fn named_pipe_round_trip_and_shutdown_release_instance_ownership() {
+        let path = test_path();
+        let mut server = IpcServer::spawn(&path, |_| "status-ok".to_owned()).unwrap();
+        assert_eq!(
+            send(&path, IpcCommand::Status).unwrap().as_deref(),
+            Some("status-ok")
+        );
+        server.shutdown();
+        assert_eq!(send(&path, IpcCommand::Status).unwrap(), None);
+    }
+
+    #[test]
+    fn first_instance_flag_prevents_a_second_server() {
+        let path = test_path();
+        let mut server = IpcServer::spawn(&path, |_| "ok".to_owned()).unwrap();
+        let error = IpcServer::spawn(&path, |_| "unexpected".to_owned()).unwrap_err();
+        assert!(error.contains("already owns"));
+        server.shutdown();
+    }
+
+    #[test]
+    fn unknown_command_is_rejected_without_dispatching() {
+        let path = test_path();
+        let mut server = IpcServer::spawn(&path, |_| "unexpected".to_owned()).unwrap();
+        let pipe = connect_pipe(&pipe_name(&path)).unwrap();
+        write_all(pipe.raw(), b"not-a-command\n").unwrap();
+        let response = read_response(pipe.raw()).unwrap().unwrap();
+        assert!(response.starts_with("error:"));
+        drop(pipe);
+        server.shutdown();
     }
 }

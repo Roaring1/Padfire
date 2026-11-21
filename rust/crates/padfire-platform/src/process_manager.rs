@@ -616,19 +616,17 @@ fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
 }
 
 fn is_executable_file(path: &std::path::Path) -> bool {
-    if !path.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
-            .ok()
-            .is_some_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        path.is_file()
+            && std::fs::metadata(path)
+                .ok()
+                .is_some_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
     }
     #[cfg(windows)]
     {
-        true
+        path.is_file()
     }
 }
 

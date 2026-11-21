@@ -160,6 +160,10 @@ impl AppRuntime {
         self.midi_connected
     }
 
+    pub fn meter_level(&self) -> f32 {
+        self.audio.meter_level()
+    }
+
     pub fn set_page(&mut self, page: usize) {
         self.current_page = page.min(PAGE_COUNT - 1);
         self.last_pad_leds.clear();

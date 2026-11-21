@@ -444,6 +444,7 @@ mod unix_transport {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 #[path = "ipc_server_windows.rs"]
 mod windows_transport;
 

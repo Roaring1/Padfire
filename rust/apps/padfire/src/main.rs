@@ -719,6 +719,13 @@ impl PadfireApp {
                 Color32::from_rgb(155, 160, 170)
             };
             ui.colored_label(color, state);
+            ui.add(
+                egui::ProgressBar::new(self.runtime.meter_level())
+                    .desired_width(84.0)
+                    .desired_height(4.0)
+                    .fill(Color32::from_rgb(100, 175, 215)),
+            )
+            .on_hover_text("Padfire playback level");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Settings").clicked() {
                     self.open_settings();

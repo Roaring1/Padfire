@@ -8,9 +8,10 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use padfire_core::PadKey;
 use padfire_core::audio::{OutputDevice, OutputResolution, resolve_route_pair};
 use padfire_core::runtime::{GenerationTracker, OperationToken};
-use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use std::collections::HashMap;
 use std::fs::File;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -54,6 +55,7 @@ struct ActivePlayers {
 pub struct AudioEngine {
     sender: Sender<AudioCommand>,
     worker: Option<JoinHandle<()>>,
+    meter: Arc<MeterAccumulator>,
 }
 
 impl AudioEngine {
@@ -62,15 +64,18 @@ impl AudioEngine {
         events: Sender<AudioEvent>,
     ) -> Result<Self, String> {
         let (sender, receiver) = mpsc::channel();
+        let meter = Arc::new(MeterAccumulator::default());
+        let worker_meter = meter.clone();
         let worker = thread::Builder::new()
             .name("padfire-audio".to_owned())
             .spawn(move || {
-                AudioActor::new(generations, events).run(receiver);
+                AudioActor::new(generations, events, worker_meter).run(receiver);
             })
             .map_err(|error| format!("could not start audio worker: {error}"))?;
         Ok(Self {
             sender,
             worker: Some(worker),
+            meter,
         })
     }
 
@@ -92,6 +97,10 @@ impl AudioEngine {
             .map_err(|_| "audio worker is not running".to_owned())
     }
 
+    pub fn meter_level(&self) -> f32 {
+        self.meter.take_level()
+    }
+
     pub fn shutdown(&mut self) {
         let _ = self.sender.send(AudioCommand::Shutdown);
         if let Some(worker) = self.worker.take() {
@@ -109,15 +118,21 @@ impl Drop for AudioEngine {
 struct AudioActor {
     generations: Arc<Mutex<GenerationTracker>>,
     events: Sender<AudioEvent>,
+    meter: Arc<MeterAccumulator>,
     streams: HashMap<String, MixerDeviceSink>,
     active: HashMap<String, ActivePlayers>,
 }
 
 impl AudioActor {
-    fn new(generations: Arc<Mutex<GenerationTracker>>, events: Sender<AudioEvent>) -> Self {
+    fn new(
+        generations: Arc<Mutex<GenerationTracker>>,
+        events: Sender<AudioEvent>,
+        meter: Arc<MeterAccumulator>,
+    ) -> Self {
         Self {
             generations,
             events,
+            meter,
             streams: HashMap::new(),
             active: HashMap::new(),
         }
@@ -329,7 +344,11 @@ impl AudioActor {
         if let Some(stream) = self.streams.get(&primary.id) {
             let player = Player::connect_new(stream.mixer());
             player.set_volume(f32::from(request.volume_percent.min(150)) / 100.0);
-            primary_decoder.append_to(&player);
+            primary_decoder.append_to(
+                &player,
+                Some(self.meter.clone()),
+                f32::from(request.volume_percent.min(150)) / 100.0,
+            );
             players.push(player);
         }
 
@@ -338,7 +357,7 @@ impl AudioActor {
         {
             let player = Player::connect_new(stream.mixer());
             player.set_volume(f32::from(request.volume_percent.min(150)) / 100.0);
-            decoder.append_to(&player);
+            decoder.append_to(&player, None, 1.0);
             players.push(player);
         }
 
@@ -429,16 +448,152 @@ impl AudioActor {
     }
 }
 
+#[derive(Default)]
+struct MeterAccumulator {
+    // One atomic word keeps energy and sample count from different windows
+    // from being accidentally paired by the UI reader.
+    window: AtomicU64,
+}
+
+impl MeterAccumulator {
+    fn add(&self, sum_squares: f64, sample_count: u32) {
+        const ENERGY_SCALE: f64 = 1_000.0;
+        let energy = (sum_squares * ENERGY_SCALE)
+            .round()
+            .clamp(0.0, f64::from(u32::MAX)) as u32;
+        let mut current = self.window.load(Ordering::Relaxed);
+        loop {
+            let old_energy = (current >> 32) as u32;
+            let old_count = current as u32;
+            let next = (u64::from(old_energy.saturating_add(energy)) << 32)
+                | u64::from(old_count.saturating_add(sample_count));
+            match self.window.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    fn take_level(&self) -> f32 {
+        let snapshot = self.window.swap(0, Ordering::AcqRel);
+        let energy = (snapshot >> 32) as u32;
+        let count = snapshot as u32;
+        if count == 0 {
+            return 0.0;
+        }
+
+        let mean_square = (f64::from(energy) / 1_000.0) / f64::from(count);
+        let rms = mean_square.sqrt();
+        let db = if rms > 1.0e-7 {
+            20.0 * rms.log10()
+        } else {
+            -96.0
+        };
+        ((db + 60.0) / 60.0).clamp(0.0, 1.0) as f32
+    }
+}
+
+struct MeterSource<S> {
+    source: S,
+    meter: Arc<MeterAccumulator>,
+    volume_scale: f64,
+    sum_squares: f64,
+    sample_count: u32,
+}
+
+impl<S> MeterSource<S> {
+    fn new(source: S, meter: Arc<MeterAccumulator>, volume_scale: f32) -> Self {
+        Self {
+            source,
+            meter,
+            volume_scale: f64::from(volume_scale),
+            sum_squares: 0.0,
+            sample_count: 0,
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.sample_count == 0 {
+            return;
+        }
+        self.meter.add(self.sum_squares, self.sample_count);
+        self.sum_squares = 0.0;
+        self.sample_count = 0;
+    }
+}
+
+impl<S: Source<Item = f32>> Iterator for MeterSource<S> {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let Some(sample) = self.source.next() else {
+            self.flush();
+            return None;
+        };
+        if sample.is_finite() {
+            let scaled = f64::from(sample) * self.volume_scale;
+            self.sum_squares += scaled * scaled;
+            self.sample_count += 1;
+            if self.sample_count >= 256 {
+                self.flush();
+            }
+        }
+        Some(sample)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.source.size_hint()
+    }
+}
+
+impl<S: Source<Item = f32>> Source for MeterSource<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.source.current_span_len()
+    }
+
+    fn channels(&self) -> rodio::ChannelCount {
+        self.source.channels()
+    }
+
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.source.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.source.total_duration()
+    }
+}
+
+fn append_decoded<S>(
+    source: S,
+    player: &Player,
+    meter: Option<Arc<MeterAccumulator>>,
+    volume_scale: f32,
+) where
+    S: Source<Item = f32> + Send + 'static,
+{
+    if let Some(meter) = meter {
+        player.append(MeterSource::new(source, meter, volume_scale));
+    } else {
+        player.append(source);
+    }
+}
+
 enum DecodedSource {
     Single(Decoder<std::io::BufReader<File>>),
     Looped(rodio::decoder::LoopedDecoder<std::io::BufReader<File>>),
 }
 
 impl DecodedSource {
-    fn append_to(self, player: &Player) {
+    fn append_to(self, player: &Player, meter: Option<Arc<MeterAccumulator>>, volume_scale: f32) {
         match self {
-            Self::Single(source) => player.append(source),
-            Self::Looped(source) => player.append(source),
+            Self::Single(source) => append_decoded(source, player, meter, volume_scale),
+            Self::Looped(source) => append_decoded(source, player, meter, volume_scale),
         }
     }
 }
@@ -495,9 +650,46 @@ pub fn audio_backend_name() -> String {
 mod tests {
     use super::*;
 
+    fn measure_sine_level(volume_scale: f32) -> f32 {
+        let meter = Arc::new(MeterAccumulator::default());
+        let mut source = MeterSource::new(
+            rodio::source::SineWave::new(440.0),
+            meter.clone(),
+            volume_scale,
+        );
+        for _ in 0..1024 {
+            let _ = source.next();
+        }
+        meter.take_level()
+    }
+
     #[test]
     fn decoded_source_types_remain_distinct_for_loop_and_single_playback() {
-        let _: fn(DecodedSource, &Player) = DecodedSource::append_to;
+        let _: fn(DecodedSource, &Player, Option<Arc<MeterAccumulator>>, f32) =
+            DecodedSource::append_to;
         assert!(!audio_backend_name().is_empty());
+    }
+
+    #[test]
+    fn meter_tracks_playback_rms_and_accounts_for_pad_volume() {
+        let full_volume = measure_sine_level(1.0);
+        let half_volume = measure_sine_level(0.5);
+        assert!(full_volume > 0.0);
+        assert!(half_volume > 0.0);
+        assert!(full_volume > half_volume);
+    }
+
+    #[test]
+    fn meter_aggregates_multiple_sources_and_resets_when_idle() {
+        let meter = Arc::new(MeterAccumulator::default());
+        for _ in 0..2 {
+            let mut source =
+                MeterSource::new(rodio::source::SineWave::new(440.0), meter.clone(), 1.0);
+            for _ in 0..1024 {
+                let _ = source.next();
+            }
+        }
+        assert!(meter.take_level() > 0.0);
+        assert_eq!(meter.take_level(), 0.0);
     }
 }
