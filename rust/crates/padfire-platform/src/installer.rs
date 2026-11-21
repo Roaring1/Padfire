@@ -353,6 +353,7 @@ fn schedule_windows_uninstall(root: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
 
     let log_path = root.with_extension("uninstall.log");
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let script = format!(
         "$ErrorActionPreference = 'SilentlyContinue'\n\
          $root = '{}'\n\
@@ -383,7 +384,7 @@ fn schedule_windows_uninstall(root: &Path) -> Result<(), String> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .creation_flags(0x0800_0000)
+        .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|error| format!("could not schedule Padfire Rust removal: {error}"))?;
     Ok(())
@@ -510,32 +511,65 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn scheduled_uninstall_removes_install_root_but_preserves_config() {
+    fn scheduled_uninstall_retries_locked_files_and_preserves_config() {
+        use std::os::windows::fs::OpenOptionsExt;
+
         let root = temp_root();
         let config = root.with_extension("config");
         let log_path = root.with_extension("uninstall.log");
+        let locked_file = root.join("in-use.dat");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("padfire-rust.exe"), b"candidate").unwrap();
+        fs::write(&locked_file, b"hold this file open without delete sharing").unwrap();
         fs::create_dir_all(&config).unwrap();
         fs::write(config.join("padfire.json"), b"user config").unwrap();
 
+        let locked_handle = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked_file)
+            .unwrap();
         schedule_windows_uninstall(&root).unwrap();
+
+        let retry_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut observed_locked_retry = false;
+        while std::time::Instant::now() < retry_deadline {
+            let log_length = fs::metadata(&log_path)
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            if log_length > "started\r\n".len() as u64 {
+                observed_locked_retry = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(
+            root.exists(),
+            "install root was removed while a file handle denied delete sharing"
+        );
+        drop(locked_handle);
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while root.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
+        let removed = !root.exists();
         let helper_log = fs::read_to_string(&log_path)
             .unwrap_or_else(|error| format!("no helper log available: {error}"));
+        let config_contents = fs::read(config.join("padfire.json")).unwrap();
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&config);
+        let _ = fs::remove_file(&log_path);
+
         assert!(
-            !root.exists(),
-            "scheduled uninstall did not remove its install root; helper log: {helper_log}"
+            observed_locked_retry,
+            "cleanup helper did not report a locked-file retry; helper log: {helper_log}"
         );
-        assert_eq!(
-            fs::read(config.join("padfire.json")).unwrap(),
-            b"user config"
+        assert!(
+            removed,
+            "scheduled uninstall did not remove its install root after the file lock closed; helper log: {helper_log}"
         );
-        let _ = fs::remove_dir_all(config);
-        let _ = fs::remove_file(log_path);
+        assert_eq!(config_contents, b"user config");
     }
 }
