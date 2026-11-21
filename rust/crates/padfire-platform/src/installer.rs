@@ -177,11 +177,11 @@ fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
     // binary that looks installed but cannot be launched from the desktop.
     #[cfg(target_os = "linux")]
     {
-        if let Some(icon) = &paths.icon {
-            if let Err(error) = write_atomic(icon, LINUX_ICON.as_bytes()) {
-                rollback_new_integration(paths, had_integration, had_icon);
-                return Err(error);
-            }
+        if let Some(icon) = &paths.icon
+            && let Err(error) = write_atomic(icon, LINUX_ICON.as_bytes())
+        {
+            rollback_new_integration(paths, had_integration, had_icon);
+            return Err(error);
         }
         let desktop = desktop_entry(&paths.executable);
         if let Err(error) = write_atomic(&paths.integration, desktop.as_bytes()) {
@@ -212,10 +212,8 @@ fn rollback_new_integration(paths: &InstallPaths, had_integration: bool, had_ico
     if !had_integration {
         let _ = remove_if_exists(&paths.integration);
     }
-    if !had_icon {
-        if let Some(icon) = &paths.icon {
-            let _ = remove_if_exists(icon);
-        }
+    if !had_icon && let Some(icon) = &paths.icon {
+        let _ = remove_if_exists(icon);
     }
 }
 
