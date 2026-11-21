@@ -902,10 +902,10 @@ mod winjob {
 
             let deadline = Instant::now() + Duration::from_secs(8);
             let child_pid = loop {
-                if let Ok(value) = fs::read_to_string(&marker) {
-                    if let Ok(pid) = value.trim().parse::<u32>() {
-                        break pid;
-                    }
+                if let Ok(value) = fs::read_to_string(&marker)
+                    && let Ok(pid) = value.trim().parse::<u32>()
+                {
+                    break pid;
                 }
                 assert!(
                     Instant::now() < deadline,
