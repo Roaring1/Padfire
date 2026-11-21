@@ -308,8 +308,9 @@ fn read_private_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, StoreErro
     {
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Foundation::GENERIC_READ;
-        use windows_sys::Win32::Security::{READ_CONTROL, WRITE_DAC};
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_OPEN_REPARSE_POINT, READ_CONTROL, WRITE_DAC,
+        };
         options
             .access_mode(GENERIC_READ | READ_CONTROL | WRITE_DAC)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
@@ -345,6 +346,7 @@ fn read_private_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, StoreErro
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
+        use std::os::windows::io::AsRawHandle;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
         if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(StoreError::UnsafePath(format!(
@@ -567,6 +569,7 @@ fn windows_owner_only_security_descriptor() -> Result<WindowsLocalSecurityDescri
 struct WindowsLocalSecurityDescriptor(windows_sys::Win32::Security::PSECURITY_DESCRIPTOR);
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 impl Drop for WindowsLocalSecurityDescriptor {
     fn drop(&mut self) {
         unsafe {
@@ -768,6 +771,7 @@ mod tests {
     }
 
     #[cfg(windows)]
+    #[allow(unsafe_code)]
     fn windows_sddl(path: &Path, directory: bool) -> Result<String, StoreError> {
         use std::os::windows::ffi::OsStrExt;
         use std::os::windows::io::FromRawHandle;
