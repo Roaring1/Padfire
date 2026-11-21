@@ -165,23 +165,58 @@ fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
             source.display()
         ));
     }
-    fs::create_dir_all(&paths.root)
-        .map_err(|error| format!("could not create install directory: {error}"))?;
-    copy_executable(source, &paths.executable)?;
+    let had_root = fs::symlink_metadata(&paths.root).is_ok();
+    let had_integration = fs::symlink_metadata(&paths.integration).is_ok();
+    let had_icon = paths
+        .icon
+        .as_ref()
+        .is_some_and(|icon| fs::symlink_metadata(icon).is_ok());
 
+    // Create all desktop integration before publishing the executable. This
+    // keeps a failed shortcut/desktop-entry operation from leaving a candidate
+    // binary that looks installed but cannot be launched from the desktop.
     #[cfg(target_os = "linux")]
     {
-        let desktop = desktop_entry(&paths.executable);
-        write_atomic(&paths.integration, desktop.as_bytes())?;
         if let Some(icon) = &paths.icon {
-            write_atomic(icon, LINUX_ICON.as_bytes())?;
+            if let Err(error) = write_atomic(icon, LINUX_ICON.as_bytes()) {
+                rollback_new_integration(paths, had_integration, had_icon);
+                return Err(error);
+            }
+        }
+        let desktop = desktop_entry(&paths.executable);
+        if let Err(error) = write_atomic(&paths.integration, desktop.as_bytes()) {
+            rollback_new_integration(paths, had_integration, had_icon);
+            return Err(error);
         }
     }
 
     #[cfg(windows)]
-    create_windows_shortcut(&paths.integration, &paths.executable, &paths.root)?;
+    if let Err(error) = create_windows_shortcut(&paths.integration, &paths.executable, &paths.root)
+    {
+        rollback_new_integration(paths, had_integration, had_icon);
+        return Err(error);
+    }
+
+    if let Err(error) = copy_executable(source, &paths.executable) {
+        rollback_new_integration(paths, had_integration, had_icon);
+        if !had_root {
+            let _ = remove_if_exists(&paths.root);
+        }
+        return Err(error);
+    }
 
     Ok(())
+}
+
+fn rollback_new_integration(paths: &InstallPaths, had_integration: bool, had_icon: bool) {
+    if !had_integration {
+        let _ = remove_if_exists(&paths.integration);
+    }
+    if !had_icon {
+        if let Some(icon) = &paths.icon {
+            let _ = remove_if_exists(icon);
+        }
+    }
 }
 
 fn uninstall_from(paths: &InstallPaths) -> Result<(), String> {
@@ -307,7 +342,8 @@ fn desktop_entry(executable: &Path) -> String {
     let escaped = path
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
-        .replace('$', "\\$");
+        .replace('$', "\\$")
+        .replace('%', "%%");
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
@@ -493,6 +529,42 @@ mod tests {
         ));
         assert!(entry.contains("Exec=\"/home/test user/.local/opt/padfire-rust/padfire-rust\""));
         assert!(!entry.contains("Autostart"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn desktop_exec_escapes_literal_percent_field_codes_and_special_characters() {
+        let entry = desktop_entry(Path::new(
+            r#"/home/test user/100% $pad/\quoted\name/padfire-rust"#,
+        ));
+        assert!(entry.contains("100%%"));
+        assert!(entry.contains(r"\$pad"));
+        assert!(entry.contains(r"\\quoted\\name"));
+    }
+
+    #[test]
+    fn failed_desktop_integration_does_not_leave_a_partial_install() {
+        let root = temp_root();
+        let integration_root = root.with_extension("integration");
+        let paths = InstallPaths::for_test(&root, &integration_root);
+        let source = std::env::current_exe().unwrap();
+        fs::write(&integration_root, b"block the integration parent path").unwrap();
+
+        let result = install_from(&source, &paths);
+        assert!(result.is_err());
+        assert!(
+            !paths.executable.exists(),
+            "failed desktop integration left an installed executable"
+        );
+        assert!(
+            !paths.root.exists(),
+            "failed desktop integration created the candidate install root"
+        );
+        assert_eq!(
+            fs::read(&integration_root).unwrap(),
+            b"block the integration parent path"
+        );
+        let _ = fs::remove_file(integration_root);
     }
 
     #[cfg(windows)]
