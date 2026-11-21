@@ -352,16 +352,21 @@ fn create_windows_shortcut(
 fn schedule_windows_uninstall(root: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
 
+    let log_path = root.with_extension("uninstall.log");
     let script = format!(
         "$ErrorActionPreference = 'SilentlyContinue'\n\
          $root = '{}'\n\
+         $log = '{}'\n\
+         [System.IO.File]::WriteAllText($log, 'started' + [Environment]::NewLine)\n\
          for ($attempt = 0; $attempt -lt 30; $attempt++) {{\n\
-           try {{ [System.IO.Directory]::Delete($root, $true) }} catch {{ }}\n\
+           try {{ [System.IO.Directory]::Delete($root, $true) }} catch {{ [System.IO.File]::AppendAllText($log, $_.Exception.ToString() + [Environment]::NewLine) }}\n\
            if (-not (Test-Path -LiteralPath $root)) {{ break }}\n\
            Start-Sleep -Milliseconds 500\n\
          }}\n\
+         if (Test-Path -LiteralPath $root) {{ [System.IO.File]::AppendAllText($log, 'install root still exists after retries' + [Environment]::NewLine) }} else {{ [System.IO.File]::Delete($log) }}\n\
          Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n",
         powershell_quote(root),
+        powershell_quote(&log_path),
     );
     let script_path = write_powershell_temp(&script)?;
     Command::new("powershell.exe")
@@ -505,6 +510,7 @@ mod tests {
     fn scheduled_uninstall_removes_install_root_but_preserves_config() {
         let root = temp_root();
         let config = root.with_extension("config");
+        let log_path = root.with_extension("uninstall.log");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("padfire-rust.exe"), b"candidate").unwrap();
         fs::create_dir_all(&config).unwrap();
@@ -516,14 +522,17 @@ mod tests {
         while root.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+        let helper_log = fs::read_to_string(&log_path)
+            .unwrap_or_else(|error| format!("no helper log available: {error}"));
         assert!(
             !root.exists(),
-            "scheduled uninstall did not remove its install root"
+            "scheduled uninstall did not remove its install root; helper log: {helper_log}"
         );
         assert_eq!(
             fs::read(config.join("padfire.json")).unwrap(),
             b"user config"
         );
         let _ = fs::remove_dir_all(config);
+        let _ = fs::remove_file(log_path);
     }
 }
