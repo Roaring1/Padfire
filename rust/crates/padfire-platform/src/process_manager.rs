@@ -1047,6 +1047,104 @@ mod tests {
         engine.shutdown();
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn script_process_starts_emits_output_and_stop_terminates_its_job() {
+        use padfire_core::runtime::{GenerationTracker, OperationKey, OperationKind};
+        use std::sync::mpsc::channel;
+
+        let pad = PadKey { page: 0, note: 17 };
+        let generations = Arc::new(Mutex::new(GenerationTracker::default()));
+        let token = generations
+            .lock()
+            .unwrap()
+            .begin(OperationKey::new(OperationKind::Script, pad.to_key()));
+        let (events_tx, events_rx) = channel();
+        let mut engine = ProcessEngine::spawn(generations, events_tx).unwrap();
+        engine
+            .start_script(
+                token,
+                pad,
+                "echo padfire-process-test & ping -n 31 127.0.0.1 >nul",
+                true,
+            )
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_started = false;
+        let mut saw_output = false;
+        while Instant::now() < deadline && !(saw_started && saw_output) {
+            if let Ok(event) = events_rx.recv_timeout(Duration::from_millis(250)) {
+                match event {
+                    ProcessEvent::Started {
+                        kind: ProcessKind::ScriptTest,
+                        ..
+                    } => saw_started = true,
+                    ProcessEvent::Output { line, .. } if line == "padfire-process-test" => {
+                        saw_output = true
+                    }
+                    other => panic!("unexpected process event: {other:?}"),
+                }
+            }
+        }
+        assert!(saw_started, "Windows process actor never reported start");
+        assert!(
+            saw_output,
+            "Windows bounded output reader did not capture stdout"
+        );
+
+        engine.stop_script(pad).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stopped = false;
+        while Instant::now() < deadline && !stopped {
+            if let Ok(event) = events_rx.recv_timeout(Duration::from_millis(250)) {
+                match event {
+                    ProcessEvent::Stopped {
+                        pad: Some(stopped_pad),
+                        kind: ProcessKind::ScriptTest,
+                    } if stopped_pad == pad => stopped = true,
+                    ProcessEvent::Output { .. } => {}
+                    other => panic!("unexpected process event after stop: {other:?}"),
+                }
+            }
+        }
+        assert!(stopped, "Windows process actor did not report Stop");
+        engine.shutdown();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancelled_generation_cannot_launch_a_late_script() {
+        use padfire_core::runtime::{GenerationTracker, OperationKey, OperationKind};
+        use std::sync::mpsc::channel;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let pad = PadKey { page: 0, note: 18 };
+        let marker = std::env::temp_dir().join(format!(
+            "padfire-cancelled-script-{}-{}.txt",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let generations = Arc::new(Mutex::new(GenerationTracker::default()));
+        let key = OperationKey::new(OperationKind::Script, pad.to_key());
+        let token = generations.lock().unwrap().begin(key.clone());
+        generations.lock().unwrap().cancel(key);
+        let command = format!("echo executed > \"{}\"", marker.display());
+        let (events_tx, events_rx) = channel();
+        let mut engine = ProcessEngine::spawn(generations, events_tx).unwrap();
+        engine.start_script(token, pad, command, true).unwrap();
+        assert!(events_rx.recv_timeout(Duration::from_millis(350)).is_err());
+        engine.shutdown();
+        assert!(
+            !marker.exists(),
+            "cancelled Windows script generation executed its command"
+        );
+        let _ = std::fs::remove_file(marker);
+    }
+
     #[cfg(unix)]
     #[test]
     fn cancelled_generation_cannot_launch_a_late_script() {
