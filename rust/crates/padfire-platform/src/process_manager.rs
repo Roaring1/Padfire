@@ -1120,6 +1120,127 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn stop_all_and_engine_shutdown_terminate_windows_script_jobs() {
+        use padfire_core::runtime::{GenerationTracker, OperationKey, OperationKind};
+        use std::sync::mpsc::channel;
+
+        let first = PadKey { page: 0, note: 21 };
+        let second = PadKey { page: 0, note: 22 };
+        let final_pad = PadKey { page: 0, note: 23 };
+        let generations = Arc::new(Mutex::new(GenerationTracker::default()));
+        let token_for = |pad| {
+            generations
+                .lock()
+                .unwrap()
+                .begin(OperationKey::new(OperationKind::Script, pad.to_key()))
+        };
+        let (events_tx, events_rx) = channel();
+        let mut engine = ProcessEngine::spawn(Arc::clone(&generations), events_tx).unwrap();
+        for (pad, label) in [
+            (first, "padfire-stop-all-a"),
+            (second, "padfire-stop-all-b"),
+        ] {
+            engine
+                .start_script(
+                    token_for(pad),
+                    pad,
+                    format!("echo {label} & ping -n 31 127.0.0.1 >nul"),
+                    true,
+                )
+                .unwrap();
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut first_started = false;
+        let mut second_started = false;
+        while Instant::now() < deadline && !(first_started && second_started) {
+            if let Ok(ProcessEvent::Started {
+                pad: Some(pad),
+                kind: ProcessKind::ScriptTest,
+            }) = events_rx.recv_timeout(Duration::from_millis(250))
+            {
+                first_started |= pad == first;
+                second_started |= pad == second;
+            }
+        }
+        assert!(
+            first_started && second_started,
+            "both Windows scripts must start before Stop All"
+        );
+
+        engine.stop_all_scripts().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut first_stopped = false;
+        let mut second_stopped = false;
+        while Instant::now() < deadline && !(first_stopped && second_stopped) {
+            if let Ok(event) = events_rx.recv_timeout(Duration::from_millis(250)) {
+                match event {
+                    ProcessEvent::Stopped {
+                        pad: Some(pad),
+                        kind: ProcessKind::ScriptTest,
+                    } => {
+                        first_stopped |= pad == first;
+                        second_stopped |= pad == second;
+                    }
+                    ProcessEvent::Output { .. } => {}
+                    other => panic!("unexpected event during Stop All: {other:?}"),
+                }
+            }
+        }
+        assert!(
+            first_stopped && second_stopped,
+            "Stop All did not stop both Windows jobs"
+        );
+
+        engine
+            .start_script(
+                token_for(final_pad),
+                final_pad,
+                "echo padfire-shutdown & ping -n 31 127.0.0.1 >nul",
+                true,
+            )
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut final_started = false;
+        while Instant::now() < deadline && !final_started {
+            if let Ok(event) = events_rx.recv_timeout(Duration::from_millis(250)) {
+                match event {
+                    ProcessEvent::Started {
+                        pad: Some(pad),
+                        kind: ProcessKind::ScriptTest,
+                    } if pad == final_pad => final_started = true,
+                    ProcessEvent::Output { .. } => {}
+                    other => panic!("unexpected event before engine shutdown: {other:?}"),
+                }
+            }
+        }
+        assert!(
+            final_started,
+            "final Windows script did not start before shutdown"
+        );
+        engine.shutdown();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut final_stopped = false;
+        while Instant::now() < deadline && !final_stopped {
+            if let Ok(event) = events_rx.recv_timeout(Duration::from_millis(250)) {
+                match event {
+                    ProcessEvent::Stopped {
+                        pad: Some(pad),
+                        kind: ProcessKind::ScriptTest,
+                    } if pad == final_pad => final_stopped = true,
+                    ProcessEvent::Output { .. } => {}
+                    other => panic!("unexpected event during engine shutdown: {other:?}"),
+                }
+            }
+        }
+        assert!(
+            final_stopped,
+            "engine shutdown did not stop the active Windows job"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn cancelled_generation_cannot_launch_a_late_script() {
         use padfire_core::runtime::{GenerationTracker, OperationKey, OperationKind};
         use std::sync::mpsc::channel;
