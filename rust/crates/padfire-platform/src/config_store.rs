@@ -440,7 +440,10 @@ fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), StoreError> {
         }
 
         drop(file);
+        #[cfg(unix)]
         fs::rename(&temp_path, path)?;
+        #[cfg(windows)]
+        replace_windows_file(&temp_path, path)?;
         sync_directory(parent)?;
         Ok(())
     })();
@@ -449,6 +452,38 @@ fn write_atomic(path: &Path, payload: &[u8]) -> Result<(), StoreError> {
         let _ = fs::remove_file(&temp_path);
     }
     result
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn replace_windows_file(source: &Path, destination: &Path) -> Result<(), StoreError> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    // Both files are created in the same protected directory, so this is a
+    // same-volume rename. WRITE_THROUGH asks Windows not to return until the
+    // move operation is flushed; the temporary file itself was sync_all'd
+    // before this point. Unlike delete-then-rename, replacement never removes
+    // the last valid config before the new file is ready.
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+    // SAFETY: both pointers are valid NUL-terminated UTF-16 paths for this call.
+    let succeeded = unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) };
+    if succeeded == 0 {
+        return Err(StoreError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -749,8 +784,10 @@ fn windows_number_of_links(file: &fs::File) -> Result<u32, StoreError> {
 
 #[cfg(windows)]
 fn sync_directory(_path: &Path) -> Result<(), StoreError> {
-    // Windows directory durability is platform-specific; flush the file
-    // before replacement and add an explicit native API implementation later.
+    // `replace_windows_file` uses MOVEFILE_WRITE_THROUGH after the temporary
+    // file has been sync_all'd. Windows does not expose the same portable
+    // directory-fsync contract as Unix, so do not pretend this is a directory
+    // handle flush. The write-through rename is the durability boundary here.
     Ok(())
 }
 
@@ -917,6 +954,81 @@ mod tests {
 
         assert_eq!(store.load().config.retrigger, "toggle");
         assert_eq!(store.load_backup().unwrap().unwrap().retrigger, "restart");
+        let _ = fs::remove_dir_all(store.directory());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_movefile_replace_keeps_backup_and_private_dacl() {
+        let store = test_store();
+        let previous = AppConfig {
+            default_sink: "previous-output".to_owned(),
+            ..AppConfig::default()
+        };
+        let next = AppConfig {
+            default_sink: "next-output".to_owned(),
+            ..AppConfig::default()
+        };
+
+        store.save(&previous).unwrap();
+        store.save(&next).unwrap();
+        assert_eq!(store.load().config, next);
+        assert_eq!(store.load_backup().unwrap(), Some(previous));
+
+        let current_sddl = windows_sddl(store.config_path(), false).unwrap();
+        let backup_sddl = windows_sddl(store.backup_path(), false).unwrap();
+        assert_private_windows_sddl(&current_sddl);
+        assert_private_windows_sddl(&backup_sddl);
+
+        let leftovers = fs::read_dir(store.directory())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "successful replacement left temporary files");
+        let _ = fs::remove_dir_all(store.directory());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_replace_failure_preserves_current_config_and_cleans_temp() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let store = test_store();
+        let previous = AppConfig {
+            default_sink: "locked-previous-output".to_owned(),
+            ..AppConfig::default()
+        };
+        let attempted = AppConfig {
+            default_sink: "should-not-replace-locked-output".to_owned(),
+            ..AppConfig::default()
+        };
+        store.save(&previous).unwrap();
+        let locked = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(store.config_path())
+            .unwrap();
+
+        let result = store.save(&attempted);
+        assert!(
+            result.is_err(),
+            "replacement unexpectedly succeeded while delete sharing was denied"
+        );
+        drop(locked);
+
+        assert_eq!(store.load().config, previous);
+        assert_eq!(store.load_backup().unwrap(), Some(previous));
+        let leftovers = fs::read_dir(store.directory())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "failed replacement left temporary files");
+
+        store.save(&attempted).unwrap();
+        assert_eq!(store.load().config, attempted);
         let _ = fs::remove_dir_all(store.directory());
     }
 
