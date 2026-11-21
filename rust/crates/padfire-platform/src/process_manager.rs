@@ -326,16 +326,18 @@ impl ProcessActor {
             },
         );
 
+        // Publish the state transition before reader threads can deliver output.
+        // Otherwise a fast child can race an Output event ahead of Started.
+        let _ = self.events.send(ProcessEvent::Started {
+            pad: Some(pad),
+            kind,
+        });
         if let Some(stdout) = stdout {
             spawn_output_reader(stdout, Some(pad), kind, self.events.clone());
         }
         if let Some(stderr) = stderr {
             spawn_output_reader(stderr, Some(pad), kind, self.events.clone());
         }
-        let _ = self.events.send(ProcessEvent::Started {
-            pad: Some(pad),
-            kind,
-        });
     }
 
     fn toggle_crosshair(&mut self, pad: PadKey) {
@@ -415,6 +417,10 @@ impl ProcessActor {
                 job,
             },
         );
+        let _ = self.events.send(ProcessEvent::Started {
+            pad: Some(pad),
+            kind: ProcessKind::Crosshair,
+        });
         if let Some(stdout) = stdout {
             spawn_output_reader(
                 stdout,
@@ -431,10 +437,6 @@ impl ProcessActor {
                 self.events.clone(),
             );
         }
-        let _ = self.events.send(ProcessEvent::Started {
-            pad: Some(pad),
-            kind: ProcessKind::Crosshair,
-        });
     }
 
     fn stop_script(&mut self, pad: PadKey) {
@@ -1025,7 +1027,9 @@ mod tests {
                         kind: ProcessKind::ScriptTest,
                         ..
                     } => saw_started = true,
-                    ProcessEvent::Output { line, .. } if line == "padfire-process-test" => {
+                    ProcessEvent::Output { line, .. }
+                        if line.trim_end() == "padfire-process-test" =>
+                    {
                         saw_output = true
                     }
                     other => panic!("unexpected process event: {other:?}"),
