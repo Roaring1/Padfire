@@ -497,4 +497,31 @@ mod tests {
         assert!(!paths.integration.exists());
         let _ = fs::remove_dir_all(start_menu);
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn scheduled_uninstall_removes_install_root_but_preserves_config() {
+        let root = temp_root();
+        let config = root.with_extension("config");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("padfire-rust.exe"), b"candidate").unwrap();
+        fs::create_dir_all(&config).unwrap();
+        fs::write(config.join("padfire.json"), b"user config").unwrap();
+
+        schedule_windows_uninstall(&root).unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while root.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(
+            !root.exists(),
+            "scheduled uninstall did not remove its install root"
+        );
+        assert_eq!(
+            fs::read(config.join("padfire.json")).unwrap(),
+            b"user config"
+        );
+        let _ = fs::remove_dir_all(config);
+    }
 }
