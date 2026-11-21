@@ -1128,7 +1128,7 @@ mod tests {
         let second = PadKey { page: 0, note: 22 };
         let final_pad = PadKey { page: 0, note: 23 };
         let generations = Arc::new(Mutex::new(GenerationTracker::default()));
-        let token_for = |pad| {
+        let token_for = |pad: PadKey| {
             generations
                 .lock()
                 .unwrap()
