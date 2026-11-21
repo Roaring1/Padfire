@@ -621,4 +621,19 @@ mod tests {
         let _ = fs::remove_file(store.directory());
         let _ = fs::remove_dir_all(target);
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn hardlinked_config_is_rejected() {
+        let store = test_store();
+        store.ensure_private_directory().unwrap();
+        let target = store.directory().join("source.json");
+        fs::write(&target, br#"{"version":5}"#).unwrap();
+        fs::hard_link(&target, store.config_path()).unwrap();
+
+        let loaded = store.load();
+        assert_eq!(loaded.state, LoadState::DefaultAfterError);
+        assert!(loaded.warning.unwrap().contains("hard-linked"));
+        let _ = fs::remove_dir_all(store.directory());
+    }
 }
