@@ -29,6 +29,7 @@ use windows_sys::Win32::System::Pipes::{
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const PIPE_BUFFER_BYTES: u32 = MAX_IPC_RESPONSE_BYTES as u32;
+const RESPONSE_ACK: &[u8] = b"ack\n";
 
 struct PipeHandle(HANDLE);
 
@@ -271,7 +272,11 @@ where
             };
             let response = encode_response(&response)
                 .unwrap_or_else(|_| b"error:response-too-large\n".to_vec());
-            let _ = write_all(pipe.raw(), &response);
+            if write_all(pipe.raw(), &response).is_ok() {
+                // DisconnectNamedPipe discards unread outbound bytes. Wait for
+                // the client ACK with the same bounded request deadline.
+                let _ = read_request(pipe.raw());
+            }
         }
 
         // SAFETY: The pipe instance is connected and is reused next iteration.
@@ -434,7 +439,11 @@ pub fn send(path: &Path, command: IpcCommand) -> Result<Option<String>, String> 
         return Err("IPC request exceeds the configured size limit".to_owned());
     }
     write_all(pipe.raw(), request.as_bytes())?;
-    read_response(pipe.raw())
+    let response = read_response(pipe.raw())?;
+    if response.is_some() {
+        write_all(pipe.raw(), RESPONSE_ACK)?;
+    }
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -489,6 +498,7 @@ mod tests {
         write_all(pipe.raw(), b"not-a-command\n").unwrap();
         let response = read_response(pipe.raw()).unwrap().unwrap();
         assert!(response.starts_with("error:"));
+        write_all(pipe.raw(), RESPONSE_ACK).unwrap();
         drop(pipe);
         server.shutdown();
     }

@@ -13,6 +13,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -154,6 +155,8 @@ struct PadfireApp {
     loudness_busy: bool,
     loudness_result: Option<LoudnessResult>,
     loudness_message: String,
+    meter_level_display: f32,
+    meter_last_update: Instant,
     tray_initialized: bool,
     #[cfg(any(target_os = "linux", windows))]
     tray_icon: Option<tray_icon::TrayIcon>,
@@ -182,6 +185,8 @@ impl PadfireApp {
             loudness_busy: false,
             loudness_result: None,
             loudness_message: String::new(),
+            meter_level_display: 0.0,
+            meter_last_update: Instant::now(),
             tray_initialized: false,
             #[cfg(any(target_os = "linux", windows))]
             tray_icon: None,
@@ -704,6 +709,12 @@ impl PadfireApp {
     }
 
     fn draw_top_bar(&mut self, ui: &mut egui::Ui) {
+        let elapsed = self.meter_last_update.elapsed().min(Duration::from_secs(1));
+        self.meter_last_update = Instant::now();
+        let measured_level = self.runtime.meter_level();
+        self.meter_level_display =
+            smooth_meter_level(self.meter_level_display, measured_level, elapsed);
+
         ui.horizontal_centered(|ui| {
             ui.add_space(6.0);
             ui.label(RichText::new("PADFIRE").strong().size(14.0));
@@ -720,7 +731,7 @@ impl PadfireApp {
             };
             ui.colored_label(color, state);
             ui.add(
-                egui::ProgressBar::new(self.runtime.meter_level())
+                egui::ProgressBar::new(self.meter_level_display)
                     .desired_width(84.0)
                     .desired_height(4.0)
                     .fill(Color32::from_rgb(100, 175, 215)),
@@ -1065,6 +1076,12 @@ fn draw_output_selector(
         });
 }
 
+fn smooth_meter_level(current: f32, target: f32, elapsed: Duration) -> f32 {
+    let time_constant = if target > current { 0.035 } else { 0.24 };
+    let alpha = 1.0 - (-elapsed.as_secs_f32() / time_constant).exp();
+    current + (target - current) * alpha
+}
+
 impl Drop for PadfireApp {
     fn drop(&mut self) {
         self.cancel_loudness_analysis();
@@ -1152,5 +1169,25 @@ fn retrigger_label(value: &str) -> &str {
         "toggle" => "Stop on second press",
         "restart" => "Restart from start",
         _ => "Use global setting",
+    }
+}
+
+#[cfg(test)]
+mod meter_smoothing_tests {
+    use super::*;
+
+    #[test]
+    fn meter_attack_is_faster_than_release() {
+        let interval = Duration::from_millis(35);
+        let attack = smooth_meter_level(0.0, 1.0, interval);
+        let release = 1.0 - smooth_meter_level(1.0, 0.0, interval);
+        assert!(attack > 0.6);
+        assert!(release > 0.1 && release < 0.2);
+        assert!(attack > release);
+    }
+
+    #[test]
+    fn zero_elapsed_time_does_not_change_the_meter() {
+        assert_eq!(smooth_meter_level(0.42, 0.9, Duration::ZERO), 0.42);
     }
 }
