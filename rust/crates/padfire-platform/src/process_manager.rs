@@ -151,6 +151,7 @@ struct ManagedProcess {
     kind: ProcessKind,
     child: Child,
     deadline: Instant,
+    output_readers: Vec<JoinHandle<()>>,
     #[cfg(windows)]
     job: winjob::JobGuard,
 }
@@ -314,17 +315,6 @@ impl ProcessActor {
             };
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        self.active.insert(
-            key,
-            ManagedProcess {
-                pad: Some(pad),
-                kind,
-                child,
-                deadline,
-                #[cfg(windows)]
-                job,
-            },
-        );
 
         // Publish the state transition before reader threads can deliver output.
         // Otherwise a fast child can race an Output event ahead of Started.
@@ -332,12 +322,55 @@ impl ProcessActor {
             pad: Some(pad),
             kind,
         });
+        let mut output_readers = Vec::with_capacity(2);
         if let Some(stdout) = stdout {
-            spawn_output_reader(stdout, Some(pad), kind, self.events.clone());
+            match spawn_output_reader(stdout, Some(pad), kind, self.events.clone()) {
+                Ok(reader) => output_readers.push(reader),
+                Err(error) => {
+                    let group = process_group_id(child.id());
+                    terminate_child(&mut child, group);
+                    #[cfg(windows)]
+                    job.terminate();
+                    join_output_readers(&mut output_readers);
+                    self.fail(
+                        Some(pad),
+                        kind,
+                        format!("could not start stdout reader: {error}"),
+                    );
+                    return;
+                }
+            }
         }
         if let Some(stderr) = stderr {
-            spawn_output_reader(stderr, Some(pad), kind, self.events.clone());
+            match spawn_output_reader(stderr, Some(pad), kind, self.events.clone()) {
+                Ok(reader) => output_readers.push(reader),
+                Err(error) => {
+                    let group = process_group_id(child.id());
+                    terminate_child(&mut child, group);
+                    #[cfg(windows)]
+                    job.terminate();
+                    join_output_readers(&mut output_readers);
+                    self.fail(
+                        Some(pad),
+                        kind,
+                        format!("could not start stderr reader: {error}"),
+                    );
+                    return;
+                }
+            }
         }
+        self.active.insert(
+            key,
+            ManagedProcess {
+                pad: Some(pad),
+                kind,
+                child,
+                deadline,
+                output_readers,
+                #[cfg(windows)]
+                job,
+            },
+        );
     }
 
     fn toggle_crosshair(&mut self, pad: PadKey) {
@@ -406,6 +439,57 @@ impl ProcessActor {
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
+        let _ = self.events.send(ProcessEvent::Started {
+            pad: Some(pad),
+            kind: ProcessKind::Crosshair,
+        });
+        let mut output_readers = Vec::with_capacity(2);
+        if let Some(stdout) = stdout {
+            match spawn_output_reader(
+                stdout,
+                Some(pad),
+                ProcessKind::Crosshair,
+                self.events.clone(),
+            ) {
+                Ok(reader) => output_readers.push(reader),
+                Err(error) => {
+                    let group = process_group_id(child.id());
+                    terminate_child(&mut child, group);
+                    #[cfg(windows)]
+                    job.terminate();
+                    join_output_readers(&mut output_readers);
+                    self.fail(
+                        Some(pad),
+                        ProcessKind::Crosshair,
+                        format!("could not start stdout reader: {error}"),
+                    );
+                    return;
+                }
+            }
+        }
+        if let Some(stderr) = stderr {
+            match spawn_output_reader(
+                stderr,
+                Some(pad),
+                ProcessKind::Crosshair,
+                self.events.clone(),
+            ) {
+                Ok(reader) => output_readers.push(reader),
+                Err(error) => {
+                    let group = process_group_id(child.id());
+                    terminate_child(&mut child, group);
+                    #[cfg(windows)]
+                    job.terminate();
+                    join_output_readers(&mut output_readers);
+                    self.fail(
+                        Some(pad),
+                        ProcessKind::Crosshair,
+                        format!("could not start stderr reader: {error}"),
+                    );
+                    return;
+                }
+            }
+        }
         self.active.insert(
             key,
             ManagedProcess {
@@ -413,30 +497,11 @@ impl ProcessActor {
                 kind: ProcessKind::Crosshair,
                 child,
                 deadline: Instant::now() + CROSSHAIR_TIMEOUT,
+                output_readers,
                 #[cfg(windows)]
                 job,
             },
         );
-        let _ = self.events.send(ProcessEvent::Started {
-            pad: Some(pad),
-            kind: ProcessKind::Crosshair,
-        });
-        if let Some(stdout) = stdout {
-            spawn_output_reader(
-                stdout,
-                Some(pad),
-                ProcessKind::Crosshair,
-                self.events.clone(),
-            );
-        }
-        if let Some(stderr) = stderr {
-            spawn_output_reader(
-                stderr,
-                Some(pad),
-                ProcessKind::Crosshair,
-                self.events.clone(),
-            );
-        }
     }
 
     fn stop_script(&mut self, pad: PadKey) {
@@ -581,10 +646,11 @@ fn spawn_output_reader<R>(
     pad: Option<PadKey>,
     kind: ProcessKind,
     events: Sender<ProcessEvent>,
-) where
+) -> io::Result<JoinHandle<()>>
+where
     R: std::io::Read + Send + 'static,
 {
-    let _ = thread::Builder::new()
+    thread::Builder::new()
         .name("padfire-script-output".to_owned())
         .spawn(move || {
             let mut reader = BufReader::new(reader);
@@ -600,7 +666,13 @@ fn spawn_output_reader<R>(
                 }
                 let _ = events.send(ProcessEvent::Output { pad, kind, line });
             }
-        });
+        })
+}
+
+fn join_output_readers(readers: &mut Vec<JoinHandle<()>>) {
+    for reader in readers.drain(..) {
+        let _ = reader.join();
+    }
 }
 
 pub fn resolve_crosshair_executable() -> Option<std::path::PathBuf> {
@@ -659,6 +731,10 @@ fn terminate_managed(process: &mut ManagedProcess) {
     terminate_child(&mut process.child, group);
     #[cfg(windows)]
     process.job.terminate();
+    // All writer processes are now stopped, so each pipe reaches EOF. Join
+    // both readers before publishing Stopped/Exited/TimedOut or dropping the
+    // process record; shutdown therefore owns the full thread lifecycle.
+    join_output_readers(&mut process.output_readers);
 }
 
 #[cfg(unix)]
