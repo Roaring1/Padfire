@@ -1084,7 +1084,9 @@ mod tests {
                         kind: ProcessKind::ScriptTest,
                         ..
                     } => saw_started = true,
-                    ProcessEvent::Output { line, .. } if line == "padfire-process-test" => {
+                    ProcessEvent::Output { line, .. }
+                        if line.trim_end() == "padfire-process-test" =>
+                    {
                         saw_output = true
                     }
                     other => panic!("unexpected process event: {other:?}"),
