@@ -513,6 +513,7 @@ fn ensure_windows_private_directory(path: &Path) -> Result<(), StoreError> {
     // identity and owner have been checked through that stable handle.
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        verify_windows_directory_parent(parent)?;
     }
     let descriptor = windows_owner_only_security_descriptor()?;
     let attributes = SECURITY_ATTRIBUTES {
@@ -569,6 +570,61 @@ fn ensure_windows_private_directory(path: &Path) -> Result<(), StoreError> {
 
     harden_windows_owner_only_handle(handle, path)?;
     drop(directory);
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn verify_windows_directory_parent(path: &Path) -> Result<(), StoreError> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL,
+    };
+
+    let wide_path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            READ_CONTROL | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(StoreError::Io(std::io::Error::last_os_error()));
+    }
+    // SAFETY: CreateFileW returned a newly owned directory handle.
+    let parent = unsafe { fs::File::from_raw_handle(handle as _) };
+    let mut information: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
+        return Err(StoreError::Io(std::io::Error::last_os_error()));
+    }
+    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(StoreError::UnsafePath(format!(
+            "Padfire configuration parent is a reparse point: {}",
+            path.display()
+        )));
+    }
+    if information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(StoreError::UnsafePath(format!(
+            "Padfire configuration parent is not a directory: {}",
+            path.display()
+        )));
+    }
+    windows_assert_owned_by_current_user(handle, path)?;
+    drop(parent);
     Ok(())
 }
 
@@ -1145,6 +1201,36 @@ mod tests {
         assert!(
             matches!(result, Err(StoreError::UnsafePath(_))),
             "junction was not rejected: {result:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn configuration_directory_with_junction_parent_is_rejected() {
+        let base = test_store().directory;
+        let target = base.with_extension("junction-parent-target");
+        let junction = base.with_extension("junction-parent");
+        fs::create_dir_all(&target).unwrap();
+        let junction_text = junction.to_string_lossy().into_owned();
+        let target_text = target.to_string_lossy().into_owned();
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J", &junction_text, &target_text])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "could not create parent test junction: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let store = ConfigStore::new(junction.join("Padfire"));
+        let result = store.ensure_private_directory();
+        let _ = fs::remove_dir(&junction);
+        let _ = fs::remove_dir_all(&target);
+        assert!(
+            matches!(result, Err(StoreError::UnsafePath(_))),
+            "junction parent was not rejected: {result:?}"
         );
     }
 
