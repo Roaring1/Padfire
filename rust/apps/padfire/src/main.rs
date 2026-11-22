@@ -346,6 +346,7 @@ impl PadfireApp {
 
     fn begin_edit(&mut self, note: u8) {
         self.cancel_loudness_analysis();
+        let _ = self.runtime.stop_preview();
         self.selected_note = Some(note);
         self.editor = self.config.pages[self.page]
             .get(&note.to_string())
@@ -356,6 +357,7 @@ impl PadfireApp {
 
     fn save_edit(&mut self) {
         self.cancel_loudness_analysis();
+        let _ = self.runtime.stop_preview();
         if let Some(note) = self.selected_note {
             self.config.pages[self.page].insert(note.to_string(), self.editor.clone());
             match self.runtime.save_config(&self.config) {
@@ -368,6 +370,7 @@ impl PadfireApp {
 
     fn clear_pad(&mut self, note: u8) {
         self.cancel_loudness_analysis();
+        let _ = self.runtime.stop_preview();
         self.runtime.stop_pad(PadKey::new(self.page as u8, note));
         if let Some(page) = self.config.pages.get_mut(self.page) {
             page.remove(&note.to_string());
@@ -476,6 +479,7 @@ impl PadfireApp {
             .pick_file();
         if let Some(path) = path {
             self.cancel_loudness_analysis();
+            let _ = self.runtime.stop_preview();
             self.editor.file = path.display().to_string();
             if self.editor.label.trim().is_empty() {
                 self.editor.label = path
@@ -492,6 +496,8 @@ impl PadfireApp {
             return;
         }
         let was_open = self.editor_open;
+        let previous_file = self.editor.file.clone();
+        let previous_action = self.editor.action.clone();
         let mut open = self.editor_open;
         egui::Window::new("Pad assignment")
             .open(&mut open)
@@ -530,6 +536,26 @@ impl PadfireApp {
                                 .clicked()
                             {
                                 self.choose_audio_file();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    !self.editor.file.trim().is_empty() && !self.loudness_busy,
+                                    egui::Button::new("Preview"),
+                                )
+                                .clicked()
+                            {
+                                match self.runtime.preview_audio(&self.config, &self.editor) {
+                                    Ok(()) => self.status = "Audio preview started".to_owned(),
+                                    Err(error) => self.status = error,
+                                }
+                            }
+                            if ui.button("Stop preview").clicked() {
+                                match self.runtime.stop_preview() {
+                                    Ok(()) => self.status = "Audio preview stopped".to_owned(),
+                                    Err(error) => self.status = error,
+                                }
                             }
                         });
                         ui.label("Output device - blank uses the global output");
@@ -643,6 +669,7 @@ impl PadfireApp {
                     }
                     if ui.button("Cancel").clicked() {
                         self.cancel_loudness_analysis();
+                        let _ = self.runtime.stop_preview();
                         self.editor_open = false;
                     }
                     if self.selected_note.is_some_and(|note| {
@@ -654,6 +681,12 @@ impl PadfireApp {
                 });
             });
         self.editor_open = open && self.editor_open;
+        if previous_file != self.editor.file
+            || (previous_action == "play" && self.editor.action != "play")
+            || (was_open && !self.editor_open)
+        {
+            let _ = self.runtime.stop_preview();
+        }
         if was_open && !self.editor_open {
             self.cancel_loudness_analysis();
         }

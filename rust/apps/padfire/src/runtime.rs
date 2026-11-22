@@ -15,6 +15,14 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 
+// MIDI notes are 0..127 and Padfire pages are 0..7. This identity is reserved
+// exclusively for the editor's audio preview and can never collide with a
+// physical pad or a persisted stop target.
+const PREVIEW_PAD: PadKey = PadKey {
+    page: u8::MAX,
+    note: u8::MAX,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppCommand {
     Show,
@@ -278,13 +286,21 @@ impl AppRuntime {
         loop {
             match self.audio_events.try_recv() {
                 Ok(AudioEvent::PlaybackStarted { pad }) => {
-                    self.playing_audio.insert(pad);
-                    *status = format!("Playing pad {}", pad.to_key());
-                    self.last_pad_leds.remove(&pad.note);
+                    if pad == PREVIEW_PAD {
+                        *status = "Preview playing".to_owned();
+                    } else {
+                        self.playing_audio.insert(pad);
+                        *status = format!("Playing pad {}", pad.to_key());
+                        self.last_pad_leds.remove(&pad.note);
+                    }
                 }
                 Ok(AudioEvent::PlaybackFinished { pad }) => {
-                    self.playing_audio.remove(&pad);
-                    self.last_pad_leds.remove(&pad.note);
+                    if pad == PREVIEW_PAD {
+                        *status = "Preview stopped".to_owned();
+                    } else {
+                        self.playing_audio.remove(&pad);
+                        self.last_pad_leds.remove(&pad.note);
+                    }
                 }
                 Ok(AudioEvent::RouteFallback {
                     requested,
@@ -296,9 +312,13 @@ impl AppRuntime {
                     *status = format!("Output unavailable: {requested}");
                 }
                 Ok(AudioEvent::PlaybackFailed { pad, message }) => {
-                    self.playing_audio.remove(&pad);
-                    *status = format!("Pad {} failed: {message}", pad.to_key());
-                    self.last_pad_leds.remove(&pad.note);
+                    if pad == PREVIEW_PAD {
+                        *status = format!("Preview failed: {message}");
+                    } else {
+                        self.playing_audio.remove(&pad);
+                        *status = format!("Pad {} failed: {message}", pad.to_key());
+                        self.last_pad_leds.remove(&pad.note);
+                    }
                 }
                 Ok(AudioEvent::BackendUnavailable(message)) => {
                     *status = format!("Audio unavailable: {message}");
@@ -376,6 +396,62 @@ impl AppRuntime {
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
+    }
+
+    fn preview_request(
+        token: padfire_core::OperationToken,
+        config: &AppConfig,
+        assignment: &PadAssignment,
+    ) -> Result<PlaybackRequest, String> {
+        let file = assignment.file.trim();
+        if file.is_empty() {
+            return Err("Choose an audio file before previewing".to_owned());
+        }
+        Ok(PlaybackRequest {
+            token,
+            pad: PREVIEW_PAD,
+            file: file.to_owned(),
+            sink: if assignment.sink.trim().is_empty() {
+                config.default_sink.clone()
+            } else {
+                assignment.sink.clone()
+            },
+            volume_percent: assignment.vol.clamp(0, 150) as u8,
+            looping: assignment.loop_enabled,
+            monitor_sink: config.monitor_enabled.then(|| config.monitor_sink.clone()),
+        })
+    }
+
+    pub fn preview_audio(
+        &mut self,
+        config: &AppConfig,
+        assignment: &PadAssignment,
+    ) -> Result<(), String> {
+        let token = self
+            .generations
+            .lock()
+            .map_err(|_| "Audio generation dispatcher is unavailable".to_owned())?
+            .begin(OperationKey::new(
+                OperationKind::Audio,
+                PREVIEW_PAD.to_key(),
+            ));
+        let request = Self::preview_request(token, config, assignment)?;
+        self.audio
+            .play(request)
+            .map_err(|error| format!("Could not queue preview: {error}"))
+    }
+
+    pub fn stop_preview(&mut self) -> Result<(), String> {
+        self.generations
+            .lock()
+            .map_err(|_| "Audio generation dispatcher is unavailable".to_owned())?
+            .cancel(OperationKey::new(
+                OperationKind::Audio,
+                PREVIEW_PAD.to_key(),
+            ));
+        self.audio
+            .stop(PREVIEW_PAD)
+            .map_err(|error| format!("Could not stop preview: {error}"))
     }
 
     pub fn trigger_pad(&mut self, config: &AppConfig, page: usize, note: u8, status: &mut String) {
@@ -728,5 +804,93 @@ fn process_kind_label(kind: ProcessKind) -> &'static str {
 impl Drop for AppRuntime {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn preview_uses_reserved_identity_and_editor_playback_settings() {
+        let config = AppConfig {
+            default_sink: "global-output".to_owned(),
+            monitor_enabled: true,
+            monitor_sink: "monitor-output".to_owned(),
+            ..AppConfig::default()
+        };
+        let assignment = PadAssignment {
+            file: " /tmp/test-tone.wav ".to_owned(),
+            sink: String::new(),
+            vol: 150,
+            loop_enabled: true,
+            ..PadAssignment::default()
+        };
+        let key = OperationKey::new(OperationKind::Audio, PREVIEW_PAD.to_key());
+        let mut generations = GenerationTracker::default();
+        let token = generations.begin(key);
+        let request = AppRuntime::preview_request(token.clone(), &config, &assignment).unwrap();
+        assert_eq!(request.pad, PREVIEW_PAD);
+        assert_eq!(request.pad.page, u8::MAX);
+        assert_eq!(request.pad.note, u8::MAX);
+        assert_eq!(request.file, "/tmp/test-tone.wav");
+        assert_eq!(request.sink, "global-output");
+        assert_eq!(request.volume_percent, 150);
+        assert!(request.looping);
+        assert_eq!(request.monitor_sink.as_deref(), Some("monitor-output"));
+        assert!(generations.is_current(&token));
+    }
+
+    #[test]
+    fn preview_uses_pad_sink_clamps_volume_and_can_disable_monitor() {
+        let config = AppConfig {
+            default_sink: "global-output".to_owned(),
+            monitor_enabled: false,
+            monitor_sink: "unused-monitor".to_owned(),
+            ..AppConfig::default()
+        };
+        let assignment = PadAssignment {
+            file: "/tmp/test-tone.wav".to_owned(),
+            sink: "pad-output".to_owned(),
+            vol: 999,
+            loop_enabled: false,
+            ..PadAssignment::default()
+        };
+        let token = GenerationTracker::default().begin(OperationKey::new(
+            OperationKind::Audio,
+            PREVIEW_PAD.to_key(),
+        ));
+        let request = AppRuntime::preview_request(token, &config, &assignment).unwrap();
+        assert_eq!(request.sink, "pad-output");
+        assert_eq!(request.volume_percent, 150);
+        assert!(!request.looping);
+        assert!(request.monitor_sink.is_none());
+    }
+
+    #[test]
+    fn starting_a_new_preview_and_stop_both_invalidate_old_generations() {
+        let key = OperationKey::new(OperationKind::Audio, PREVIEW_PAD.to_key());
+        let mut generations = GenerationTracker::default();
+        let first = generations.begin(key.clone());
+        let second = generations.begin(key.clone());
+        assert!(!generations.is_current(&first));
+        assert!(generations.is_current(&second));
+
+        generations.cancel(key);
+        assert!(!generations.is_current(&second));
+    }
+
+    #[test]
+    fn empty_preview_file_is_rejected_before_audio_is_queued() {
+        let token = GenerationTracker::default().begin(OperationKey::new(
+            OperationKind::Audio,
+            PREVIEW_PAD.to_key(),
+        ));
+        let result =
+            AppRuntime::preview_request(token, &AppConfig::default(), &PadAssignment::default());
+        assert_eq!(
+            result.unwrap_err(),
+            "Choose an audio file before previewing"
+        );
     }
 }
