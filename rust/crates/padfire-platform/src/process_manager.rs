@@ -319,11 +319,13 @@ impl ProcessActor {
         let mut command = {
             use std::os::windows::process::CommandExt;
             let mut command = Command::new("cmd.exe");
-            // /S changes how cmd.exe strips the first and last quote in the
-            // entire /C payload. Commands are already assembled/quoted by the
-            // app's script picker, so avoid that extra parse transformation.
+            // cmd.exe uses a different quote parser from the Windows CRT.
+            // Pass the shell payload verbatim instead of allowing std::process
+            // to escape embedded quotes as `\"`, which cmd treats literally.
             command
-                .args(["/D", "/C", command_line])
+                .arg("/D")
+                .arg("/C")
+                .raw_arg(command_line)
                 .creation_flags(winjob::CREATE_NEW_PROCESS_GROUP | winjob::CREATE_SUSPENDED);
             command
         };

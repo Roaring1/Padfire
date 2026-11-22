@@ -1389,8 +1389,11 @@ mod script_picker_tests {
         )
         .unwrap();
         let command = command_for_script_path(&script).unwrap();
+        use std::os::windows::process::CommandExt;
         let output = Command::new("cmd.exe")
-            .args(["/D", "/C", &command])
+            .arg("/D")
+            .arg("/C")
+            .raw_arg(&command)
             .output()
             .unwrap();
         let _ = fs::remove_file(&script);
