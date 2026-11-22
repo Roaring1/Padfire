@@ -69,6 +69,36 @@ fn command_for_script_path(path: &Path) -> Result<String, String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EscapeBehavior {
+    HideToTray,
+    Minimize,
+}
+
+fn should_hide_on_close(close_requested: bool, quit_requested: bool, tray_available: bool) -> bool {
+    close_requested && !quit_requested && tray_available
+}
+
+fn escape_behavior(tray_available: bool) -> EscapeBehavior {
+    if tray_available {
+        EscapeBehavior::HideToTray
+    } else {
+        EscapeBehavior::Minimize
+    }
+}
+
+fn page_shortcut_index(keyboard_is_editing: bool, pressed: [bool; 8]) -> Option<usize> {
+    if keyboard_is_editing {
+        None
+    } else {
+        pressed.iter().position(|is_pressed| *is_pressed)
+    }
+}
+
+fn stop_all_shortcut_enabled(keyboard_is_editing: bool, space_pressed: bool) -> bool {
+    !keyboard_is_editing && space_pressed
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("Padfire: {error}");
@@ -387,7 +417,7 @@ impl PadfireApp {
 
     fn handle_window_close_request(&mut self, context: &Context) {
         let close_requested = context.input(|input| input.viewport().close_requested());
-        if close_requested && !self.quit_requested && self.tray_available() {
+        if should_hide_on_close(close_requested, self.quit_requested, self.tray_available()) {
             // Closing the titlebar should leave the app and its device workers
             // alive in the tray. Explicit Quit paths set quit_requested first.
             context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1087,30 +1117,26 @@ impl PadfireApp {
 
     fn handle_keyboard(&mut self, context: &Context) {
         let keyboard_is_editing = context.egui_wants_keyboard_input();
-        let (number_page, stop_audio, quit, escape) = context.input(|input| {
-            let number_page = (!keyboard_is_editing)
-                .then(|| {
-                    [
-                        egui::Key::Num1,
-                        egui::Key::Num2,
-                        egui::Key::Num3,
-                        egui::Key::Num4,
-                        egui::Key::Num5,
-                        egui::Key::Num6,
-                        egui::Key::Num7,
-                        egui::Key::Num8,
-                    ]
-                    .iter()
-                    .position(|key| input.key_pressed(*key))
-                })
-                .flatten();
+        let (number_keys, space_pressed, quit, escape) = context.input(|input| {
             (
-                number_page,
-                !keyboard_is_editing && input.key_pressed(egui::Key::Space),
+                [
+                    egui::Key::Num1,
+                    egui::Key::Num2,
+                    egui::Key::Num3,
+                    egui::Key::Num4,
+                    egui::Key::Num5,
+                    egui::Key::Num6,
+                    egui::Key::Num7,
+                    egui::Key::Num8,
+                ]
+                .map(|key| input.key_pressed(key)),
+                input.key_pressed(egui::Key::Space),
                 input.modifiers.ctrl && input.key_pressed(egui::Key::Q),
                 input.key_pressed(egui::Key::Escape),
             )
         });
+        let number_page = page_shortcut_index(keyboard_is_editing, number_keys);
+        let stop_audio = stop_all_shortcut_enabled(keyboard_is_editing, space_pressed);
 
         if let Some(page) = number_page {
             self.change_page(page);
@@ -1122,11 +1148,14 @@ impl PadfireApp {
         if quit {
             self.request_quit(context);
         } else if escape {
-            if self.tray_available() {
-                context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                self.status = "Padfire is running in the tray".to_owned();
-            } else {
-                context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            match escape_behavior(self.tray_available()) {
+                EscapeBehavior::HideToTray => {
+                    context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    self.status = "Padfire is running in the tray".to_owned();
+                }
+                EscapeBehavior::Minimize => {
+                    context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
             }
         }
     }
@@ -1412,5 +1441,50 @@ mod script_picker_tests {
     fn script_picker_rejects_cmd_expansion_paths() {
         assert!(command_for_script_path(Path::new(r"C:\Tools\100%script.cmd")).is_err());
         assert!(command_for_script_path(Path::new(r"C:\Tools\!script.cmd")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod ui_policy_tests {
+    use super::*;
+
+    #[test]
+    fn titlebar_close_hides_only_when_tray_exists_and_quit_was_not_requested() {
+        assert!(should_hide_on_close(true, false, true));
+        assert!(!should_hide_on_close(true, false, false));
+        assert!(!should_hide_on_close(true, true, true));
+        assert!(!should_hide_on_close(false, false, true));
+    }
+
+    #[test]
+    fn escape_hides_to_tray_or_minimizes_without_one() {
+        assert_eq!(escape_behavior(true), EscapeBehavior::HideToTray);
+        assert_eq!(escape_behavior(false), EscapeBehavior::Minimize);
+    }
+
+    #[test]
+    fn page_and_space_shortcuts_do_not_intercept_text_editing() {
+        let page_three = [false, false, true, false, false, false, false, false];
+        assert_eq!(page_shortcut_index(false, page_three), Some(2));
+        assert_eq!(page_shortcut_index(true, page_three), None);
+        assert!(stop_all_shortcut_enabled(false, true));
+        assert!(!stop_all_shortcut_enabled(true, true));
+        assert!(!stop_all_shortcut_enabled(false, false));
+    }
+
+    #[test]
+    fn keypad_numbers_resolve_to_the_same_page_shortcuts() {
+        for (index, name) in [
+            "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6", "Numpad7", "Numpad8",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let key = egui::Key::from_name(name).expect("egui recognizes numpad key names");
+            assert_eq!(
+                key,
+                egui::Key::from_name(&format!("Digit{}", index + 1)).unwrap()
+            );
+        }
     }
 }
