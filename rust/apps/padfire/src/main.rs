@@ -1390,7 +1390,7 @@ mod script_picker_tests {
         .unwrap();
         let command = command_for_script_path(&script).unwrap();
         let output = Command::new("cmd.exe")
-            .args(["/D", "/S", "/C", &command])
+            .args(["/D", "/C", &command])
             .output()
             .unwrap();
         let _ = fs::remove_file(&script);
