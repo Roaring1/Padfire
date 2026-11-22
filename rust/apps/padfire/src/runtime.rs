@@ -10,10 +10,17 @@ use padfire_platform::audio_engine::{AudioEngine, AudioEvent, PlaybackRequest};
 use padfire_platform::config_store::{ConfigStore, LoadState};
 use padfire_platform::ipc_server::IpcServer;
 use padfire_platform::midi::{MidiConnectionState, MidiSupervisor};
-use padfire_platform::process_manager::{ProcessEngine, ProcessEvent, ProcessKind};
+use padfire_platform::process_manager::{
+    ProcessEngine, ProcessEvent, ProcessKind, process_ids_alive,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::fs;
+use std::io::Read;
+use std::path::Path;
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 // MIDI notes are 0..127 and Padfire pages are 0..7. This identity is reserved
 // exclusively for the editor's audio preview and can never collide with a
@@ -22,6 +29,246 @@ const PREVIEW_PAD: PadKey = PadKey {
     page: u8::MAX,
     note: u8::MAX,
 };
+
+const PID_FILE_POLL_INTERVAL: Duration = Duration::from_millis(750);
+const PID_FILE_MAX_BYTES: u64 = 4096;
+const PID_FILE_MAX_ENTRIES: usize = 64;
+
+type PidFileRequest = (u64, Vec<(PadKey, String)>);
+type PidFileResult = (u64, HashMap<PadKey, bool>);
+
+/// Keeps the legacy external-PID LED behavior off the UI/MIDI thread.
+/// Requests are bounded to one pending snapshot; stale results are discarded.
+struct PidFileMonitor {
+    requests: Option<SyncSender<PidFileRequest>>,
+    results: Option<Receiver<PidFileResult>>,
+    worker: Option<JoinHandle<()>>,
+    generation: u64,
+    last_paths: Vec<(PadKey, String)>,
+    active: HashMap<PadKey, bool>,
+    last_requested: Instant,
+    unavailable: bool,
+}
+
+impl PidFileMonitor {
+    fn new() -> Self {
+        Self {
+            requests: None,
+            results: None,
+            worker: None,
+            generation: 0,
+            last_paths: Vec::new(),
+            active: HashMap::new(),
+            last_requested: Instant::now() - PID_FILE_POLL_INTERVAL,
+            unavailable: false,
+        }
+    }
+
+    fn ensure_worker(&mut self) -> bool {
+        if self.requests.is_some() {
+            return true;
+        }
+        if self.unavailable {
+            return false;
+        }
+
+        let (request_tx, request_rx) = mpsc::sync_channel::<PidFileRequest>(1);
+        let (result_tx, result_rx) = mpsc::channel::<PidFileResult>();
+        let worker = match thread::Builder::new()
+            .name("padfire-pid-file-watch".to_owned())
+            .spawn(move || {
+                while let Ok((generation, files)) = request_rx.recv() {
+                    let files = files
+                        .into_iter()
+                        .map(|(pad, path)| (pad, pid_file_process_ids(&path)))
+                        .collect::<Vec<_>>();
+                    let process_ids = files
+                        .iter()
+                        .flat_map(|(_, process_ids)| process_ids.iter().copied())
+                        .collect::<Vec<_>>();
+                    // One OS process snapshot covers all configured PID files.
+                    let alive = process_ids_alive(&process_ids);
+                    let active = files
+                        .into_iter()
+                        .map(|(pad, process_ids)| {
+                            (
+                                pad,
+                                process_ids
+                                    .iter()
+                                    .any(|process_id| alive.contains(process_id)),
+                            )
+                        })
+                        .collect();
+                    if result_tx.send((generation, active)).is_err() {
+                        break;
+                    }
+                }
+            }) {
+            Ok(worker) => worker,
+            Err(_) => {
+                self.unavailable = true;
+                return false;
+            }
+        };
+
+        self.requests = Some(request_tx);
+        self.results = Some(result_rx);
+        self.worker = Some(worker);
+        true
+    }
+
+    fn poll(&mut self, config: &AppConfig) {
+        if let Some(results) = &self.results {
+            while let Ok((generation, active)) = results.try_recv() {
+                if generation == self.generation {
+                    self.active = active;
+                }
+            }
+        }
+
+        let files = config
+            .pages
+            .iter()
+            .enumerate()
+            .flat_map(|(page, assignments)| {
+                assignments.iter().filter_map(move |(note, assignment)| {
+                    let path = assignment.pid_file.trim();
+                    (assignment.action_kind() == PadAction::Script && !path.is_empty())
+                        .then(|| {
+                            note.parse::<u8>()
+                                .ok()
+                                .map(|note| (PadKey::new(page as u8, note), path.to_owned()))
+                        })
+                        .flatten()
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if files != self.last_paths {
+            self.generation = self.generation.wrapping_add(1).max(1);
+            self.last_paths = files.clone();
+            // Drop all results for a previous path snapshot immediately. The
+            // next accepted worker result repopulates the external-process LED.
+            self.active.clear();
+            self.last_requested = Instant::now() - PID_FILE_POLL_INTERVAL;
+        }
+
+        if files.is_empty() || self.last_requested.elapsed() < PID_FILE_POLL_INTERVAL {
+            return;
+        }
+        if !self.ensure_worker() {
+            return;
+        }
+
+        if let Some(requests) = &self.requests {
+            match requests.try_send((self.generation, files)) {
+                Ok(()) => self.last_requested = Instant::now(),
+                Err(TrySendError::Full(_)) => {
+                    // Rate-limit retries if a slow or remote PID file is still
+                    // being read. The UI/MIDI thread must never spin on it.
+                    self.last_requested = Instant::now();
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.active.clear();
+                    self.requests = None;
+                    self.results = None;
+                    self.unavailable = true;
+                }
+            }
+        }
+    }
+
+    fn is_active(&self, pad: PadKey) -> bool {
+        self.active.get(&pad).copied().unwrap_or(false)
+    }
+
+    fn shutdown(&mut self) {
+        self.requests.take();
+        self.results.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for PidFileMonitor {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn pid_file_process_ids(path: &str) -> Vec<u32> {
+    let path = Path::new(path);
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return Vec::new();
+    };
+    if !metadata.file_type().is_file() || metadata.len() > PID_FILE_MAX_BYTES {
+        return Vec::new();
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        // Open the reparse point itself, then reject it using handle metadata.
+        let Ok(file) = options.open(path) else {
+            return Vec::new();
+        };
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        let Ok(opened_metadata) = file.metadata() else {
+            return Vec::new();
+        };
+        if !opened_metadata.is_file()
+            || opened_metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            || opened_metadata.len() > PID_FILE_MAX_BYTES
+        {
+            return Vec::new();
+        }
+        return read_pid_ids(file);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let Ok(file) = options.open(path) else {
+            return Vec::new();
+        };
+        let Ok(opened_metadata) = file.metadata() else {
+            return Vec::new();
+        };
+        // This second check is performed on the opened file, closing the
+        // symlink/FIFO replacement window between metadata and open.
+        if !opened_metadata.is_file() || opened_metadata.len() > PID_FILE_MAX_BYTES {
+            return Vec::new();
+        }
+        read_pid_ids(file)
+    }
+}
+
+fn read_pid_ids(file: fs::File) -> Vec<u32> {
+    let mut contents = String::new();
+    if file
+        .take(PID_FILE_MAX_BYTES + 1)
+        .read_to_string(&mut contents)
+        .is_err()
+        || contents.len() as u64 > PID_FILE_MAX_BYTES
+    {
+        return Vec::new();
+    }
+    contents
+        .split_whitespace()
+        .take(PID_FILE_MAX_ENTRIES)
+        .filter_map(|entry| entry.parse::<u32>().ok())
+        .filter(|process_id| *process_id != 0)
+        .collect()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppCommand {
@@ -47,6 +294,7 @@ pub struct AppRuntime {
     midi_status_events: Receiver<MidiConnectionState>,
     audio_events: Receiver<AudioEvent>,
     process_events: Receiver<ProcessEvent>,
+    pid_file_monitor: PidFileMonitor,
     app_commands: Receiver<AppCommand>,
     ipc: Option<IpcServer>,
     status_snapshot: Arc<Mutex<RunningStatus>>,
@@ -81,6 +329,7 @@ impl AppRuntime {
         let processes = ProcessEngine::spawn(generations.clone(), process_event_tx)?;
 
         let (app_command_sender, app_commands) = mpsc::channel();
+        let pid_file_monitor = PidFileMonitor::new();
 
         let initial_status = RunningStatus {
             connected: false,
@@ -147,6 +396,7 @@ impl AppRuntime {
             midi_status_events,
             audio_events,
             process_events,
+            pid_file_monitor,
             app_commands,
             ipc,
             status_snapshot,
@@ -192,6 +442,7 @@ impl AppRuntime {
 
     pub fn poll(&mut self, config: &mut AppConfig, page: &mut usize, status: &mut String) {
         self.poll_commands(config, status);
+        self.poll_pid_files(config);
         self.poll_midi(config, page, status);
         self.poll_audio(status);
         self.poll_processes(status);
@@ -329,6 +580,10 @@ impl AppRuntime {
         }
     }
 
+    fn poll_pid_files(&mut self, config: &AppConfig) {
+        self.pid_file_monitor.poll(config);
+    }
+
     fn poll_processes(&mut self, status: &mut String) {
         loop {
             match self.process_events.try_recv() {
@@ -427,6 +682,12 @@ impl AppRuntime {
         config: &AppConfig,
         assignment: &PadAssignment,
     ) -> Result<(), String> {
+        // Validate the new request before invalidating the previous preview.
+        // Once it is valid, enqueue Stop before Play so a failed replacement
+        // cannot leave an older looping audition alive.
+        if assignment.file.trim().is_empty() {
+            return Err("Choose an audio file before previewing".to_owned());
+        }
         let token = self
             .generations
             .lock()
@@ -436,6 +697,9 @@ impl AppRuntime {
                 PREVIEW_PAD.to_key(),
             ));
         let request = Self::preview_request(token, config, assignment)?;
+        self.audio
+            .stop(PREVIEW_PAD)
+            .map_err(|error| format!("Could not replace preview: {error}"))?;
         self.audio
             .play(request)
             .map_err(|error| format!("Could not queue preview: {error}"))
@@ -691,7 +955,7 @@ impl AppRuntime {
                 }
             }
             PadAction::Script => {
-                if self.running_scripts.contains(&key) {
+                if self.running_scripts.contains(&key) || self.pid_file_monitor.is_active(key) {
                     LED_GREEN
                 } else if configured != 0 {
                     configured
@@ -783,6 +1047,7 @@ impl AppRuntime {
 
     pub fn shutdown(&mut self) {
         self.stop_everything();
+        self.pid_file_monitor.shutdown();
         let _ = self.midi.clear_all_leds();
         self.midi.shutdown();
         self.audio.shutdown();
@@ -810,6 +1075,80 @@ impl Drop for AppRuntime {
 #[cfg(test)]
 mod preview_tests {
     use super::*;
+
+    #[test]
+    fn pid_file_monitor_does_not_spawn_a_worker_without_configured_files() {
+        let mut monitor = PidFileMonitor::new();
+        monitor.poll(&AppConfig::default());
+        assert!(monitor.worker.is_none());
+        assert!(monitor.requests.is_none());
+    }
+
+    #[test]
+    fn pid_file_monitor_spawns_only_after_a_script_uses_a_pid_file() {
+        let mut monitor = PidFileMonitor::new();
+        let mut config = AppConfig::default();
+        config.pages[0].insert(
+            "0".to_owned(),
+            PadAssignment {
+                action: "script".to_owned(),
+                pid_file: "/tmp/padfire-test.pid".to_owned(),
+                ..PadAssignment::default()
+            },
+        );
+        monitor.poll(&config);
+        assert!(monitor.worker.is_some());
+        assert!(monitor.requests.is_some());
+        monitor.shutdown();
+    }
+
+    #[test]
+    fn pid_file_reports_current_process_and_ignores_invalid_entries() {
+        let path = std::env::temp_dir().join(format!(
+            "padfire-pid-file-{}-{}.txt",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        fs::write(&path, format!("not-a-pid 0 {}\n", std::process::id())).unwrap();
+        let process_ids = pid_file_process_ids(&path.to_string_lossy());
+        assert_eq!(process_ids, vec![std::process::id()]);
+        assert!(process_ids_alive(&process_ids).contains(&std::process::id()));
+        fs::write(&path, "0 4294967295 not-a-pid\n").unwrap();
+        let process_ids = pid_file_process_ids(&path.to_string_lossy());
+        assert_eq!(process_ids, vec![u32::MAX]);
+        assert!(!process_ids_alive(&process_ids).contains(&u32::MAX));
+        let _ = fs::remove_file(path);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pid_file_rejects_symlinks_and_directories() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir().join(format!("padfire-pid-safety-{}", std::process::id()));
+        let target = base.with_extension("target");
+        let link = base.with_extension("link");
+        let directory = base.with_extension("directory");
+        fs::write(&target, std::process::id().to_string()).unwrap();
+        symlink(&target, &link).unwrap();
+        fs::create_dir(&directory).unwrap();
+
+        assert!(pid_file_process_ids(&link.to_string_lossy()).is_empty());
+        assert!(pid_file_process_ids(&directory.to_string_lossy()).is_empty());
+
+        let _ = fs::remove_file(link);
+        let _ = fs::remove_file(target);
+        let _ = fs::remove_dir(directory);
+    }
+
+    #[test]
+    fn pid_file_rejects_oversized_and_non_regular_paths() {
+        let path =
+            std::env::temp_dir().join(format!("padfire-pid-file-large-{}.txt", std::process::id()));
+        fs::write(&path, vec![b'1'; (PID_FILE_MAX_BYTES + 1) as usize]).unwrap();
+        assert!(pid_file_process_ids(&path.to_string_lossy()).is_empty());
+        let _ = fs::remove_file(path);
+    }
 
     #[test]
     fn preview_uses_reserved_identity_and_editor_playback_settings() {

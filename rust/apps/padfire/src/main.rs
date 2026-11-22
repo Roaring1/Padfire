@@ -17,6 +17,58 @@ use std::time::{Duration, Instant};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+fn command_for_script_path(path: &Path) -> Result<String, String> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| "Selected script path is not valid Unicode".to_owned())?;
+    if path.contains(['\n', '\r', '\0']) {
+        return Err("Selected script path contains a control character".to_owned());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let quote = |value: &str| {
+            let escaped_quote = ['\'', '\\', '\'', '\''].iter().collect::<String>();
+            format!("'{}'", value.replace('\'', &escaped_quote))
+        };
+        let extension = Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let command = match extension.as_str() {
+            "sh" | "bash" => format!("sh {}", quote(path)),
+            "py" => format!("python3 {}", quote(path)),
+            _ => quote(path),
+        };
+        Ok(command)
+    }
+
+    #[cfg(windows)]
+    {
+        // cmd.exe expands percent-delimited environment variables even inside
+        // double quotes. Reject ambiguous shell metacharacters rather than
+        // creating a browse action that can run a different path than selected.
+        if path.contains(['%', '!', '^', '"']) {
+            return Err(
+                "This Windows path contains cmd.exe expansion characters; enter a trusted command manually".to_owned(),
+            );
+        }
+        let quoted = format!("\"{path}\"");
+        let extension = Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let command = match extension.as_str() {
+            "bat" | "cmd" => format!("call {quoted}"),
+            "ps1" => format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File {quoted}"),
+            _ => quoted,
+        };
+        Ok(command)
+    }
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("Padfire: {error}");
@@ -470,6 +522,19 @@ impl PadfireApp {
         self.settings_open = false;
     }
 
+    fn choose_script_file(&mut self) {
+        let dialog = rfd::FileDialog::new().add_filter(
+            "Scripts and programs",
+            &["sh", "bash", "py", "bat", "cmd", "ps1", "exe"],
+        );
+        if let Some(path) = dialog.pick_file() {
+            match command_for_script_path(&path) {
+                Ok(command) => self.editor.cmd = command,
+                Err(error) => self.status = error,
+            }
+        }
+    }
+
     fn choose_audio_file(&mut self) {
         let path = rfd::FileDialog::new()
             .add_filter(
@@ -612,7 +677,12 @@ impl PadfireApp {
                             });
                     }
                     "script" => {
-                        ui.label("Command or script path");
+                        ui.horizontal(|ui| {
+                            ui.label("Command or script path");
+                            if ui.button("Browse").clicked() {
+                                self.choose_script_file();
+                            }
+                        });
                         ui.text_edit_multiline(&mut self.editor.cmd);
                         ui.label("Optional PID file");
                         ui.text_edit_singleline(&mut self.editor.pid_file);
@@ -1265,5 +1335,79 @@ mod meter_smoothing_tests {
     #[test]
     fn zero_elapsed_time_does_not_change_the_meter() {
         assert_eq!(smooth_meter_level(0.42, 0.9, Duration::ZERO), 0.42);
+    }
+}
+
+#[cfg(test)]
+mod script_picker_tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn script_picker_quotes_shell_paths_with_spaces_and_apostrophes() {
+        use std::process::Command;
+
+        let path = "/tmp/a user's script.sh";
+        let command = command_for_script_path(Path::new(path)).unwrap();
+        assert!(command.starts_with("sh "));
+        let quoted_argument = command.strip_prefix("sh ").unwrap();
+        let output = Command::new("/bin/sh")
+            .args(["-c", &format!("printf %s {quoted_argument}")])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), path);
+
+        let python = command_for_script_path(Path::new("/tmp/test script.py")).unwrap();
+        assert!(python.ends_with("'/tmp/test script.py'"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn script_picker_quotes_batch_and_powershell_paths() {
+        assert_eq!(
+            command_for_script_path(Path::new(r"C:\Tools\My script.cmd")).unwrap(),
+            r#"call "C:\Tools\My script.cmd""#
+        );
+        assert_eq!(
+            command_for_script_path(Path::new(r"C:\Tools\My script.ps1")).unwrap(),
+            r#"powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Tools\My script.ps1""#
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn browsed_batch_file_with_spaces_executes_through_cmd() {
+        use std::fs;
+        use std::process::Command;
+
+        let script =
+            std::env::temp_dir().join(format!("Padfire script picker {}.cmd", std::process::id()));
+        fs::write(
+            &script,
+            "@echo off\r\necho PADFIRE_PICKER_OK\r\nexit /b 0\r\n",
+        )
+        .unwrap();
+        let command = command_for_script_path(&script).unwrap();
+        let output = Command::new("cmd.exe")
+            .args(["/D", "/S", "/C", &command])
+            .output()
+            .unwrap();
+        let _ = fs::remove_file(&script);
+
+        assert!(
+            output.status.success(),
+            "browsed batch command failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("PADFIRE_PICKER_OK"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn script_picker_rejects_cmd_expansion_paths() {
+        assert!(command_for_script_path(Path::new(r"C:\Tools\100%script.cmd")).is_err());
+        assert!(command_for_script_path(Path::new(r"C:\Tools\!script.cmd")).is_err());
     }
 }

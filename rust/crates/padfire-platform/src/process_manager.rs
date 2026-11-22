@@ -22,6 +22,88 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_OUTPUT_LINES: usize = 10;
 const MAX_OUTPUT_LINE_CHARS: usize = 512;
 
+/// Return the subset of process IDs that currently exist, without signalling or
+/// adopting any process. A single Windows snapshot covers the whole batch.
+#[allow(unsafe_code)]
+pub fn process_ids_alive(process_ids: &[u32]) -> std::collections::HashSet<u32> {
+    let wanted = process_ids
+        .iter()
+        .copied()
+        .filter(|process_id| *process_id != 0)
+        .collect::<std::collections::HashSet<_>>();
+    if wanted.is_empty() {
+        return std::collections::HashSet::new();
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        wanted
+            .into_iter()
+            .filter(|process_id| {
+                if *process_id > i32::MAX as u32 {
+                    return false;
+                }
+                // SAFETY: kill(pid, 0) performs an existence/permission check only.
+                let result = unsafe { libc::kill(*process_id as libc::pid_t, 0) };
+                result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+            })
+            .collect()
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+            TH32CS_SNAPPROCESS,
+        };
+
+        // Toolhelp enumeration works for protected/differently privileged PIDs
+        // without requesting a handle to each target process.
+        // SAFETY: snapshot uses the documented process-enumeration flag.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return std::collections::HashSet::new();
+        }
+        struct Snapshot(windows_sys::Win32::Foundation::HANDLE);
+        impl Drop for Snapshot {
+            fn drop(&mut self) {
+                // SAFETY: this wrapper owns the snapshot handle.
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+        let _snapshot = Snapshot(snapshot);
+        let mut alive = std::collections::HashSet::new();
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: entry is initialized with the required size and is writable.
+        let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        while has_entry {
+            if wanted.contains(&entry.th32ProcessID) {
+                alive.insert(entry.th32ProcessID);
+                if alive.len() == wanted.len() {
+                    break;
+                }
+            }
+            // SAFETY: entry remains a valid PROCESSENTRY32W output structure.
+            has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+        alive
+    }
+
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = wanted;
+        std::collections::HashSet::new()
+    }
+}
+
+pub fn process_id_is_alive(process_id: u32) -> bool {
+    process_ids_alive(&[process_id]).contains(&process_id)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessKind {
     Script,
@@ -1013,6 +1095,13 @@ mod winjob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_id_liveness_detects_self_and_rejects_invalid_ids() {
+        assert!(process_id_is_alive(std::process::id()));
+        assert!(!process_id_is_alive(0));
+        assert!(!process_id_is_alive(u32::MAX));
+    }
 
     #[test]
     fn output_capture_has_a_small_fixed_bound() {
