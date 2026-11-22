@@ -158,6 +158,119 @@ pub fn uninstall_current() -> Result<String, String> {
     Ok("Padfire Rust removed; user configuration was preserved".to_owned())
 }
 
+#[derive(Debug)]
+struct IntegrationBackup {
+    original: PathBuf,
+    backup: PathBuf,
+}
+
+fn backup_existing_integration(path: &Path) -> Result<Option<IntegrationBackup>, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "could not inspect existing integration {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    if metadata.file_type().is_dir() {
+        return Err(format!(
+            "refusing to replace an integration directory: {}",
+            path.display()
+        ));
+    }
+
+    let backup = temporary_path(path).with_extension("backup");
+    fs::rename(path, &backup).map_err(|error| {
+        format!(
+            "could not preserve existing integration {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(Some(IntegrationBackup {
+        original: path.to_path_buf(),
+        backup,
+    }))
+}
+
+fn restore_integration_backups(backups: &[IntegrationBackup]) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for backup in backups.iter().rev() {
+        if let Err(error) = fs::rename(&backup.backup, &backup.original) {
+            failures.push(format!(
+                "could not restore {} from {}: {error}",
+                backup.original.display(),
+                backup.backup.display()
+            ));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn rollback_install_integration(
+    paths: &InstallPaths,
+    backups: &[IntegrationBackup],
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    for path in std::iter::once(&paths.integration).chain(paths.icon.iter()) {
+        if let Err(error) = remove_if_exists(path) {
+            failures.push(error);
+        }
+    }
+    if let Err(error) = restore_integration_backups(backups) {
+        failures.push(error);
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn validate_install_root(root: &Path) -> Result<bool, String> {
+    let metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "could not inspect install root {}: {error}",
+                root.display()
+            ));
+        }
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "refusing to install through a non-directory or symlink install root: {}",
+            root.display()
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(format!(
+                "refusing to install through a reparse-point install root: {}",
+                root.display()
+            ));
+        }
+    }
+    Ok(true)
+}
+
+fn error_with_rollback(original: String, rollback: Result<(), String>) -> String {
+    match rollback {
+        Ok(()) => original,
+        Err(rollback_error) => format!("{original}; rollback failed: {rollback_error}"),
+    }
+}
+
 fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
     if !source.is_file() {
         return Err(format!(
@@ -165,56 +278,64 @@ fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
             source.display()
         ));
     }
-    let had_root = fs::symlink_metadata(&paths.root).is_ok();
-    let had_integration = fs::symlink_metadata(&paths.integration).is_ok();
-    let had_icon = paths
-        .icon
-        .as_ref()
-        .is_some_and(|icon| fs::symlink_metadata(icon).is_ok());
+    let had_root = validate_install_root(&paths.root)?;
+    let mut backups = Vec::with_capacity(2);
+    for path in paths.icon.iter().chain(std::iter::once(&paths.integration)) {
+        match backup_existing_integration(path) {
+            Ok(Some(backup)) => backups.push(backup),
+            Ok(None) => {}
+            Err(error) => {
+                let restore = restore_integration_backups(&backups);
+                return match restore {
+                    Ok(()) => Err(error),
+                    Err(restore_error) => {
+                        Err(format!("{error}; rollback also failed: {restore_error}"))
+                    }
+                };
+            }
+        }
+    }
 
-    // Create all desktop integration before publishing the executable. This
-    // keeps a failed shortcut/desktop-entry operation from leaving a candidate
-    // binary that looks installed but cannot be launched from the desktop.
+    // Preserve the old desktop integration until the executable has been
+    // published successfully. A failed upgrade restores the previous desktop
+    // entry/shortcut and icon byte-for-byte instead of leaving a broken link.
     #[cfg(target_os = "linux")]
     {
         if let Some(icon) = &paths.icon
             && let Err(error) = write_atomic(icon, LINUX_ICON.as_bytes())
         {
-            rollback_new_integration(paths, had_integration, had_icon);
-            return Err(error);
+            let rollback = rollback_install_integration(paths, &backups);
+            return Err(error_with_rollback(error, rollback));
         }
         let desktop = desktop_entry(&paths.executable);
         if let Err(error) = write_atomic(&paths.integration, desktop.as_bytes()) {
-            rollback_new_integration(paths, had_integration, had_icon);
-            return Err(error);
+            let rollback = rollback_install_integration(paths, &backups);
+            return Err(error_with_rollback(error, rollback));
         }
     }
 
     #[cfg(windows)]
     if let Err(error) = create_windows_shortcut(&paths.integration, &paths.executable, &paths.root)
     {
-        rollback_new_integration(paths, had_integration, had_icon);
-        return Err(error);
+        let rollback = rollback_install_integration(paths, &backups);
+        return Err(error_with_rollback(error, rollback));
     }
 
     if let Err(error) = copy_executable(source, &paths.executable) {
-        rollback_new_integration(paths, had_integration, had_icon);
+        let rollback = rollback_install_integration(paths, &backups);
         if !had_root {
             let _ = remove_if_exists(&paths.root);
         }
-        return Err(error);
+        return Err(error_with_rollback(error, rollback));
+    }
+
+    // Installation is now committed. Old integration backups are no longer
+    // needed; cleanup failure is non-fatal because the candidate is usable.
+    for backup in backups {
+        let _ = remove_if_exists(&backup.backup);
     }
 
     Ok(())
-}
-
-fn rollback_new_integration(paths: &InstallPaths, had_integration: bool, had_icon: bool) {
-    if !had_integration {
-        let _ = remove_if_exists(&paths.integration);
-    }
-    if !had_icon && let Some(icon) = &paths.icon {
-        let _ = remove_if_exists(icon);
-    }
 }
 
 fn uninstall_from(paths: &InstallPaths) -> Result<(), String> {
@@ -516,6 +637,102 @@ mod tests {
             b"user config"
         );
         let _ = fs::remove_dir_all(user_config);
+        let _ = fs::remove_dir_all(integration_root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn installer_rejects_symlink_install_roots_without_following_them() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root();
+        let target = root.with_extension("install-target");
+        let integration_root = root.with_extension("install-link-integration");
+        fs::create_dir_all(&target).unwrap();
+        symlink(&target, &root).unwrap();
+        let paths = InstallPaths::for_test(&root, &integration_root);
+        let source = std::env::current_exe().unwrap();
+
+        let result = install_from(&source, &paths);
+        assert!(result.is_err(), "installer followed a symlink install root");
+        assert!(!paths.integration.exists());
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+        let _ = fs::remove_file(root);
+        let _ = fs::remove_dir_all(target);
+        let _ = fs::remove_dir_all(integration_root);
+    }
+
+    #[test]
+    fn failed_executable_copy_rolls_back_new_integration_and_preserves_blocker() {
+        let root = temp_root();
+        let integration_root = root.with_extension("copy-failure-integration");
+        let paths = InstallPaths::for_test(&root, &integration_root);
+        let source = std::env::current_exe().unwrap();
+        fs::create_dir_all(&paths.executable).unwrap();
+        fs::write(
+            paths.executable.join("keep.txt"),
+            b"pre-existing executable path blocker",
+        )
+        .unwrap();
+
+        let result = install_from(&source, &paths);
+        assert!(
+            result.is_err(),
+            "copy into a non-directory install root unexpectedly succeeded"
+        );
+        assert!(
+            !paths.integration.exists(),
+            "new integration survived a failed executable copy"
+        );
+        if let Some(icon) = &paths.icon {
+            assert!(!icon.exists(), "new icon survived a failed executable copy");
+        }
+        assert_eq!(
+            fs::read(paths.executable.join("keep.txt")).unwrap(),
+            b"pre-existing executable path blocker",
+            "installer removed or changed the pre-existing path blocker"
+        );
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(integration_root);
+    }
+
+    #[test]
+    fn failed_executable_copy_restores_existing_integration_and_icon() {
+        let root = temp_root();
+        let integration_root = root.with_extension("preserve-integration");
+        let paths = InstallPaths::for_test(&root, &integration_root);
+        let source = std::env::current_exe().unwrap();
+        let original_integration = b"custom user desktop integration";
+        let original_icon = b"custom user icon";
+        fs::create_dir_all(paths.integration.parent().unwrap()).unwrap();
+        fs::write(&paths.integration, original_integration).unwrap();
+        if let Some(icon) = &paths.icon {
+            fs::create_dir_all(icon.parent().unwrap()).unwrap();
+            fs::write(icon, original_icon).unwrap();
+        }
+        // A directory at the executable path forces the final rename to fail
+        // after the candidate integration has already been created successfully.
+        fs::create_dir_all(&paths.executable).unwrap();
+        fs::write(
+            paths.executable.join("keep.txt"),
+            b"pre-existing install-root blocker",
+        )
+        .unwrap();
+
+        let result = install_from(&source, &paths);
+        assert!(
+            result.is_err(),
+            "copy into a blocked install root unexpectedly succeeded"
+        );
+        assert_eq!(fs::read(&paths.integration).unwrap(), original_integration);
+        if let Some(icon) = &paths.icon {
+            assert_eq!(fs::read(icon).unwrap(), original_icon);
+        }
+        assert_eq!(
+            fs::read(paths.executable.join("keep.txt")).unwrap(),
+            b"pre-existing install-root blocker"
+        );
+        let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(integration_root);
     }
 
