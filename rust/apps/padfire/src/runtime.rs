@@ -234,7 +234,7 @@ fn pid_file_process_ids(path: &str) -> Vec<u32> {
         {
             return Vec::new();
         }
-        return read_pid_ids(file);
+        read_pid_ids(file)
     }
 
     #[cfg(not(windows))]
