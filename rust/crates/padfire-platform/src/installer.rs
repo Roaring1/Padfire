@@ -372,6 +372,9 @@ fn copy_executable(source: &Path, destination: &Path) -> Result<(), String> {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&temporary, fs::Permissions::from_mode(0o755))?;
         }
+        #[cfg(windows)]
+        replace_windows_executable(&temporary, destination)?;
+        #[cfg(not(windows))]
         fs::rename(&temporary, destination)?;
         sync_directory(parent)?;
         Ok(())
@@ -381,6 +384,37 @@ fn copy_executable(source: &Path, destination: &Path) -> Result<(), String> {
         return Err(format!("could not install Padfire executable: {error}"));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn replace_windows_executable(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // The staged binary has already been sync_all'd. This same-volume move
+    // atomically replaces an older candidate and requests write-through. If
+    // the old executable is locked without delete sharing, Windows rejects
+    // the replacement and the old file remains intact.
+    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+    // SAFETY: both arguments are valid, NUL-terminated UTF-16 paths.
+    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -607,6 +641,68 @@ mod tests {
     }
 
     #[test]
+    fn copy_executable_replaces_an_existing_candidate_without_temp_leaks() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.bin");
+        let destination = root.join("padfire-rust");
+        fs::write(&source, b"new executable contents").unwrap();
+        fs::write(&destination, b"old executable contents").unwrap();
+
+        copy_executable(&source, &destination).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"new executable contents");
+        let leftovers = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(
+            leftovers, 0,
+            "successful executable upgrade left a temp file"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_executable_upgrade_preserves_locked_old_binary_then_replaces_it() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.bin");
+        let destination = root.join("padfire-rust.exe");
+        fs::write(&source, b"new executable contents").unwrap();
+        fs::write(&destination, b"old executable contents").unwrap();
+
+        // Deliberately deny FILE_SHARE_DELETE so the candidate cannot be
+        // atomically replaced until the old image is no longer in use.
+        let locked = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&destination)
+            .unwrap();
+        assert!(copy_executable(&source, &destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"old executable contents");
+        drop(locked);
+
+        copy_executable(&source, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"new executable contents");
+        let leftovers = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(
+            leftovers, 0,
+            "failed/retried executable upgrade left temp files"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn install_is_idempotent_and_uninstall_preserves_user_data() {
         let root = temp_root();
         let integration_root = root.with_extension("integration");
@@ -780,6 +876,41 @@ mod tests {
             b"block the integration parent path"
         );
         let _ = fs::remove_file(integration_root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn installer_rejects_reparse_point_install_roots() {
+        let root = temp_root();
+        let target = root.with_extension("install-target");
+        let integration_root = root.with_extension("install-junction-integration");
+        fs::create_dir_all(&target).unwrap();
+        let root_text = root.to_string_lossy().into_owned();
+        let target_text = target.to_string_lossy().into_owned();
+        let output = Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J", &root_text, &target_text])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "could not create install-root junction: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let paths = InstallPaths::for_test(&root, &integration_root);
+        let source = std::env::current_exe().unwrap();
+        let result = install_from(&source, &paths);
+        assert!(
+            result.is_err(),
+            "installer followed a reparse-point install root"
+        );
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+        assert!(!paths.integration.exists());
+
+        let _ = fs::remove_dir(&root);
+        let _ = fs::remove_dir_all(&target);
+        let _ = fs::remove_dir_all(integration_root);
     }
 
     #[cfg(windows)]
