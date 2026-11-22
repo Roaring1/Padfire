@@ -501,29 +501,36 @@ fn midi_supervisor_loop(
         // reflected even when the user is not triggering pads.
         if !disable_hardware && connection.is_some() && Instant::now() >= next_discovery {
             next_discovery = Instant::now() + Duration::from_secs(1);
-            let still_present =
-                selected
-                    .as_ref()
-                    .is_some_and(|selection| match find_supported_pair() {
-                        Ok(Some(current)) => {
-                            current
-                                .input_name
-                                .eq_ignore_ascii_case(&selection.input_name)
-                                && current
-                                    .output_name
-                                    .eq_ignore_ascii_case(&selection.output_name)
-                        }
-                        _ => false,
-                    });
-            if !still_present {
-                connection = None;
-                selected = None;
-                report_midi_state(
-                    &mut reported,
-                    &status_events,
-                    MidiConnectionState::Disconnected,
-                );
-                next_discovery = Instant::now() + Duration::from_millis(250);
+            let presence = selected
+                .as_ref()
+                .ok_or_else(|| {
+                    MidiBackendError::Backend(
+                        "active MIDI connection has no selected ports".to_owned(),
+                    )
+                })
+                .and_then(|selection| {
+                    enumerate_port_names().map(|(inputs, outputs)| {
+                        selected_ports_present(selection, &inputs, &outputs)
+                    })
+                });
+            match presence {
+                Ok(true) => {}
+                // Enumeration may fail transiently while ALSA/RtMidi/CoreMIDI
+                // restarts. Preserve the existing open connection and try
+                // again later, matching the released app's behavior.
+                Err(_) => {
+                    next_discovery = Instant::now() + Duration::from_secs(2);
+                }
+                Ok(false) => {
+                    connection = None;
+                    selected = None;
+                    report_midi_state(
+                        &mut reported,
+                        &status_events,
+                        MidiConnectionState::Disconnected,
+                    );
+                    next_discovery = Instant::now() + Duration::from_millis(250);
+                }
             }
         }
     }
@@ -548,21 +555,47 @@ fn report_midi_state(
     }
 }
 
-fn find_supported_pair() -> Result<Option<MidiSelection>, MidiBackendError> {
+fn enumerate_port_names() -> Result<(Vec<String>, Vec<String>), MidiBackendError> {
     let input = MidiInput::new("Padfire Pair Discovery Input")
         .map_err(|error| MidiBackendError::Backend(error.to_string()))?;
     let output = MidiOutput::new("Padfire Pair Discovery Output")
         .map_err(|error| MidiBackendError::Backend(error.to_string()))?;
-    let inputs: Vec<String> = input
+    let inputs = input
         .ports()
         .into_iter()
-        .filter_map(|port| input.port_name(&port).ok())
-        .collect();
-    let outputs: Vec<String> = output
+        .map(|port| {
+            input
+                .port_name(&port)
+                .map_err(|error| MidiBackendError::Backend(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let outputs = output
         .ports()
         .into_iter()
-        .filter_map(|port| output.port_name(&port).ok())
-        .collect();
+        .map(|port| {
+            output
+                .port_name(&port)
+                .map_err(|error| MidiBackendError::Backend(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((inputs, outputs))
+}
+
+fn selected_ports_present(
+    selection: &MidiSelection,
+    inputs: &[String],
+    outputs: &[String],
+) -> bool {
+    inputs
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(&selection.input_name))
+        && outputs
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&selection.output_name))
+}
+
+fn find_supported_pair() -> Result<Option<MidiSelection>, MidiBackendError> {
+    let (inputs, outputs) = enumerate_port_names()?;
     select_unambiguous_pair(&inputs, &outputs)
 }
 
@@ -639,6 +672,42 @@ mod tests {
         assert!(matches!(
             select_unambiguous_pair(&inputs, &outputs),
             Err(MidiBackendError::Ambiguous(_))
+        ));
+    }
+
+    #[test]
+    fn selected_pair_stays_present_when_another_controller_is_plugged_in() {
+        let selected = MidiSelection {
+            input_name: "Launchpad Mini MK2 A".to_owned(),
+            output_name: "Launchpad Mini MK2 A".to_owned(),
+        };
+        let inputs = vec![
+            "Launchpad Mini MK2 A".to_owned(),
+            "Launchpad Mini MK1 B".to_owned(),
+        ];
+        let outputs = inputs.clone();
+        assert!(selected_ports_present(&selected, &inputs, &outputs));
+        assert!(matches!(
+            select_unambiguous_pair(&inputs, &outputs),
+            Err(MidiBackendError::Ambiguous(_))
+        ));
+    }
+
+    #[test]
+    fn selected_pair_is_missing_when_either_endpoint_disappears() {
+        let selected = MidiSelection {
+            input_name: "Launchpad Mini MK2 A".to_owned(),
+            output_name: "Launchpad Mini MK2 A".to_owned(),
+        };
+        assert!(!selected_ports_present(
+            &selected,
+            &["Launchpad Mini MK2 A".to_owned()],
+            &["Launchpad Mini MK1 B".to_owned()]
+        ));
+        assert!(selected_ports_present(
+            &selected,
+            &["launchpad mini mk2 a".to_owned()],
+            &["LAUNCHPAD MINI MK2 A".to_owned()]
         ));
     }
 

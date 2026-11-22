@@ -126,6 +126,13 @@ impl PidFileMonitor {
             }
         }
 
+        // Config traversal and path allocation happen at the same low cadence
+        // as process checks, not on every egui frame.
+        if self.last_requested.elapsed() < PID_FILE_POLL_INTERVAL {
+            return;
+        }
+        self.last_requested = Instant::now();
+
         let files = config
             .pages
             .iter()
@@ -150,23 +157,18 @@ impl PidFileMonitor {
             // Drop all results for a previous path snapshot immediately. The
             // next accepted worker result repopulates the external-process LED.
             self.active.clear();
-            self.last_requested = Instant::now() - PID_FILE_POLL_INTERVAL;
         }
 
-        if files.is_empty() || self.last_requested.elapsed() < PID_FILE_POLL_INTERVAL {
-            return;
-        }
-        if !self.ensure_worker() {
+        if files.is_empty() || !self.ensure_worker() {
             return;
         }
 
         if let Some(requests) = &self.requests {
             match requests.try_send((self.generation, files)) {
-                Ok(()) => self.last_requested = Instant::now(),
+                Ok(()) => {}
                 Err(TrySendError::Full(_)) => {
                     // Rate-limit retries if a slow or remote PID file is still
                     // being read. The UI/MIDI thread must never spin on it.
-                    self.last_requested = Instant::now();
                 }
                 Err(TrySendError::Disconnected(_)) => {
                     self.active.clear();
@@ -1082,6 +1084,25 @@ mod preview_tests {
         monitor.poll(&AppConfig::default());
         assert!(monitor.worker.is_none());
         assert!(monitor.requests.is_none());
+    }
+
+    #[test]
+    fn pid_file_config_scans_are_throttled_to_the_poll_interval() {
+        let mut monitor = PidFileMonitor::new();
+        let mut config = AppConfig::default();
+        config.pages[0].insert(
+            "0".to_owned(),
+            PadAssignment {
+                action: "script".to_owned(),
+                pid_file: "/tmp/padfire-test.pid".to_owned(),
+                ..PadAssignment::default()
+            },
+        );
+        monitor.poll(&config);
+        let generation = monitor.generation;
+        monitor.poll(&config);
+        assert_eq!(monitor.generation, generation);
+        monitor.shutdown();
     }
 
     #[test]
