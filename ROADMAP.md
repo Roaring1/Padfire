@@ -43,7 +43,7 @@ commands. Prefer standard MIDI/HID APIs, explicit user consent, declarative
 profiles and capability-specific drivers. Never send LED, firmware or vendor
 control messages to a device merely because its name looks similar.
 
-Archived discussion: [issue #8 — device-neutral MIDI profiles and carefully scoped USB HID support](https://github.com/Roaring1/Padfire/issues/8) was closed as not planned on 2026-11-23. The topic remains deferred background guidance here, not an active implementation commitment or open TODO.
+Archived discussion: [issue #8 — device-neutral MIDI profiles and carefully scoped USB HID support](https://github.com/Roaring1/Padfire/issues/8) was closed as not planned on 2026-11-22. The topic remains deferred background guidance here, not an active implementation commitment or open TODO.
 
 ## Related project
 
