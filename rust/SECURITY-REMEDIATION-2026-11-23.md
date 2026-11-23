@@ -10,7 +10,7 @@ The repository's CodeQL dashboard was inspected before these changes. It showed 
 - 3 rust/command-line-injection alerts (critical).
 - 1 rust/unsafe-deserialization alert (critical).
 
-Those are baseline counts on main, not the result for the current security PR. No alerts have been dismissed as part of this work. A fresh PR CodeQL result is recorded below: one high-severity PID status-file path finding remains open; the critical deserialization finding is absent from the PR analysis.
+Those are baseline counts on main, not the result for the current security PR. No alerts have been dismissed as part of this work. The latest c53 PR CodeQL policy result is green with no new alerts in changed files. The earlier #185 PID status-file instance remains as historical Code Scanning data on an older PR head and was not dismissed. The critical unsafe-deserialization finding is absent from the current PR analysis. The separate 104-alert main baseline is still open.
 
 ## Changes made
 
@@ -48,58 +48,62 @@ After bounded parsing and schema normalization, the typed AppConfig conversion u
 ### Process and IPC boundaries
 
 - Crosshair discovery now canonicalizes PATH and user-local candidates and returns only an absolute regular executable (and, on Unix, one with executable permission).
-- The optional PID status-file path remains user-selectable because script authors may choose where their script writes the PID list. The resolver rejects parent traversal and canonicalizes the existing parent while preserving the final filename. It is opened directly with no-follow/nonblocking flags on Linux or OPEN_REPARSE_POINT on Windows; metadata checks are performed on the opened handle, avoiding a separate pre-open stat and its TOCTOU window. Reads are read-only and bounded to 4 KiB/64 PIDs, reject non-regular files, symlinks/reparse points, foreign-owned Linux files and hardlinks. Parsed values are used only to determine whether the corresponding pad should show its external-process LED; the file is not executed, modified, logged or returned.
+- The optional PID status-file path remains user-selectable because script authors may choose where their script writes the PID list. Parent traversal is rejected and the existing parent is canonicalized. On Unix, the c53 implementation starts from the fixed filesystem root, walks each parent component by directory descriptor using openat with O_DIRECTORY and O_NOFOLLOW, then opens the final filename relative to the validated parent descriptor with O_NOFOLLOW and O_NONBLOCK. This avoids passing the user-selected absolute path directly to the file-open sink and prevents parent/final symlink traversal during the descriptor walk. Windows continues to use FILE_FLAG_OPEN_REPARSE_POINT and opened-handle metadata. Reads are read-only and bounded to 4 KiB/64 PIDs, reject non-regular files, symlinks/reparse points, foreign-owned Linux files and hardlinks. Parsed values are used only to determine whether the corresponding pad should show its external-process LED; the file is not executed, modified, logged or returned. A focused regression rejects symlinked parent components while preserving normal canonicalized custom paths.
 - Unix IPC socket paths must be absolute, cannot contain parent-directory traversal, and reject symlink/non-directory parent components. Both server bind and client connect use the canonical parent path. The socket itself remains owner-only.
 - Loudness analysis resolves an existing local regular file to an absolute path and restricts FFmpeg input protocols to file, preventing network protocol input through that analysis path.
 
 ## Findings that require an explicit trust decision
 
-- **Optional PID status path / PR alert #185:** the path remains user-selectable because script authors may choose where their script writes the PID list. It is opened read-only; parent traversal is rejected, the parent is canonicalized, and the final file is opened without following links/reparse points. Validation uses metadata from the opened handle, so no separate pre-open stat occurs. The handle must refer to a regular, bounded, current-user file (including hardlink checks on Linux). Contents are parsed as bounded numeric PIDs and affect only the pad's external-process LED. The current autoclick pad is configured to `/run/user/1000/autoclicker/autoclick.pid`, verified against the live KDE session's `XDG_RUNTIME_DIR` and `/home/roaring/autoclick.sh`; its previous `/tmp/autoclick.pid` value did not match the script. Confining this optional field to one fixed app directory would break other script workflows. Keep high-severity alert #185 open for human review; do not suppress it.
+- **Optional PID status path / historical PR alert #185:** the path remains user-selectable because script authors may choose where their script writes the PID list. The c53 Unix implementation uses a root-anchored descriptor-relative openat walk with O_NOFOLLOW on every directory component and the final filename, followed by opened-handle regular-file/owner/hardlink/size checks. Windows retains its reparse-point handle checks. The current autoclick pad is configured to /run/user/1000/autoclicker/autoclick.pid, verified against the live KDE session and /home/roaring/autoclick.sh. The explicit CodeQL analyses for c53 passed and CodeQL policy check 138094831040 reports “No new alerts in code changed by this pull request.” The older #185 instance is still historical Code Scanning data on an earlier PR head; it was not dismissed. Do not suppress future regressions in this flow.
 - **Per-user installer and desktop-integration roots:** `HOME`, `XDG_DATA_HOME`, `LOCALAPPDATA`, `APPDATA` and the optional `PADFIRE_START_MENU_DIR` value influence destinations inside the current user's profile. These are validated and canonicalized, with symlink/reparse-point ancestors rejected on Windows; the arbitrary `PADFIRE_INSTALL_ROOT` override is gone. They remain process-environment inputs, however, and their path flows should be reviewed individually. A same-user process that can already control the installer environment is within the current-user trust boundary, but do not mark a static path finding false-positive solely on that basis without checking the source-to-sink path.
 - Custom script actions: Padfire deliberately supports user-authored shell scripts. On Unix they are run by /bin/sh -c; on Windows they are passed to cmd.exe /C. This feature is intentionally powerful and is not sandboxed. The config store is user-owned/private, but same-user local processes remain within the trust boundary. A future sandbox/confirmation policy would be a product design change and must not silently remove existing script functionality.
 - Deserialization: retain extension fields by design, so deny_unknown_fields is not compatible with the v5 forward-compatibility contract. The byte, depth, node, page, pad and field bounds mitigate unbounded resource use. The critical unsafe-deserialization finding is absent from the latest PR CodeQL scan.
 
 ## Validation performed on this branch
 
-Latest local Nobara/Linux validation for the combined candidate head `c1a52322431f26d803660fb9d2de29a83821258d`:
-- `cargo fmt --all -- --check`
-- `cargo test --workspace --locked`: 140 passed, 0 failed (30 app, 2 CLI, 28 core, 23 compatibility, 57 platform)
-- `cargo clippy --workspace --all-targets --locked -- -D warnings`
-- `cargo build --workspace --release --locked`
-- `cargo deny check` 0.22.0: advisories, licenses, bans and sources all passed
-- `git diff --check`
-- Legacy GTK/Python regression: 83 core tests and 7 dialog tests passed; Python bytecode, shell syntax, ShellCheck and desktop-entry validation passed.
-- Isolated Xvfb render of the real Rust binary generated distinct Launchpad-grid and Settings screenshots; both local and hosted UI captures were visually inspected.
+Latest local Nobara/Linux validation for c53c3ea757f01456e80ca0a13220929e3bebe4f4:
+- cargo fmt --all -- --check: pass
+- cargo test --workspace --locked: 141 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 57 platform)
+- cargo clippy --workspace --all-targets --locked -- -D warnings: pass
+- cargo build --workspace --release --locked: pass
+- cargo deny check 0.22.0: advisories, licenses, bans and sources all passed
+- git diff --check: pass
+- Focused PID-path tests: 9 passed, including symlinked-parent rejection
+- Legacy GTK/Python regression: 83 core tests and 7 dialog tests passed; Python compile, shell syntax, ShellCheck and desktop-entry validation passed
+- Isolated Xvfb main-grid and Settings renders were visually inspected (540x480); screenshots saved to /home/roaring/Workspace/PadfireReview-2026-11-23/c53c3ea/.
+- Disposable installer lifecycle: first install, repeat install, --status, uninstall, and byte-identical preservation of an existing v5 config all passed.
 
-All hosted build/UI/dependency workflows for exact head `c1a5232` passed:
-- Rust PR matrix: [45277552562](https://github.com/Roaring1/Padfire/actions/runs/45277552562); both OSs passed format, tests, strict Clippy and optimized release builds.
-- Push Rust matrix: [45277537020](https://github.com/Roaring1/Padfire/actions/runs/45277537020); both OSs passed.
-- cargo-deny dependency policy passed on both PR and push workflows.
-- UI Linux render and screenshot artifact passed on both workflows.
-- GTK legacy smoke: [45277552484](https://github.com/Roaring1/Padfire/actions/runs/45277552484), passed.
-- Explicit PR CodeQL analysis: [45277537921](https://github.com/Roaring1/Padfire/actions/runs/45277537921), all three analyzers (Rust, Python, Actions) completed successfully.
+Hosted validation for exact c53 head:
+- PR run [45289561400](https://github.com/Roaring1/Padfire/actions/runs/45289561400): completed successfully; explicit Rust/Python/Actions CodeQL analyses passed.
+- GitHub CodeQL policy check [138094831040](https://github.com/Roaring1/Padfire/runs/138094831040): success, “No new alerts in code changed by this pull request.”
+- Push Rust run [45289559703](https://github.com/Roaring1/Padfire/actions/runs/45289559703): Ubuntu and Windows build/test/Clippy/release matrix passed.
+- PR Rust run [45289566438](https://github.com/Roaring1/Padfire/actions/runs/45289566438): Ubuntu/Windows matrix passed.
+- cargo-deny, hosted UI screenshot jobs and GTK legacy smoke all passed on c53.
 
-However, the separate GitHub CodeQL policy check [138053461156](https://github.com/Roaring1/Padfire/runs/138053461156) **failed** because the PR adds one high-severity path-injection alert (#185) at `rust/apps/padfire/src/runtime.rs:261`. The alert is on PR head `c1a5232`, and it has not been dismissed or fixed. The explicit analysis job passing means analysis completed; it does not override the failed alert policy check.
-
-The broader main-branch Code Scanning baseline remains 104 open alerts (100 high path-injection, 3 critical command-line-injection and 1 critical unsafe-deserialization). No alert has been bulk-dismissed. The critical deserialization and arbitrary installer-root override findings were absent from the previous PR analysis.
+The previous high-severity PID-path finding #185 is no longer introduced by the current changed-file diff. Its historical instance remains in Code Scanning on an earlier PR head and was not dismissed. The broader main Code Scanning baseline remains 104 open alerts (100 high path injection, 3 critical command-line injection, 1 critical unsafe deserialization), tracked separately in issue #21.
 
 ## Nobara side-by-side installation
 
-The latest Rust candidate is installed on Nobara at `~/.local/opt/padfire-rust/padfire-rust`, version `3.0.0-alpha.1`. Its SHA-256 is `02f6c890ed582bd22c94336d3564413e6287ff2a856348bc95d25172ae44be98`, matching the local release artifact with `url 2.5.9`. The `Padfire Rust` desktop entry and SVG icon were regenerated and validated. Previous candidate binaries and UI files are backed up under `~/.local/share/padfire-rust-backups/2026-11-23-pre-combined-ui/` and `.../2026-11-23-pre-url-2.5.9/`, both with verified manifests.
+The latest Rust candidate is installed at ~/.local/opt/padfire-rust/padfire-rust, version 3.0.0-alpha.1. SHA-256 aef9169b9ff23e96091c14f7d36930a03b53329afcbd984675e0764e9343ba5b exactly matches the local c53 release artifact. Padfire Rust desktop entry and SVG icon validate; KDE database/service cache was refreshed. The refresh reports an unrelated pre-existing malformed packettracer.desktop file; the Padfire entry itself validates.
+
+Rollback candidate binary/desktop/icon sets, all with verified SHA-256 manifests:
+- ~/.local/share/padfire-rust-backups/2026-11-23-pre-combined-ui/
+- ~/.local/share/padfire-rust-backups/2026-11-23-pre-url-2.5.9/
+- ~/.local/share/padfire-rust-backups/2026-11-23-pre-c53-openat/
 
 Config namespaces:
-- Rust runtime: `~/.config/padfire-rust/padfire.json` (v5, 8 pages, 21 assignments; current SHA-256 `5aada0eea0a6e80206a8f4f85343be1b6c3cb46ce6714830e12e4d72c7a82c60`).
-- Source/default candidate: `~/.config/padfire/padfire.json` (current SHA-256 `a003c9046235f987e2fd4ac907afa4d6eb55d23641aece42dd5da25fcb67edb0`).
-- Both candidate configs had the stale clicker PID path corrected from `/tmp/autoclick.pid` to `/run/user/1000/autoclicker/autoclick.pid` after verifying the live KDE session's `XDG_RUNTIME_DIR` and `/home/roaring/autoclick.sh`. Pre-change copies are backed up under `~/.local/share/padfire-rust-backups/2026-11-23-pid-path-before-fix/` with a verified manifest. The autoclick script was not launched.
-- Legacy v2.4.0 config: `~/.config/roaring/padfire.json` (unchanged SHA-256 `50f8e18175f88707649ace4febdab6492e8e553feb35103752a00334d22055c5`).
+- Rust runtime: ~/.config/padfire-rust/padfire.json (v5, 8 pages, 21 assignments; SHA-256 5aada0eea0a6e80206a8f4f85343be1b6c3cb46ce6714830e12e4d72c7a82c60).
+- Source/default candidate: ~/.config/padfire/padfire.json (v5; SHA-256 a003c9046235f987e2fd4ac907afa4d6eb55d23641aece42dd5da25fcb67edb0).
+- Both candidate configs use /run/user/1000/autoclicker/autoclick.pid, matching the live KDE runtime and /home/roaring/autoclick.sh. Their pre-change copies are backed up under ~/.local/share/padfire-rust-backups/2026-11-23-pid-path-before-fix/ with a verified manifest. The script was not launched.
+- Legacy v2.4.0 config: ~/.config/roaring/padfire.json (unchanged SHA-256 50f8e18175f88707649ace4febdab6492e8e553feb35103752a00334d22055c5).
 
-The Rust candidate is not running in the live desktop. No physical MIDI/audio state was changed; the legacy v2.4.0 launcher, config, audio routing and desktop entry remain unchanged.
+A disposable HOME/XDG installer test confirmed repeat-install and uninstall preserve an existing v5 config byte-for-byte. The candidate is stopped, with no Padfire Rust process or stale socket. Legacy v2.4.0 launcher/config/desktop entry remain unchanged.
 
 ## Remaining acceptance
 
-1. Keep PR #22 open for human review of the one current high-severity PID-file path finding (#185 at runtime.rs:261); the separate PR CodeQL policy check remains red until that finding has a reviewed disposition.
-2. Continue individual source-to-sink triage of the separate 104-alert main baseline. Do not bulk-dismiss findings; update issue #21 only with evidence-backed dispositions.
+1. Keep PR #22 open for final review; c53 explicit CodeQL analysis and the changed-file CodeQL policy check pass with no new alerts. The older #185 instance remains historical and was not dismissed.
+2. Continue individual source-to-sink triage of the separate 104-alert main baseline. Do not bulk-dismiss findings; issue #21 remains open.
 3. Continue reviewing user-authored shell scripts and PATH-selected Crosshair execution against their documented trust boundaries.
-4. Review the cargo-deny duplicate-version warnings and add signing/release provenance checks; dependency/license/advisory policy is now configured and passing.
+4. Review cargo-deny duplicate-version warnings and add signing/release provenance checks; dependency/license/advisory policy is configured and passing.
 5. Complete physical Launchpad MK1/MK2, KDE Wayland/PipeWire loopback, Windows WASAPI, UI/tray/input, side-by-side install/uninstall, config migration and rollback acceptance before production cutover.
 6. Keep v2.4.0 as production until all gates in CUTOVER.md pass.
