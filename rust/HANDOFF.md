@@ -7,10 +7,10 @@ Updated: 2026-11-23 (America/Los_Angeles)
 - Repository: `Roaring1/Padfire`
 - Production reference: released Padfire v2.4.0 on `main`; current security branch is based on `1cc3af4ebc7483c29c23e1bd7f41932948a99510`.
 - Active security branch: `security/triage-codeql-paths-2026-11-23`
-- Latest security implementation commit: `cb0a168678d189185d70d9161d9558e3cb3d75ff` (`fix: make PowerShell installer temp files collision-safe`).
-- Security remediation PR #22: https://github.com/Roaring1/Padfire/pull/22 (open, non-draft, unmerged).
-- UI/final-build candidate PR #20: https://github.com/Roaring1/Padfire/pull/20 (open, draft, unmerged).
-- Both are candidates only; production v2.4.0 remains the reference and no cutover is authorized by these PRs.
+- Latest combined security + UI + supply-chain commit: `c1a52322431f26d803660fb9d2de29a83821258d` (`security: fix URL advisory and enforce dependency policy`).
+- Active integrated candidate PR #22: https://github.com/Roaring1/Padfire/pull/22 (open, non-draft, unmerged).
+- The former UI-only draft PR #20 was closed as superseded after its four reviewed commits were cherry-picked onto PR #22.
+- Production v2.4.0 remains the reference; the Rust alpha is installed side-by-side on Nobara only, with no production cutover.
 - Nobara checkout: `/home/roaring/Documents/GitHub/Padfire`
 - Windows checkout: `%USERPROFILE%\src\Padfire` on SSH alias `laptop`
 
@@ -32,29 +32,48 @@ The Rust workspace contains `padfire-core`, `padfire-platform`, and a native efr
 - Side-by-side installer: Linux user-local binary, desktop file and SVG icon; Windows per-user binary and Start Menu shortcut. Integration is created before the executable is published. If integration or binary copy fails, newly created integration artifacts are rolled back. Linux desktop `Exec` quotes spaces and escapes literal `%` field codes, backslashes, quotes and `$`. No autostart or service; never touches v2.4.0 or user configuration.
 - Windows deferred uninstall: if the running executable is inside the candidate install root, a hidden cleanup helper uses null stdio and `CREATE_NO_WINDOW`, retries removal while the executable is locked, and preserves sibling user configuration. Native regression holds a real deny-delete file handle, observes a cleanup retry, releases the lock and verifies removal.
 
-## Latest validation on commit cb0a168
+## Combined security + UI candidate: local validation and Nobara install
 
-Nobara/Linux and the hosted Windows runner both passed the complete Rust workspace validation on the exact security PR head.
+The combined candidate head `c1a52322431f26d803660fb9d2de29a83821258d` passed local Nobara/Linux validation:
 
-| Gate | Nobara/Linux | Hosted Windows |
-|---|---:|---:|
-| cargo fmt --all -- --check | pass | pass |
-| Workspace unit/integration tests | 129 passed | 133 passed |
-| Strict Clippy (-D warnings) | pass | pass |
-| Optimized workspace release build | pass | pass |
+| Gate | Result |
+|---|---:|
+| `cargo fmt --all -- --check` | pass |
+| Workspace unit/integration tests | **140 passed** |
+| Strict Clippy (`-D warnings`) | pass |
+| Optimized workspace release build | pass |
+| `git diff --check` | pass |
+| Legacy GTK/Python core suite | 83 passed |
+| Legacy GTK dialog suite under Xvfb | 7 passed |
+| Isolated Rust Xvfb grid + Settings render | 2 distinct 540x480 PNGs; visually inspected |
 
-Linux test groups: 19 app, 2 CLI, 28 core, 23 compatibility and 57 platform. Windows test groups: 19 app, 2 CLI, 28 core, 23 compatibility and 61 platform. Windows-only additions cover exclusive-create collision ownership, two distinct generated PowerShell scripts executed through powershell.exe -File, and the production wrapper.
+Rust test groups: 30 app, 2 CLI, 28 core, 23 compatibility, 57 platform. The combined branch includes the four reviewed PR #20 UI/animation/CI commits on top of the security changes; the hardened config parser, config store, installer, IPC and process-manager changes remain present. `cargo-deny 0.22.0 check` passes advisories, licenses, bans and sources. It identified RUSTSEC-2026-0592 in `url 2.5.8`; this was fixed by upgrading to 2.5.9 and `form_urlencoded` 1.2.3. Local workspace path dependencies now specify exact `3.0.0-alpha.1` versions. The new `rust/deny.toml` policy is enforced by a pinned cargo-deny CI job; OS-specific duplicate crate versions remain warnings.
 
-Hosted CI for head cb0a168678d189185d70d9161d9558e3cb3d75ff:
-- Padfire tests run 45170215775 passed, including hardware-free GTK tests, icon loading and virtual-display rendering.
-- Padfire Rust run 45170215759 passed formatting, tests, strict Clippy and optimized release builds on Ubuntu and Windows.
-- PR CodeQL run 45170207634 completed successfully: Rust reported 1 high path-injection result; Python and Actions reported 0.
+The candidate was installed side-by-side on Nobara at `~/.local/opt/padfire-rust/padfire-rust` using its `--install` CLI. It reports `Padfire 3.0.0-alpha.1`. The latest installed binary SHA-256 is `02f6c890ed582bd22c94336d3564413e6287ff2a856348bc95d25172ae44be98`, matching the local release artifact after upgrading `url` to 2.5.9. The `Padfire Rust` desktop entry and SVG icon were regenerated and validated; KDE desktop cache was refreshed. Previous candidate files are backed up under both `~/.local/share/padfire-rust-backups/2026-11-23-pre-combined-ui/` and `~/.local/share/padfire-rust-backups/2026-11-23-pre-url-2.5.9/`, each with verified SHA-256 manifest. The installed candidate was not launched in the live desktop.
 
-The separate PR CodeQL policy check is red because the one high finding remains open: alert #185 at runtime.rs:261, the user-selected PID status-file open. This is a documented read-only feature; the resolver rejects traversal, opens without following links/reparse points, validates the opened handle and parses bounded numeric PIDs used only for external-process LED state. Keep the finding open for human review; do not suppress it.
+Configuration namespaces: the Rust runtime uses `~/.config/padfire-rust/padfire.json` (v5, 8 pages, 21 assignments; current SHA-256 `5aada0eea0a6e80206a8f4f85343be1b6c3cb46ce6714830e12e4d72c7a82c60`). The source/default candidate config is `~/.config/padfire/padfire.json` (current SHA-256 `a003c9046235f987e2fd4ac907afa4d6eb55d23641aece42dd5da25fcb67edb0`). Both now set the clicker LED PID path to `/run/user/1000/autoclicker/autoclick.pid`, matching the actual KDE `XDG_RUNTIME_DIR` and `/home/roaring/autoclick.sh`; the prior `/tmp/autoclick.pid` value did not match the script's state path. The autoclick script was not launched. Both pre-change config files are preserved under `~/.local/share/padfire-rust-backups/2026-11-23-pid-path-before-fix/` with a verified SHA-256 manifest. The legacy v2.4.0 config at `~/.config/roaring/padfire.json` is separate and unchanged (SHA-256 `50f8e18175f88707649ace4febdab6492e8e553feb35103752a00334d22055c5`). The v2.4.0 desktop entry/launcher remain unchanged.
 
-The repository Code Scanning API separately reports 104 open alerts on refs/heads/main at baseline 1cc3af4ebc7483c29c23e1bd7f41932948a99510 (100 high path-injection, 3 critical command-line-injection, 1 critical unsafe-deserialization). Those are a separate main-branch baseline, not the current PR-ref finding. No alerts were dismissed. The critical unsafe-deserialization and installer-root override findings are absent from the latest PR analysis.
+### Hosted validation
 
-No visible KDE Wayland or Windows 11 tray acceptance, physical MIDI hardware test, or live PipeWire/WASAPI routing test is claimed. Production v2.4.0 and its user configuration/audio routing were not changed.
+The combined UI/security head `137327d` passed both Ubuntu and Windows Rust matrices, hosted UI screenshot rendering, GTK legacy smoke and all three CodeQL language analyses. Its CodeQL policy check reported one high PID-file path alert (#185). The supply-chain follow-up `c1a5232` adds `cargo-deny` policy, upgrades `url` to 2.5.9 and pins internal workspace dependency versions. All hosted validation for exact head `c1a5232` is now complete:
+- Rust Ubuntu/Windows PR matrix: [45277552562](https://github.com/Roaring1/Padfire/actions/runs/45277552562) passed formatting, tests, strict Clippy and optimized release builds on both platforms.
+- Push Rust matrix: [45277537020](https://github.com/Roaring1/Padfire/actions/runs/45277537020) passed Ubuntu and Windows.
+- Dependencies / cargo-deny: passed on both PR and push workflows.
+- Linux UI review and screenshot artifact: passed on both workflows.
+- GTK legacy smoke: [45277552484](https://github.com/Roaring1/Padfire/actions/runs/45277552484) passed.
+- Explicit PR CodeQL analysis: [45277537921](https://github.com/Roaring1/Padfire/actions/runs/45277537921) completed successfully for Rust, Python and Actions.
+
+The separate GitHub CodeQL policy check [138053461156](https://github.com/Roaring1/Padfire/runs/138053461156) **failed** because it found one new high-severity alert: #185 at `rust/apps/padfire/src/runtime.rs:261`, the user-selected PID status-file path. The alert instance is on PR head c1a5232 and has not been dismissed or fixed. Successful completion of the analyzer workflow does not override this failed security check.
+
+### Explicit security/release boundaries
+
+The GitHub CodeQL policy check on current PR head c1a5232 is red for one high-severity finding: alert #185 at `runtime.rs:261`, the user-selected read-only PID status-file open. The resolver rejects traversal, opens without following links/reparse points, validates the opened handle and parses bounded numeric PIDs used only for external-process LED state. Keep this finding open for human review; do not suppress it.
+
+The repository Code Scanning API separately reports 104 open alerts on `main` at baseline `1cc3af4` (100 high path-injection, 3 critical command-line-injection, 1 critical unsafe-deserialization). Those are separate from the current PR-ref finding. No alerts were bulk-dismissed. The latest previous PR analysis removed the critical deserialization result and arbitrary `PADFIRE_INSTALL_ROOT` override path from the current PR alert set.
+
+Local `cargo-deny check` 0.22.0 passes all four sections (advisories, bans, licenses, sources). It found and prompted the lockfile upgrade from vulnerable `url` 2.5.8 to fixed 2.5.9 (RUSTSEC-2026-0592); exact workspace versions were added to internal path dependencies. Duplicate versions remain warnings for transitive/target-specific crates, not build failures. The new `rust/deny.toml` and pinned cargo-deny CI job enforce the policy going forward. Hosted c1a5232 cargo-deny CI passed on both PR and push workflows.
+
+Physical Launchpad Mini MK1/MK2 input/LED/reconnect, visible KDE Wayland/Windows tray/focus acceptance, live PipeWire/WASAPI playback/monitor, dependency/license/signing, v5 upgrade and rollback rehearsal remain outstanding. Production v2.4.0 and its audio/MIDI routing remain untouched.
 
 ## 2026-11-22 follow-up audit
 
@@ -78,15 +97,14 @@ pins both third-party CI actions to verified immutable commits:
 
 ## Immediate engineering queue
 
-1. Keep PR #22 open for human review of the one current high-severity PID-file path finding (#185 at runtime.rs:261); the PR CodeQL policy check remains red until that finding has a reviewed disposition.
-2. Continue individual source-to-sink triage of the separate 104-alert main baseline. Do not bulk-dismiss findings; update issue #21 only with evidence-backed dispositions.
-3. Add dependency/license policy and provenance checks; cargo-deny or equivalent is not currently configured.
-4. Continue behavior parity against BEHAVIOR_MATRIX.md: full pad editor fields/settings, CLI JSON/exit behavior, MIDI reconnect, per-pad audio routing, monitor and meter semantics.
-5. Review config backup/concurrency/failure semantics and Windows ancestor trust boundary; test crash/power-loss durability before production cutover.
-6. Stress process supervision with high-volume simultaneous stdout/stderr, descendants, repeated start/stop, timeout and shutdown; inspect for orphan handles/readers.
-7. Complete installer custom-integration restoration, exotic path matrix, signing and upgrade/rollback rehearsal.
-8. Perform visible KDE Wayland and Windows 11 UI/tray/focus acceptance, then physical Launchpad Mini MK1/MK2 MIDI/LED/unplug/reconnect, PipeWire playback/monitor and WASAPI playback/monitor tests.
-9. Complete every CUTOVER.md gate, produce checksummed release artifacts, and only then decide on an explicit reviewed production transition with v2.4.0 rollback retained.
+1. Confirm exact c1a5232 hosted Rust/UI/GTK/CodeQL and the new cargo-deny policy job finish successfully; inspect failures before considering the combined branch hosted-verified.
+2. Review current PR CodeQL alert #185 (user-selected PID status-file path) and its trust boundary explicitly. Do not suppress or dismiss the high finding merely to make the check green.
+3. Continue individual source-to-sink triage of the separate 104-alert main baseline; update issue #21 only with evidence-backed dispositions.
+4. Review duplicate dependency-version warnings from cargo-deny; retain `warn` until upstream compatibility is assessed rather than blocking on target-specific duplicates.
+5. Complete behavior parity against `BEHAVIOR_MATRIX.md`, including full editor/settings, CLI, MIDI reconnect and audio routing/meter semantics.
+6. Review config concurrency/failure semantics and Windows ancestor trust boundary; stress process supervision and installer rollback.
+7. Complete visible KDE Wayland/Windows 11 UI/tray/focus acceptance and physical Launchpad Mini MK1/MK2 MIDI/LED/unplug/reconnect, live PipeWire and WASAPI playback/monitor tests.
+8. Complete v5 upgrade/rollback rehearsal, signed/checksummed release artifacts and every `CUTOVER.md` gate before any production transition.
 
 ## Explicit non-goals until evidence gates pass
 
