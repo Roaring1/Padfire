@@ -29,11 +29,10 @@ struct InstallPaths {
 
 impl InstallPaths {
     fn for_current_user() -> Result<Self, String> {
-        let root = if let Some(root) = std::env::var_os("PADFIRE_INSTALL_ROOT") {
-            resolve_base_directory(&PathBuf::from(root), "PADFIRE_INSTALL_ROOT")?
-        } else {
-            default_install_root()?
-        };
+        // Keep the install target anchored to the OS-defined per-user
+        // application directory. An arbitrary environment override allowed a
+        // launched process to redirect installation/removal to any path.
+        let root = default_install_root()?;
         let executable = root.join(if cfg!(windows) {
             "padfire-rust.exe"
         } else {
