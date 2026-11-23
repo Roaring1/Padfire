@@ -224,13 +224,9 @@ fn pid_file_process_ids(path: &str) -> Vec<u32> {
         return Vec::new();
     };
     let path = path.as_path();
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return Vec::new();
-    };
-    if !metadata.file_type().is_file() || metadata.len() > PID_FILE_MAX_BYTES {
-        return Vec::new();
-    }
-
+    // Inspect the opened handle rather than statting the path first. The
+    // platform-specific no-follow/reparse-point flags below prevent link
+    // traversal at open time, and handle metadata closes the TOCTOU window.
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(target_os = "linux")]
