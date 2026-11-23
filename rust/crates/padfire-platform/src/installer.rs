@@ -9,6 +9,11 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(windows)]
+static POWERSHELL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "linux")]
@@ -881,11 +886,38 @@ fn run_powershell_script(script: &str) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+fn write_exclusive_temp_file(path: &Path, bytes: &[u8], description: &str) -> Result<(), String> {
+    // A failed create_new means this invocation does not own the path. In
+    // particular, never remove an existing file after an AlreadyExists error.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("could not create {description}: {error}"))?;
+    let write_result = (|| -> io::Result<()> {
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(format!("could not write {description}: {error}"));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn write_powershell_temp(script: &str) -> Result<PathBuf, String> {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+    // Windows clock resolution can be coarser than nanoseconds. A sequence
+    // number guarantees unique names across parallel installer/test threads;
+    // create_new remains the final collision/race guard.
+    let sequence = POWERSHELL_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     // Preserve the native Windows temp path spelling. canonicalize() can
     // produce a \\?\ path that PowerShell's -File argument and shell-facing
     // integrations do not consistently accept.
@@ -895,29 +927,14 @@ fn write_powershell_temp(script: &str) -> Result<PathBuf, String> {
     )?;
     validate_directory_chain(&temporary_root, "temporary installer-script directory")?;
     let path = temporary_root.join(format!(
-        "padfire-install-{}-{nonce}.ps1",
+        "padfire-install-{}-{nonce}-{sequence}.ps1",
         std::process::id()
     ));
     let mut bytes = vec![0xFF, 0xFE];
     for unit in script.encode_utf16() {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
-    let write_result = (|| -> io::Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?;
-        file.write_all(&bytes)?;
-        file.flush()?;
-        file.sync_all()?;
-        Ok(())
-    })();
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(&path);
-        return Err(format!(
-            "could not write temporary installer script: {error}"
-        ));
-    }
+    write_exclusive_temp_file(&path, &bytes, "temporary installer script")?;
     Ok(path)
 }
 
@@ -929,6 +946,24 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("install-root");
         (path, directory)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn exclusive_temp_file_collision_preserves_the_existing_owner_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("owned-by-another-operation.ps1");
+        fs::write(&path, b"existing installer script").unwrap();
+
+        let error = write_exclusive_temp_file(&path, b"replacement", "test script")
+            .expect_err("exclusive create must reject an existing file");
+
+        assert!(error.contains("could not create test script"));
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            b"existing installer script",
+            "a failed create_new must never remove or truncate another operation's file"
+        );
     }
 
     #[test]
@@ -957,16 +992,53 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn powershell_temp_file_uses_native_temp_path_and_create_new_file() {
-        let path = write_powershell_temp("Write-Output 'PadfireTempTest'").unwrap();
-        assert!(
-            !path.to_string_lossy().starts_with("\\\\?\\"),
-            "PowerShell script path must use ordinary Win32 spelling"
-        );
-        assert!(path.is_file());
-        let bytes = fs::read(&path).unwrap();
-        assert!(bytes.starts_with(&[0xFF, 0xFE]));
-        fs::remove_file(path).unwrap();
+    fn powershell_temp_file_uses_native_temp_path_and_executes_with_file_argument() {
+        use std::process::Command;
+
+        let first = write_powershell_temp("Write-Output 'PadfireTempTest'; exit 0").unwrap();
+        let second = write_powershell_temp("Write-Output 'PadfireTempTest'; exit 0").unwrap();
+        let native_temp = canonicalize_windows_native(
+            &std::env::temp_dir(),
+            "temporary installer-script test directory",
+        )
+        .unwrap();
+
+        assert_ne!(first, second, "parallel scripts must not share a path");
+        for path in [&first, &second] {
+            assert!(path.starts_with(&native_temp));
+            assert!(
+                !path.to_string_lossy().starts_with(r"\\?\"),
+                "PowerShell script path must use ordinary Win32 spelling"
+            );
+            assert!(path.is_file());
+            let bytes = fs::read(path).unwrap();
+            assert!(bytes.starts_with(&[0xFF, 0xFE]));
+
+            let output = Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                ])
+                .arg(path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "PowerShell could not execute {}: {}",
+                path.display(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        fs::remove_file(first).unwrap();
+        fs::remove_file(second).unwrap();
+
+        // Exercise the production helper as well: it must keep the script
+        // available until PowerShell has finished reading and executing it.
+        run_powershell_script("exit 0").unwrap();
     }
 
     #[test]

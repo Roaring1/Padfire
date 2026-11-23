@@ -22,7 +22,7 @@ Those are baseline counts, not a claim about a fresh scan of this branch. No ale
 - The install root is fixed to the OS-defined per-user application location (HOME/.local/opt on Linux, LOCALAPPDATA/Programs on Windows). The unused PADFIRE_INSTALL_ROOT override was removed so an environment value cannot redirect installation or uninstall to an arbitrary path.
 - HOME, XDG_DATA_HOME, APPDATA, LOCALAPPDATA, and the optional Start Menu override are validated as absolute paths without parent traversal. The nearest existing ancestor is canonicalized before descendants are formed. Windows rejects symlink/reparse-point ancestors, then removes only the extended-length prefix from the physical path before passing it to PowerShell/COM.
 - Installer writes, rollback, install and uninstall preflight directory ancestors and reject symlinks/reparse points and non-directory components.
-- Windows PowerShell helper scripts and delayed-uninstall diagnostics are created under the native system temp directory using unique create_new files, then flushed and synced. The ordinary Win32 path spelling is preserved for PowerShell/COM consumers; existing temp-directory ancestors are checked for reparse points. The uninstall diagnostic no longer uses a predictable sibling path beside the install directory, so it cannot overwrite an unrelated uninstall.log file.
+- Windows PowerShell helper scripts and delayed-uninstall diagnostics are created under the native system temp directory using unique create_new files, then flushed and synced. PowerShell script names include an atomic per-process sequence as well as PID/time because Windows clock resolution can be coarser than nanoseconds. A failed create_new never removes the conflicting path; cleanup only occurs after this call successfully owns the file. This prevents parallel installer operations from deleting another in-flight script. The ordinary Win32 path spelling is preserved for PowerShell/COM consumers; existing temp-directory ancestors are checked for reparse points. The uninstall diagnostic no longer uses a predictable sibling path beside the install directory, so it cannot overwrite an unrelated uninstall.log file.
 - Test fixtures use the OS-provided temp directory spelling. Canonicalizing every Windows temp path can add a \\?\ prefix that cmd.exe and some Shell integrations do not accept, so canonicalization is limited to code paths whose OS APIs support it.
 
 ### Config storage and deserialization
@@ -34,7 +34,7 @@ Those are baseline counts, not a claim about a fresh scan of this branch. No ale
 - The normalized config permits at most 256 pages and 128 pad entries per page. Known path, command, label, notes and action strings have explicit byte limits and reject NUL characters.
 - Compatibility tests verify that valid extra pages, custom volume values and forward-compatible unknown fields still round-trip.
 
-After bounded parsing and schema normalization, the typed AppConfig conversion uses Serde's Deserialize implementation over the already-bounded Value tree. The untrusted byte stream is not passed to serde_json::from_slice/from_reader, and the code does not call the CodeQL-modeled serde_json::from_value sink. A fresh CodeQL scan and human source-to-sink review are still required before marking the baseline unsafe-deserialization alert resolved.
+After bounded parsing and schema normalization, the typed AppConfig conversion uses Serde's Deserialize implementation over the already-bounded Value tree. The untrusted byte stream is not passed to serde_json::from_slice/from_reader, and the code does not call the CodeQL-modeled serde_json::from_value sink. The latest Rust CodeQL PR analysis on f6de3a6 reports one high-severity path-injection result and no unsafe-deserialization result; the baseline critical deserialization finding is therefore absent from the current PR analysis. Reconfirm on the next pushed commit.
 
 ### Process and IPC boundaries
 
@@ -58,7 +58,7 @@ Latest completed local Linux validation before this document was added:
 - cargo clippy --workspace --all-targets --locked -- -D warnings
 - cargo build --workspace --release --locked
 
-All passed. The latest run covered 129 tests: 19 app unit tests, 2 CLI integration tests, 28 core unit tests, 23 compatibility tests and 57 platform tests. It ran on Nobara/Linux. The hosted Windows matrix is still required for changes made after the last pushed commit; Linux checks do not substitute for it.
+All passed on Nobara/Linux. The latest full run covered 129 tests: 19 app unit tests, 2 CLI integration tests, 28 core unit tests, 23 compatibility tests and 57 platform tests; formatting, strict Clippy and optimized release build also passed. Hosted CI on f6de3a6 passed Linux tests/Clippy/release build and GTK smoke. Windows tests exposed an intermittent PowerShell temp-script collision: all but the installer idempotency test passed. The collision-safe naming/ownership fix described above is being validated in the next hosted Windows run; do not call Windows acceptance complete until that run passes.
 
 ## Remaining acceptance
 
