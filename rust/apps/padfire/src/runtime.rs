@@ -14,8 +14,14 @@ use padfire_platform::process_manager::{
     ProcessEngine, ProcessEvent, ProcessKind, process_ids_alive,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+#[cfg(unix)]
+use std::ffi::CString;
 use std::fs;
 use std::io::Read;
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
@@ -219,28 +225,80 @@ fn resolve_pid_file_path(path: &Path) -> Option<PathBuf> {
     Some(parent.join(file_name))
 }
 
+#[cfg(unix)]
+fn open_pid_file_relative_to_parent(path: &Path) -> std::io::Result<fs::File> {
+    use std::io::{Error, ErrorKind};
+    use std::path::Component;
+
+    let invalid_path = || Error::new(ErrorKind::InvalidInput, "invalid PID file path");
+    let parent = path.parent().ok_or_else(invalid_path)?;
+    let file_name = path.file_name().ok_or_else(invalid_path)?;
+    // Start at the fixed filesystem root and walk one directory handle at a
+    // time. O_NOFOLLOW applies to every user-selected component, so a
+    // replacement symlink cannot redirect a later open outside the tree.
+    let mut directory = fs::File::open("/")?;
+
+    for component in parent.components() {
+        let Component::Normal(name) = component else {
+            match component {
+                Component::RootDir | Component::CurDir => continue,
+                Component::ParentDir | Component::Prefix(_) => return Err(invalid_path()),
+                Component::Normal(_) => unreachable!(),
+            }
+        };
+        let name = CString::new(name.as_bytes()).map_err(|_| invalid_path())?;
+        // SAFETY: `directory` owns a live directory descriptor and `name` is
+        // a NUL-terminated component CString that lives through the syscall.
+        let directory_fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if directory_fd < 0 {
+            return Err(Error::last_os_error());
+        }
+        // SAFETY: `openat` returned a new descriptor owned by this File.
+        directory = unsafe { fs::File::from_raw_fd(directory_fd) };
+    }
+
+    let file_name = CString::new(file_name.as_bytes()).map_err(|_| invalid_path())?;
+    // The final component is opened relative to the already-open parent handle,
+    // never by re-resolving an attacker-controlled absolute path. O_NOFOLLOW
+    // rejects a final symlink; O_NONBLOCK prevents FIFO substitution hangs.
+    // SAFETY: `directory` owns a live directory descriptor and `file_name` is
+    // a NUL-terminated final path component that lives through the syscall.
+    let file_fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            file_name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if file_fd < 0 {
+        return Err(Error::last_os_error());
+    }
+    // SAFETY: `openat` returned a new descriptor owned by the resulting File.
+    Ok(unsafe { fs::File::from_raw_fd(file_fd) })
+}
+
 fn pid_file_process_ids(path: &str) -> Vec<u32> {
     let Some(path) = resolve_pid_file_path(Path::new(path)) else {
         return Vec::new();
     };
-    let path = path.as_path();
     // Inspect the opened handle rather than statting the path first. The
-    // platform-specific no-follow/reparse-point flags below prevent link
-    // traversal at open time, and handle metadata closes the TOCTOU window.
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
+    // platform-specific no-follow/reparse-point open and handle metadata close
+    // the file-level TOCTOU window.
     #[cfg(windows)]
     {
         use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
         use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
         // Open the reparse point itself, then reject it using handle metadata.
-        let Ok(file) = options.open(path) else {
+        let Ok(file) = options.open(&path) else {
             return Vec::new();
         };
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
@@ -256,16 +314,14 @@ fn pid_file_process_ids(path: &str) -> Vec<u32> {
         read_pid_ids(file)
     }
 
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        let Ok(file) = options.open(path) else {
+        let Ok(file) = open_pid_file_relative_to_parent(&path) else {
             return Vec::new();
         };
         let Ok(opened_metadata) = file.metadata() else {
             return Vec::new();
         };
-        // This second check is performed on the opened file, closing the
-        // symlink/FIFO replacement window between metadata and open.
         if !opened_metadata.is_file() || opened_metadata.len() > PID_FILE_MAX_BYTES {
             return Vec::new();
         }
@@ -1229,6 +1285,38 @@ mod preview_tests {
         let _ = fs::remove_file(target);
         let _ = fs::remove_dir(directory);
         drop(temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_file_open_walk_rejects_symlinked_parent_components() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let real_directory = temp.path().join("real-directory");
+        let symlink_directory = temp.path().join("symlink-directory");
+        fs::create_dir(&real_directory).unwrap();
+        symlink(&real_directory, &symlink_directory).unwrap();
+        let status = symlink_directory.join("status.pid");
+        fs::write(
+            real_directory.join("status.pid"),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+
+        assert!(
+            open_pid_file_relative_to_parent(&status).is_err(),
+            "descriptor-relative traversal must reject a symlinked directory component"
+        );
+
+        // The public resolver intentionally canonicalizes an existing parent
+        // symlink first; after that normalization, the descriptor walk remains
+        // anchored to the resolved real directory and the status read succeeds.
+        let resolved = resolve_pid_file_path(&status).unwrap();
+        assert_eq!(
+            pid_file_process_ids(&resolved.to_string_lossy()),
+            vec![std::process::id()]
+        );
     }
 
     #[cfg(unix)]
