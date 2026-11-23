@@ -9,7 +9,7 @@ use padfire_platform::config_store::{ConfigStore, LoadState};
 use padfire_platform::ipc_server;
 use padfire_platform::loudness::LoudnessResult;
 use runtime::{AppRuntime, RuntimeSignals};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -246,6 +246,7 @@ struct PadfireApp {
     meter_level_display: f32,
     meter_last_update: Instant,
     pad_pressed_at: HashMap<u8, Instant>,
+    pointer_down_pads: HashSet<u8>,
     tray_initialized: bool,
     quit_requested: bool,
     #[cfg(any(target_os = "linux", windows))]
@@ -278,6 +279,7 @@ impl PadfireApp {
             meter_level_display: 0.0,
             meter_last_update: Instant::now(),
             pad_pressed_at: HashMap::new(),
+            pointer_down_pads: HashSet::new(),
             tray_initialized: false,
             quit_requested: false,
             #[cfg(any(target_os = "linux", windows))]
@@ -941,7 +943,15 @@ impl PadfireApp {
     fn draw_pad(&mut self, ui: &mut egui::Ui, note: u8, width: f32) {
         let label = self.pad_name(note);
         let color = self.pad_color(note, ui.visuals());
-        let response = draw_pad_face(ui, note, width, &label, color, &mut self.pad_pressed_at);
+        let response = draw_pad_face(
+            ui,
+            note,
+            width,
+            &label,
+            color,
+            &mut self.pad_pressed_at,
+            &mut self.pointer_down_pads,
+        );
 
         response.dnd_set_drag_payload(PadDragPayload {
             page: self.page,
@@ -1225,6 +1235,7 @@ fn draw_pad_face(
     label: &str,
     base_fill: Color32,
     pad_pressed_at: &mut HashMap<u8, Instant>,
+    pointer_down_pads: &mut HashSet<u8>,
 ) -> egui::Response {
     const PAD_SIZE: f32 = 48.0;
 
@@ -1233,6 +1244,7 @@ fn draw_pad_face(
     let now = Instant::now();
     let press_scale = update_pad_press_animation(
         pad_pressed_at,
+        pointer_down_pads,
         note,
         now,
         response.is_pointer_button_down_on(),
@@ -1387,6 +1399,7 @@ fn record_midi_pad_feedback(
 
 fn update_pad_press_animation(
     pad_pressed_at: &mut HashMap<u8, Instant>,
+    pointer_down_pads: &mut HashSet<u8>,
     note: u8,
     now: Instant,
     pointer_down: bool,
@@ -1394,8 +1407,18 @@ fn update_pad_press_animation(
 ) -> f32 {
     const PRESS_DURATION: Duration = Duration::from_millis(190);
 
-    if pointer_down || clicked {
-        pad_pressed_at.entry(note).or_insert(now);
+    if pointer_down {
+        // Start once on the down edge, not on every frame while held.
+        if pointer_down_pads.insert(note) {
+            pad_pressed_at.insert(note, now);
+        }
+    } else {
+        let was_down = pointer_down_pads.remove(&note);
+        // Some platforms may report a complete click without an intermediate
+        // pointer-down frame; only synthesize a press if it wasn't already held.
+        if clicked && !was_down {
+            pad_pressed_at.insert(note, now);
+        }
     }
 
     let elapsed = pad_pressed_at
@@ -1567,6 +1590,7 @@ mod ui_interaction_tests {
     fn fixed_pad_hit_target_accepts_primary_and_secondary_clicks() {
         let context = Context::default();
         let mut pressed_at = HashMap::new();
+        let mut pointer_down_pads = HashSet::new();
         let mut feedback_started = false;
         let mut render = |ui: &mut egui::Ui| {
             let response = draw_pad_face(
@@ -1576,6 +1600,7 @@ mod ui_interaction_tests {
                 "very-long-demo-pad-label",
                 Color32::from_rgb(42, 48, 56),
                 &mut pressed_at,
+                &mut pointer_down_pads,
             );
             feedback_started = pressed_at.contains_key(&36);
             response
@@ -1647,13 +1672,22 @@ mod ui_interaction_tests {
         let original_press = Instant::now();
         let held_at = original_press + Duration::from_secs(1);
         let mut pressed_at = HashMap::from([(36, original_press)]);
+        let mut pointer_down_pads = HashSet::from([36]);
 
-        let scale = update_pad_press_animation(&mut pressed_at, 36, held_at, true, false);
+        let scale = update_pad_press_animation(
+            &mut pressed_at,
+            &mut pointer_down_pads,
+            36,
+            held_at,
+            true,
+            false,
+        );
         assert_eq!(pressed_at.get(&36), Some(&original_press));
         assert_eq!(scale, 1.0);
 
         update_pad_press_animation(
             &mut pressed_at,
+            &mut pointer_down_pads,
             36,
             held_at + Duration::from_millis(1),
             false,
@@ -1663,6 +1697,45 @@ mod ui_interaction_tests {
             !pressed_at.contains_key(&36),
             "release after a completed twinge should clear its press timestamp"
         );
+    }
+
+    #[test]
+    fn a_second_mouse_press_restarts_the_twinge_before_the_first_release_finishes() {
+        let first_press = Instant::now();
+        let second_press = first_press + Duration::from_millis(50);
+        let mut pressed_at = HashMap::new();
+        let mut pointer_down_pads = HashSet::new();
+
+        update_pad_press_animation(
+            &mut pressed_at,
+            &mut pointer_down_pads,
+            36,
+            first_press,
+            true,
+            false,
+        );
+        // Release the first press while its 190ms animation is still running.
+        update_pad_press_animation(
+            &mut pressed_at,
+            &mut pointer_down_pads,
+            36,
+            first_press + Duration::from_millis(40),
+            false,
+            true,
+        );
+        assert_eq!(pressed_at.get(&36), Some(&first_press));
+
+        // A distinct second down edge must begin a fresh twinge.
+        update_pad_press_animation(
+            &mut pressed_at,
+            &mut pointer_down_pads,
+            36,
+            second_press,
+            true,
+            false,
+        );
+        assert_eq!(pressed_at.get(&36), Some(&second_press));
+        assert!(pointer_down_pads.contains(&36));
     }
 
     #[test]

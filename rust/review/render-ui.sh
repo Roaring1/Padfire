@@ -47,7 +47,9 @@ export LIBGL_ALWAYS_SOFTWARE=1
 export RUST_LOG=warn
 # Keep the virtual desktop isolated from the user's live KDE session, tray,
 # audio server and Wayland socket.
-unset DBUS_SESSION_BUS_ADDRESS WAYLAND_DISPLAY SESSION_MANAGER XAUTHORITY || true
+unset DBUS_SESSION_BUS_ADDRESS WAYLAND_DISPLAY SESSION_MANAGER || true
+# Preserve XAUTHORITY from xvfb-run; it owns the temporary X server cookie.
+# Do not inherit a desktop bus or Wayland socket from the caller.
 export PULSE_SERVER="unix:$runtime_dir/no-pulse-server"
 
 "$binary" >"$output_dir/app.log" 2>&1 &
