@@ -271,9 +271,9 @@ fn validate_absolute_path(path: &Path, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Canonicalize the nearest existing ancestor and preserve any missing suffix.
-/// This supports per-user locations that have not been created yet without
-/// retaining symlink or parent-directory components in future destinations.
+/// Resolve the nearest existing ancestor and preserve any missing suffix.
+/// Unix uses the canonical ancestor path. Windows preserves its native Win32
+/// spelling for Shell/PowerShell consumers and rejects reparse-point ancestors.
 fn resolve_base_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
     validate_absolute_path(path, label)?;
     let mut existing = path.to_path_buf();
@@ -301,6 +301,15 @@ fn resolve_base_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
             Err(error) => return Err(format!("could not inspect {label}: {error}")),
         }
     }
+    #[cfg(windows)]
+    let mut resolved = {
+        // Keep Win32-native path spelling here. canonicalize() may add the
+        // \\?\ prefix, which ordinary PowerShell/COM consumers do not all
+        // accept consistently. Reject reparse points explicitly instead.
+        validate_directory_chain(&existing, label)?;
+        existing
+    };
+    #[cfg(not(windows))]
     let mut resolved = existing
         .canonicalize()
         .map_err(|error| format!("could not canonicalize {label}: {error}"))?;
@@ -314,10 +323,13 @@ fn resolve_base_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
 /// components. A missing suffix is safe to create after this preflight.
 fn validate_directory_chain(path: &Path, label: &str) -> Result<(), String> {
     validate_absolute_path(path, label)?;
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        match fs::symlink_metadata(&current) {
+    let mut ancestors = path.ancestors().collect::<Vec<_>>();
+    ancestors.reverse();
+    for current in ancestors {
+        if current.as_os_str().is_empty() {
+            continue;
+        }
+        match fs::symlink_metadata(current) {
             Ok(metadata) => {
                 if !metadata.is_dir() || metadata.file_type().is_symlink() {
                     return Err(format!(
@@ -788,9 +800,10 @@ fn write_powershell_temp(script: &str) -> Result<PathBuf, String> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let temporary_root = std::env::temp_dir()
-        .canonicalize()
-        .map_err(|error| format!("could not resolve the temporary directory: {error}"))?;
+    // Preserve the native Windows temp path spelling. canonicalize() can
+    // produce a \\?\ path that PowerShell's -File argument and shell-facing
+    // integrations do not consistently accept.
+    let temporary_root = std::env::temp_dir();
     validate_directory_chain(&temporary_root, "temporary installer-script directory")?;
     let path = temporary_root.join(format!(
         "padfire-install-{}-{nonce}.ps1",
@@ -828,21 +841,42 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("padfire-installer-{}-{nonce}", std::process::id()))
+        std::env::temp_dir().join(format!("padfire-installer-{}-{nonce}", std::process::id()))
     }
 
     #[test]
     fn installer_path_helpers_reject_relative_and_parent_traversal_paths() {
-        let base = std::env::temp_dir().canonicalize().unwrap();
+        let base = std::env::temp_dir();
         let traversal = base.join("..").join("outside");
         let valid = base.join("padfire-install");
 
         assert!(validate_absolute_path(Path::new("relative/install"), "test").is_err());
         assert!(validate_absolute_path(&traversal, "test").is_err());
         assert!(validate_absolute_path(&valid, "test").is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn installer_base_directory_preserves_native_windows_path_spelling() {
+        let base = std::env::temp_dir();
+        let resolved = resolve_base_directory(&base, "TEMP").unwrap();
+        assert_eq!(resolved, base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_temp_file_uses_native_temp_path_and_create_new_file() {
+        let path = write_powershell_temp("Write-Output 'PadfireTempTest'").unwrap();
+        let native_temp = std::env::temp_dir();
+        assert!(path.starts_with(&native_temp));
+        assert!(
+            !path.to_string_lossy().starts_with("\\\\?\\"),
+            "PowerShell script path must use ordinary Win32 spelling"
+        );
+        assert!(path.is_file());
+        let bytes = fs::read(&path).unwrap();
+        assert!(bytes.starts_with(&[0xFF, 0xFE]));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -852,6 +886,9 @@ mod tests {
         fs::create_dir_all(&target).unwrap();
 
         let resolved = resolve_base_directory(&target, "test").unwrap();
+        #[cfg(windows)]
+        assert_eq!(resolved, target);
+        #[cfg(not(windows))]
         assert_eq!(resolved, target.canonicalize().unwrap());
 
         let missing = resolve_base_directory(&target.join("new/nested"), "test").unwrap();

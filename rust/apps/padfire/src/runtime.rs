@@ -1155,7 +1155,7 @@ mod preview_tests {
 
     #[test]
     fn pid_file_reports_current_process_and_ignores_invalid_entries() {
-        let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        let path = std::env::temp_dir().join(format!(
             "padfire-pid-file-{}-{}.txt",
             std::process::id(),
             Instant::now().elapsed().as_nanos()
@@ -1176,10 +1176,7 @@ mod preview_tests {
     fn pid_file_rejects_symlinks_and_directories() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("padfire-pid-safety-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("padfire-pid-safety-{}", std::process::id()));
         let target = base.with_extension("target");
         let link = base.with_extension("link");
         let directory = base.with_extension("directory");
@@ -1204,7 +1201,7 @@ mod preview_tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        let root = std::env::temp_dir().join(format!(
             "padfire-pid-hardlink-{}-{nonce}",
             std::process::id()
         ));
@@ -1223,10 +1220,8 @@ mod preview_tests {
 
     #[test]
     fn pid_file_rejects_oversized_and_non_regular_paths() {
-        let path = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("padfire-pid-file-large-{}.txt", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("padfire-pid-file-large-{}.txt", std::process::id()));
         fs::write(&path, vec![b'1'; (PID_FILE_MAX_BYTES + 1) as usize]).unwrap();
         assert!(pid_file_process_ids(&path.to_string_lossy()).is_empty());
         let _ = fs::remove_file(path);

@@ -1042,7 +1042,7 @@ mod winjob {
 
         #[test]
         fn terminating_job_terminates_a_spawned_descendant() {
-            let marker = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            let marker = std::env::temp_dir().join(format!(
                 "padfire-job-child-{}-{}.pid",
                 std::process::id(),
                 SystemTime::now()
@@ -1117,7 +1117,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        let root = std::env::temp_dir().join(format!(
             "padfire-crosshair-resolver-{}-{nonce}",
             std::process::id()
         ));
@@ -1165,7 +1165,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        let root = std::env::temp_dir().join(format!(
             "padfire-crosshair-link-{}-{nonce}",
             std::process::id()
         ));
@@ -1499,7 +1499,7 @@ mod tests {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let pad = PadKey { page: 0, note: 18 };
-        let marker = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        let marker = std::env::temp_dir().join(format!(
             "padfire-cancelled-script-{}-{}.txt",
             std::process::id(),
             SystemTime::now()

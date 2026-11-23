@@ -20,10 +20,10 @@ Those are baseline counts, not a claim about a fresh scan of this branch. No ale
 - The Windows delayed-uninstall script now deletes only padfire-rust.exe and attempts a non-recursive empty-directory removal. Other contents are retained.
 - A directory or symlink where a Padfire file is expected is not recursively removed.
 - PADFIRE_INSTALL_ROOT must be absolute and cannot contain parent-directory traversal.
-- HOME, XDG_DATA_HOME, APPDATA, LOCALAPPDATA, and the optional Start Menu override are resolved to canonical existing ancestors with any missing suffix retained.
+- HOME, XDG_DATA_HOME, APPDATA, LOCALAPPDATA, and the optional Start Menu override are validated as absolute paths without parent traversal. Existing ancestors are canonicalized on Unix; Windows retains native Win32 spelling while rejecting symlink/reparse-point ancestors.
 - Installer writes, rollback, install and uninstall preflight directory ancestors and reject symlinks/reparse points and non-directory components.
-- Windows PowerShell helper scripts are created under a canonical temp directory using create_new, then flushed and synced.
-- Rust test temp roots are canonicalized before generated paths are constructed.
+- Windows PowerShell helper scripts are created under the native system temp directory using create_new, then flushed and synced. The ordinary Win32 path spelling is preserved for PowerShell/COM consumers; existing temp-directory ancestors are checked for reparse points.
+- Test fixtures use the OS-provided temp directory spelling. Canonicalizing every Windows temp path can add a \\?\ prefix that cmd.exe and some Shell integrations do not accept, so canonicalization is limited to code paths whose OS APIs support it.
 
 ### Config storage and deserialization
 

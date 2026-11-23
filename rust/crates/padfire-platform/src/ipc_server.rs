@@ -418,7 +418,7 @@ mod unix_transport {
 
         fn test_path() -> PathBuf {
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            std::env::temp_dir().canonicalize().unwrap().join(format!(
+            std::env::temp_dir().join(format!(
                 "padfire-ipc-{}-{}-{}.sock",
                 std::process::id(),
                 SystemTime::now()

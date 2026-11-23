@@ -939,10 +939,8 @@ mod tests {
 
     fn test_store() -> ConfigStore {
         let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("padfire-store-test-{}-{id}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("padfire-store-test-{}-{id}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         ConfigStore::new(path)
     }
@@ -1248,7 +1246,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        let root = std::env::temp_dir().join(format!(
             "padfire-store-root-resolution-{}-{nonce}",
             std::process::id()
         ));
@@ -1283,10 +1281,8 @@ mod tests {
     fn config_directory_symlink_is_rejected() {
         use std::os::unix::fs::symlink;
         let store = test_store();
-        let target = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("padfire-store-target-{}", std::process::id()));
+        let target =
+            std::env::temp_dir().join(format!("padfire-store-target-{}", std::process::id()));
         fs::create_dir_all(&target).unwrap();
         let _ = fs::remove_dir_all(store.directory());
         symlink(&target, store.directory()).unwrap();

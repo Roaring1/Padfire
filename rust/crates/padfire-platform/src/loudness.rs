@@ -241,7 +241,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        let root = std::env::temp_dir().join(format!(
             "padfire-loudness-input-{}-{nonce}",
             std::process::id()
         ));
@@ -279,7 +279,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+        let root = std::env::temp_dir().join(format!(
             "padfire-loudness-link-{}-{nonce}",
             std::process::id()
         ));
@@ -351,10 +351,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("padfire-lufs-{}-{nonce}.wav", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("padfire-lufs-{}-{nonce}.wav", std::process::id()));
         let generated = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
