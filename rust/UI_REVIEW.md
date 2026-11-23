@@ -8,7 +8,7 @@ Padfire is a physical Launchpad instrument with a desktop editor, not a product 
 - **State without narration.** Show connection state through the PADFIRE mark (green when a supported Launchpad is connected, red when it is not). Avoid a paragraph or status sentence that repeats the same information.
 - **Controls where they belong.** Stop Audio is immediately available and unmistakable. Monitor configuration lives in Settings, not as an extra top-bar toggle.
 - **Stable physical geometry.** Pad labels wrap or clip inside fixed cells. Text must never resize the grid, move a pad, change its hit target or make the layout cease to resemble a Launchpad.
-- **Tactile feedback.** Pressing a pad with the mouse or a physical controller should animate the face with a subtle, centered shrink/release. The input target remains stationary so click, right-click and drag/drop remain reliable.
+- **Tactile feedback.** Pressing a pad with the mouse or a physical controller should animate the face with a subtle, centered shrink/release. The input target remains stationary so click, right-click and drag/drop remain reliable. A sustained hold does not restart the animation, while a distinct rapid second press starts a fresh twinge.
 - **Use the desktop theme.** Follow the native light/dark preference and theme widget colors. Custom pad colors should remain meaningful without forcing the whole app into a fixed palette.
 - **Intentional hierarchy.** Keep only headings and whitespace that help locate an action or distinguish a real section. Do not add a section label, subtitle, helper line or footer simply to fill space.
 

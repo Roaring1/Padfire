@@ -19,7 +19,7 @@ These images are screenshots of the actual Rust desktop application, captured in
 ## What is being reviewed
 
 - Fixed Launchpad pad geometry with labels wrapped inside each face.
-- Centered tactile press feedback with stable input hit targets.
+- Centered tactile press feedback with stable input hit targets; held presses do not repeat and distinct rapid presses retrigger.
 - Green/red PADFIRE connection identity and a clear Stop Audio control.
 - Compact Settings with monitor configuration located alongside other audio options.
 - Removal of persistent help lines, explanatory implementation text and footer/status chrome.
