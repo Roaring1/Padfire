@@ -309,8 +309,7 @@ fn build_loopback_stream(
     level: Arc<AtomicU32>,
     stream_error: Arc<AtomicBool>,
 ) -> Result<(Stream, String), String> {
-    let (host, device, device_id) = resolve_loopback_device(requested)?;
-    drop(host);
+    let (_host, device, device_id) = resolve_loopback_device(requested)?;
 
     #[cfg(target_os = "linux")]
     let supported = device
