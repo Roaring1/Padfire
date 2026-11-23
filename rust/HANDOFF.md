@@ -72,6 +72,8 @@ The pre-change candidate configs are backed up under ~/.local/share/padfire-rust
 
 Installer lifecycle was tested in a disposable HOME/XDG environment: first install, repeat install, launcher/icon validation, stopped status, uninstall, and byte-identical preservation of an existing v5 config all passed. The installed candidate remains stopped; no Rust process or stale IPC socket exists.
 
+Legacy startup entries were verified read-only and left untouched: ~/.config/autostart/padfire.desktop and ~/.config/systemd/user/padfire.service both predate this Rust install (October 31) and target the legacy padfire-launch v2.4.0 binary. The user systemd unit is enabled but currently inactive; the legacy launcher reports v2.4.0 not running. The Rust installer created no autostart entry or service.
+
 The live Launchpad Mini and LPD8 are attached. An aseqdump monitor is already connected to the LPD8, Carla is running a saved project, and PipeWire has active sinks/sources. No MIDI port, Carla session, PipeWire route, Scarlett/Astro device or physical controller was opened or changed. Physical acceptance remains a controlled user-visible step.
 
 ## 2026-11-22 follow-up audit
