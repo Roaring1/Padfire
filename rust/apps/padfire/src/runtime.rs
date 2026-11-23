@@ -315,6 +315,27 @@ pub enum AppCommand {
 pub struct RuntimeSignals {
     pub show_requested: bool,
     pub quit_requested: bool,
+    /// Pad notes pressed by the physical Launchpad since the last UI frame.
+    pub pressed_pads: Vec<u8>,
+}
+
+impl RuntimeSignals {
+    fn record_pad_press(&mut self, note: u8) {
+        self.pressed_pads.push(note);
+    }
+}
+
+#[cfg(test)]
+mod runtime_signal_tests {
+    use super::*;
+
+    #[test]
+    fn physical_midi_pad_press_is_queued_for_the_next_ui_frame() {
+        let mut signals = RuntimeSignals::default();
+        signals.record_pad_press(36);
+        signals.record_pad_press(37);
+        assert_eq!(signals.pressed_pads, vec![36, 37]);
+    }
 }
 
 pub struct AppRuntime {
@@ -551,6 +572,7 @@ impl AppRuntime {
             match self.midi_events.try_recv() {
                 Ok(MidiEvent::PadPressed(control)) => {
                     let note = control.note();
+                    self.signals.record_pad_press(note);
                     self.trigger_pad(config, *page, note, status);
                 }
                 Ok(MidiEvent::PadReleased(_)) => {}
