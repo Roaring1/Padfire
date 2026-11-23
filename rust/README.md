@@ -33,7 +33,7 @@ CI runs the same gates on Ubuntu and Windows. The current local environment is N
 - Keep IPC local-only, user/owner restricted, bounded and version-compatible.
 - A new installation uses the current system default output; never bake machine-specific sink names into portable defaults.
 - LUFS analysis is opt-in and uses FFmpeg when installed; it analyzes at most the first 120 seconds, targets -18 LUFS and never silently changes pad volume. Applying the suggested 1-150% gain is an explicit editor action.
-- The playback meter taps Padfire's decoded/mixed signal after pad-volume scaling, aggregates in 256-sample chunks with one atomic update per chunk, uses fast-attack/slow-release smoothing, and returns to zero while idle. It does not launch a monitor process or measure unrelated system audio/post-device effects.
+- The primary meter taps Padfire's decoded/mixed signal after pad-volume scaling, aggregates in 256-sample chunks with one atomic update per chunk, uses fast-attack/slow-release smoothing, and returns to zero while idle. A separate optional system-output loopback meter is started only while Padfire audio is active: Linux uses the selected PulseAudio/PipeWire monitor source and Windows uses WASAPI loopback. The capture callback reduces samples to RMS only; samples are not retained or written. The app-mix meter remains the fallback when loopback is unavailable, and the loopback worker is stopped while idle.
 - Do not add automatic startup or an always-running helper.
 
 ## Side-by-side candidate install

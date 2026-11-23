@@ -4,6 +4,15 @@ A compact GTK3 soundboard and macro pad app for Linux desktops. The current MIDI
 
 8 pages of 8x8 pads. Each pad can play a sound file through PipeWire/PulseAudio or run a local command. Padfire stores settings and assignments in the current user's home directory; it does not require a companion app or machine-specific audio sink names.
 
+## Cross-platform Rust rewrite (development)
+
+The released application described below remains Padfire v2.4.0 (GTK3/Linux).
+A parallel Rust workspace under [`rust/`](rust/README.md) is being developed
+as the future cross-platform Linux/Nobara and Windows implementation. It is
+not yet a production replacement. Keep the v2.4.0 launcher, installation and
+user configuration unchanged until the manual device, audio, UI, security,
+packaging and rollback gates in [`rust/CUTOVER.md`](rust/CUTOVER.md) pass.
+
 ---
 
 ## Features

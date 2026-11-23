@@ -4,6 +4,7 @@
 //! UI/MIDI threads only send bounded commands. When no clips are playing the
 //! actor blocks on its receiver and releases all device streams.
 
+use crate::output_meter::OutputLoopbackMeter;
 use cpal::traits::{DeviceTrait, HostTrait};
 use padfire_core::PadKey;
 use padfire_core::audio::{OutputDevice, OutputResolution, resolve_route_pair};
@@ -56,6 +57,7 @@ pub struct AudioEngine {
     sender: Sender<AudioCommand>,
     worker: Option<JoinHandle<()>>,
     meter: Arc<MeterAccumulator>,
+    loopback_meter: OutputLoopbackMeter,
 }
 
 impl AudioEngine {
@@ -76,6 +78,7 @@ impl AudioEngine {
             sender,
             worker: Some(worker),
             meter,
+            loopback_meter: OutputLoopbackMeter::new(),
         })
     }
 
@@ -98,10 +101,19 @@ impl AudioEngine {
     }
 
     pub fn meter_level(&self) -> f32 {
-        self.meter.take_level()
+        // Drain the Padfire-mix fallback on every UI read even while native
+        // loopback is healthy, so its atomic sample window cannot accumulate
+        // stale energy/counts in the background.
+        let mix_level = self.meter.take_level();
+        self.loopback_meter.level().unwrap_or(mix_level)
+    }
+
+    pub fn set_meter_capture_target(&mut self, target: Option<String>) {
+        self.loopback_meter.set_target(target);
     }
 
     pub fn shutdown(&mut self) {
+        self.loopback_meter.shutdown();
         let _ = self.sender.send(AudioCommand::Shutdown);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();

@@ -11,4 +11,5 @@ pub mod installer;
 pub mod ipc_server;
 pub mod loudness;
 pub mod midi;
+pub mod output_meter;
 pub mod process_manager;

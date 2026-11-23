@@ -1,6 +1,6 @@
 # Padfire Rust rewrite handoff
 
-Updated: 2026-11-20 (America/Los_Angeles)
+Updated: 2026-11-22 (America/Los_Angeles)
 
 ## Checkpoint
 
@@ -23,7 +23,7 @@ The Rust workspace contains `padfire-core`, `padfire-platform`, and a native efr
 - Window lifecycle: titlebar Close hides via `Visible(false)` with `CancelClose` when a tray icon exists. Escape also hides when tray exists; without a tray, Escape minimizes. Explicit Quit via Ctrl+Q, tray menu or IPC bypasses close interception and exits. Number/Space shortcuts do not intercept text entry while egui reports keyboard input is wanted.
 - Isolated GUI smoke on Nobara: private D-Bus session, Xvfb, temporary HOME/XDG configuration/data/runtime, `PADFIRE_DISABLE_HARDWARE=1`. The release binary started, `--status` returned a valid stopped/no-hardware JSON snapshot, `--show`, `--reload`, `--stop`, `--quit` each returned `ok`, app exited cleanly, IPC socket was removed, log was empty. This does not replace visible KDE Wayland/Windows tray acceptance.
 - LUFS: FFmpeg loudnorm on the first 120 seconds, -18 LUFS target, true-peak report, 1-150% suggested gain, explicit Apply action, cancellation and timeout.
-- Playback meter: 256-sample local accumulation, one packed `AtomicU64` update per chunk, accounts for pad volume, aggregates concurrent Padfire sources, zero when idle, 35 ms attack / 240 ms release. It measures Padfire's mix, not unrelated system audio or post-device loopback.
+- Playback/output meter: the primary app-mix fallback uses 256-sample local accumulation, one packed `AtomicU64` update per chunk, accounts for pad volume, aggregates concurrent Padfire sources and returns to zero while idle. A separate lazy system-output loopback worker runs only while Padfire audio is active: PulseAudio/PipeWire monitor source on Linux and WASAPI loopback on Windows. The callback reduces samples to RMS only; it does not retain or write audio. The app-mix meter is used whenever native loopback is unavailable; the worker is stopped while idle. UI smoothing is 35 ms attack / 240 ms release.
 - Windows IPC: local named pipe, first-instance ownership, inherited user-token DACL, remote-client rejection, bounded newline framing, response ACK, shutdown/name-release and duplicate-instance tests.
 - Windows config storage: config directory receives a protected DACL at `CreateDirectoryW` creation and is re-hardened through stable no-follow handles. The DACL grants full access to the owner, SYSTEM and local Administrators, blocks inherited broad principals, and propagates owner-only ACEs to children. Existing config files are re-locked through their open handles after owner, reparse-point and hardlink checks. Tests inspect real SDDL for the directory and config file, reject Everyone/Authenticated Users/Builtin Users, reject final-component junctions, and reject a junction in the immediate parent. Windows same-directory writes flush temp contents then replace via `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`; native tests verify previous-generation backup, DACL retention, sharing-violation preservation and temp cleanup. Ancestors above the immediate parent remain a trusted OS/user-profile path boundary.
 - Windows process supervision: scripts and Crosshair commands launch with `CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`, are assigned to a Job Object configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, then have their initial thread resumed via Toolhelp32 enumeration and `ResumeThread`. Script generation is rechecked while the child remains suspended. Native regression starts a PowerShell parent and child, terminates the job, and waits for the descendant process handle to become signaled.
@@ -47,6 +47,26 @@ Linux test groups: 2 app, 28 core, 17 compatibility, 35 platform. Windows: 2 app
 The UI change on this commit passed the full matrix. Native app compilation passed on Windows; visible Windows tray interaction has not yet been accepted. Nobara isolated GUI smoke passed as detailed above. An earlier FFmpeg loudnorm end-to-end test with a generated sine WAV passed. MIDI hardware was disabled during GUI smoke.
 
 Hosted GitHub Actions for `b58f956`: `Padfire tests` run `44857110249` completed successfully. `Padfire Rust` run `44857110283` was still in progress at the last check, with `Core / ubuntu-latest` and `Core / windows-latest` running. Recheck final results before marking hosted CI green.
+
+## 2026-11-22 follow-up audit
+
+The local Rust worktree contains a selected-output loopback meter follow-up and
+pins both third-party CI actions to verified immutable commits:
+- `dtolnay/rust-toolchain` is pinned to
+  `df2a88e9fe4098bad09cb42c3dec7187f15861fc`, with `toolchain: stable`
+  stated explicitly.
+- `Swatinem/rust-cache` is pinned to
+  `d1527c8f67ef9af357290475d4af4b0fab8f12e0` (v2.9.3).
+- The local Nobara worktree passed `cargo fmt --all -- --check`,
+  `cargo test --workspace --locked`, strict Clippy and an optimized release
+  build after the loopback-meter changes.
+- Hosted Windows CI had one transient failure in the deferred-uninstall
+  locked-file retry test; rerunning that exact failed job passed. The test's
+  initial wait was lengthened to tolerate slower hosted-runner PowerShell
+  startup. Re-run the complete hosted matrix on the new commit before merge.
+- Visible KDE Wayland/Windows tray acceptance and physical MK1/MK2, PipeWire
+  and WASAPI acceptance remain manual gates. No live audio route, Launchpad,
+  production launcher or user config was changed.
 
 ## Immediate engineering queue
 

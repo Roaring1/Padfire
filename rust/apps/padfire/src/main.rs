@@ -901,7 +901,7 @@ impl PadfireApp {
                     .desired_height(4.0)
                     .fill(Color32::from_rgb(100, 175, 215)),
             )
-            .on_hover_text("Padfire playback level");
+            .on_hover_text("Selected output system-loopback level while Padfire audio is active; falls back to Padfire's own mix when loopback is unavailable");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Settings").clicked() {
                     self.open_settings();

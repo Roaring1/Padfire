@@ -301,6 +301,7 @@ pub struct AppRuntime {
     ipc: Option<IpcServer>,
     status_snapshot: Arc<Mutex<RunningStatus>>,
     playing_audio: HashSet<PadKey>,
+    preview_active: bool,
     running_scripts: HashSet<PadKey>,
     midi_connected: bool,
     midi_device: String,
@@ -403,6 +404,7 @@ impl AppRuntime {
             ipc,
             status_snapshot,
             playing_audio: HashSet::new(),
+            preview_active: false,
             running_scripts: HashSet::new(),
             midi_connected: false,
             midi_device: "Launchpad Mini".to_owned(),
@@ -447,6 +449,7 @@ impl AppRuntime {
         self.poll_pid_files(config);
         self.poll_midi(config, page, status);
         self.poll_audio(status);
+        self.sync_output_meter(config);
         self.poll_processes(status);
         self.current_page = (*page).min(PAGE_COUNT - 1);
         self.update_status_snapshot(config, *page);
@@ -535,11 +538,24 @@ impl AppRuntime {
         }
     }
 
+    fn sync_output_meter(&mut self, config: &AppConfig) {
+        let audio_active = !self.playing_audio.is_empty() || self.preview_active;
+        let target = audio_active.then(|| {
+            if config.monitor_enabled && !config.monitor_sink.trim().is_empty() {
+                config.monitor_sink.trim().to_owned()
+            } else {
+                config.default_sink.trim().to_owned()
+            }
+        });
+        self.audio.set_meter_capture_target(target);
+    }
+
     fn poll_audio(&mut self, status: &mut String) {
         loop {
             match self.audio_events.try_recv() {
                 Ok(AudioEvent::PlaybackStarted { pad }) => {
                     if pad == PREVIEW_PAD {
+                        self.preview_active = true;
                         *status = "Preview playing".to_owned();
                     } else {
                         self.playing_audio.insert(pad);
@@ -549,6 +565,7 @@ impl AppRuntime {
                 }
                 Ok(AudioEvent::PlaybackFinished { pad }) => {
                     if pad == PREVIEW_PAD {
+                        self.preview_active = false;
                         *status = "Preview stopped".to_owned();
                     } else {
                         self.playing_audio.remove(&pad);
@@ -566,6 +583,7 @@ impl AppRuntime {
                 }
                 Ok(AudioEvent::PlaybackFailed { pad, message }) => {
                     if pad == PREVIEW_PAD {
+                        self.preview_active = false;
                         *status = format!("Preview failed: {message}");
                     } else {
                         self.playing_audio.remove(&pad);

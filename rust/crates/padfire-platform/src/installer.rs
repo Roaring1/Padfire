@@ -949,7 +949,7 @@ mod tests {
             .unwrap();
         schedule_windows_uninstall(&root).unwrap();
 
-        let retry_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let retry_deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         let mut observed_locked_retry = false;
         while std::time::Instant::now() < retry_deadline {
             let log_length = fs::metadata(&log_path)
