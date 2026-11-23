@@ -945,10 +945,15 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn installer_base_directory_preserves_native_windows_path_spelling() {
+    fn installer_base_directory_returns_physical_ordinary_win32_path() {
         let base = tempfile::tempdir().unwrap();
         let resolved = resolve_base_directory(base.path(), "TEMP").unwrap();
-        assert_eq!(resolved, base.path());
+        assert!(resolved.is_absolute());
+        assert!(resolved.is_dir());
+        assert!(
+            !resolved.to_string_lossy().starts_with("\\\\?\\"),
+            "Shell integration path must not use the extended-length prefix"
+        );
     }
 
     #[cfg(windows)]
@@ -973,7 +978,14 @@ mod tests {
 
         let resolved = resolve_base_directory(&target, "test").unwrap();
         #[cfg(windows)]
-        assert_eq!(resolved, target);
+        {
+            assert!(resolved.is_absolute());
+            assert!(resolved.is_dir());
+            assert!(
+                !resolved.to_string_lossy().starts_with("\\\\?\\"),
+                "resolved Shell path must use ordinary Win32 spelling"
+            );
+        }
         #[cfg(not(windows))]
         assert_eq!(resolved, target.canonicalize().unwrap());
 

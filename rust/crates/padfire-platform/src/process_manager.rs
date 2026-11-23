@@ -1501,17 +1501,21 @@ mod tests {
         use std::sync::mpsc::channel;
 
         let pad = PadKey { page: 0, note: 18 };
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("padfire-should-not-run");
         let generations = Arc::new(Mutex::new(GenerationTracker::default()));
         let key = OperationKey::new(OperationKind::Script, pad.to_key());
         let token = generations.lock().unwrap().begin(key.clone());
         generations.lock().unwrap().cancel(key);
         let (events_tx, events_rx) = channel();
         let mut engine = ProcessEngine::spawn(generations, events_tx).unwrap();
+        let marker_command = marker.to_string_lossy().replace('\'', r"'\''");
         engine
-            .start_script(token, pad, "touch /tmp/padfire-should-not-run", true)
+            .start_script(token, pad, format!("touch '{marker_command}'"), true)
             .unwrap();
         assert!(events_rx.recv_timeout(Duration::from_millis(350)).is_err());
         engine.shutdown();
-        assert!(!std::path::Path::new("/tmp/padfire-should-not-run").exists());
+        assert!(!marker.exists());
+        drop(temp);
     }
 }

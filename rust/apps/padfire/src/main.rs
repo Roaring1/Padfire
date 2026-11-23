@@ -1376,8 +1376,9 @@ mod script_picker_tests {
     fn script_picker_quotes_shell_paths_with_spaces_and_apostrophes() {
         use std::process::Command;
 
-        let path = "/tmp/a user's script.sh";
-        let command = command_for_script_path(Path::new(path)).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("a user's script.sh");
+        let command = command_for_script_path(&path).unwrap();
         assert!(command.starts_with("sh "));
         let quoted_argument = command.strip_prefix("sh ").unwrap();
         let output = Command::new("/bin/sh")
@@ -1385,10 +1386,14 @@ mod script_picker_tests {
             .output()
             .unwrap();
         assert!(output.status.success());
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), path);
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            path.to_string_lossy().into_owned()
+        );
 
-        let python = command_for_script_path(Path::new("/tmp/test script.py")).unwrap();
-        assert!(python.ends_with("'/tmp/test script.py'"));
+        let python_path = temp.path().join("test script.py");
+        let python = command_for_script_path(&python_path).unwrap();
+        assert!(python.ends_with(&format!("'{}'", python_path.display())));
     }
 
     #[cfg(windows)]
@@ -1410,8 +1415,8 @@ mod script_picker_tests {
         use std::fs;
         use std::process::Command;
 
-        let script =
-            std::env::temp_dir().join(format!("Padfire script picker {}.cmd", std::process::id()));
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("Padfire script picker.cmd");
         fs::write(
             &script,
             "@echo off\r\necho PADFIRE_PICKER_OK\r\nexit /b 0\r\n",
@@ -1426,6 +1431,7 @@ mod script_picker_tests {
             .output()
             .unwrap();
         let _ = fs::remove_file(&script);
+        drop(temp);
 
         assert!(
             output.status.success(),
