@@ -836,9 +836,13 @@ mod tests {
 
     #[test]
     fn installer_path_helpers_reject_relative_and_parent_traversal_paths() {
+        let base = std::env::temp_dir().canonicalize().unwrap();
+        let traversal = base.join("..").join("outside");
+        let valid = base.join("padfire-install");
+
         assert!(validate_absolute_path(Path::new("relative/install"), "test").is_err());
-        assert!(validate_absolute_path(Path::new("/tmp/../outside"), "test").is_err());
-        assert!(validate_absolute_path(Path::new("/tmp/padfire-install"), "test").is_ok());
+        assert!(validate_absolute_path(&traversal, "test").is_err());
+        assert!(validate_absolute_path(&valid, "test").is_ok());
     }
 
     #[test]
