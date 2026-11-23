@@ -170,10 +170,11 @@ pub fn uninstall_current() -> Result<String, String> {
             .unwrap_or_else(|_| paths.root.clone());
         if current.starts_with(&root) {
             remove_file_if_exists(&paths.integration)?;
-            schedule_windows_uninstall(&paths.root)?;
-            return Ok(
-                "Padfire Rust uninstall scheduled; user configuration was preserved".to_owned(),
-            );
+            let log_path = schedule_windows_uninstall(&paths.root)?;
+            return Ok(format!(
+                "Padfire Rust uninstall scheduled; user configuration was preserved; diagnostics: {}",
+                log_path.display()
+            ));
         }
     }
 
@@ -717,10 +718,48 @@ fn create_windows_shortcut(
 }
 
 #[cfg(windows)]
-fn schedule_windows_uninstall(root: &Path) -> Result<(), String> {
+fn reserve_windows_uninstall_log() -> Result<PathBuf, String> {
+    let temp_root = std::env::temp_dir();
+    validate_directory_chain(&temp_root, "uninstall diagnostic directory")?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+
+    for attempt in 0..32_u8 {
+        let candidate = temp_root.join(format!(
+            "padfire-uninstall-{}-{nonce}-{attempt}.log",
+            std::process::id()
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => {
+                file.sync_all().map_err(|error| {
+                    let _ = fs::remove_file(&candidate);
+                    format!("could not reserve uninstall diagnostic file: {error}")
+                })?;
+                return Ok(candidate);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "could not create uninstall diagnostic file {}: {error}",
+                    candidate.display()
+                ));
+            }
+        }
+    }
+    Err("could not reserve a unique uninstall diagnostic file".to_owned())
+}
+
+#[cfg(windows)]
+fn schedule_windows_uninstall(root: &Path) -> Result<PathBuf, String> {
     use std::os::windows::process::CommandExt;
 
-    let log_path = root.with_extension("uninstall.log");
+    let log_path = reserve_windows_uninstall_log()?;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let executable = root.join("padfire-rust.exe");
     let script = format!(
@@ -743,8 +782,14 @@ fn schedule_windows_uninstall(root: &Path) -> Result<(), String> {
         powershell_quote(&executable),
         powershell_quote(&log_path),
     );
-    let script_path = write_powershell_temp(&script)?;
-    Command::new("powershell.exe")
+    let script_path = match write_powershell_temp(&script) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = fs::remove_file(&log_path);
+            return Err(error);
+        }
+    };
+    match Command::new("powershell.exe")
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -760,8 +805,14 @@ fn schedule_windows_uninstall(root: &Path) -> Result<(), String> {
         .stderr(Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
-        .map_err(|error| format!("could not schedule Padfire Rust removal: {error}"))?;
-    Ok(())
+    {
+        Ok(_) => Ok(log_path),
+        Err(error) => {
+            let _ = fs::remove_file(&script_path);
+            let _ = fs::remove_file(&log_path);
+            Err(format!("could not schedule Padfire Rust removal: {error}"))
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1268,7 +1319,8 @@ mod tests {
 
         let root = temp_root();
         let config = root.with_extension("config");
-        let log_path = root.with_extension("uninstall.log");
+        let previous_sibling_log = root.with_extension("uninstall.log");
+        fs::write(&previous_sibling_log, b"preserve this unrelated file").unwrap();
         // The delayed helper retries removal of the actual installed image,
         // not arbitrary user files in the install directory.
         let locked_file = root.join("padfire-rust.exe");
@@ -1286,7 +1338,9 @@ mod tests {
             .share_mode(0)
             .open(&locked_file)
             .unwrap();
-        schedule_windows_uninstall(&root).unwrap();
+        let log_path = schedule_windows_uninstall(&root).unwrap();
+        assert_ne!(log_path, previous_sibling_log);
+        assert!(log_path.starts_with(std::env::temp_dir()));
 
         let retry_deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         let mut observed_locked_retry = false;
@@ -1314,10 +1368,12 @@ mod tests {
         let helper_log = fs::read_to_string(&log_path)
             .unwrap_or_else(|error| format!("no helper log available: {error}"));
         let config_contents = fs::read(config.join("padfire.json")).unwrap();
+        let sibling_log_contents = fs::read(&previous_sibling_log).unwrap();
 
         let _ = fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&config);
         let _ = fs::remove_file(&log_path);
+        let _ = fs::remove_file(&previous_sibling_log);
 
         assert!(
             observed_locked_retry,
@@ -1328,5 +1384,6 @@ mod tests {
             "scheduled uninstall did not remove its install root after the file lock closed; helper log: {helper_log}"
         );
         assert_eq!(config_contents, b"user config");
+        assert_eq!(sibling_log_contents, b"preserve this unrelated file");
     }
 }

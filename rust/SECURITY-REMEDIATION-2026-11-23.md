@@ -22,7 +22,7 @@ Those are baseline counts, not a claim about a fresh scan of this branch. No ale
 - PADFIRE_INSTALL_ROOT must be absolute and cannot contain parent-directory traversal.
 - HOME, XDG_DATA_HOME, APPDATA, LOCALAPPDATA, and the optional Start Menu override are validated as absolute paths without parent traversal. Existing ancestors are canonicalized on Unix; Windows retains native Win32 spelling while rejecting symlink/reparse-point ancestors.
 - Installer writes, rollback, install and uninstall preflight directory ancestors and reject symlinks/reparse points and non-directory components.
-- Windows PowerShell helper scripts are created under the native system temp directory using create_new, then flushed and synced. The ordinary Win32 path spelling is preserved for PowerShell/COM consumers; existing temp-directory ancestors are checked for reparse points.
+- Windows PowerShell helper scripts and delayed-uninstall diagnostics are created under the native system temp directory using unique create_new files, then flushed and synced. The ordinary Win32 path spelling is preserved for PowerShell/COM consumers; existing temp-directory ancestors are checked for reparse points. The uninstall diagnostic no longer uses a predictable sibling path beside the install directory, so it cannot overwrite an unrelated uninstall.log file.
 - Test fixtures use the OS-provided temp directory spelling. Canonicalizing every Windows temp path can add a \\?\ prefix that cmd.exe and some Shell integrations do not accept, so canonicalization is limited to code paths whose OS APIs support it.
 
 ### Config storage and deserialization
