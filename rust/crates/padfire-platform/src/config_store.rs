@@ -1253,6 +1253,7 @@ mod tests {
             std::process::id()
         ));
         let target = root.join("actual-config");
+        #[cfg(unix)]
         let link = root.join("config-link");
         fs::create_dir_all(&target).unwrap();
 
@@ -1277,6 +1278,7 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn config_directory_symlink_is_rejected() {
         use std::os::unix::fs::symlink;
