@@ -8,7 +8,8 @@ use padfire_platform::audio_engine::enumerate_output_devices;
 use padfire_platform::config_store::{ConfigStore, LoadState};
 use padfire_platform::ipc_server;
 use padfire_platform::loudness::LoudnessResult;
-use runtime::AppRuntime;
+use runtime::{AppRuntime, RuntimeSignals};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -244,6 +245,7 @@ struct PadfireApp {
     loudness_message: String,
     meter_level_display: f32,
     meter_last_update: Instant,
+    pad_pressed_at: HashMap<u8, Instant>,
     tray_initialized: bool,
     quit_requested: bool,
     #[cfg(any(target_os = "linux", windows))]
@@ -275,6 +277,7 @@ impl PadfireApp {
             loudness_message: String::new(),
             meter_level_display: 0.0,
             meter_last_update: Instant::now(),
+            pad_pressed_at: HashMap::new(),
             tray_initialized: false,
             quit_requested: false,
             #[cfg(any(target_os = "linux", windows))]
@@ -422,7 +425,7 @@ impl PadfireApp {
             // alive in the tray. Explicit Quit paths set quit_requested first.
             context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            self.status = "Padfire is running in the tray".to_owned();
+            // Hiding the window is silent; no persistent status message.
         }
     }
 
@@ -502,18 +505,19 @@ impl PadfireApp {
         }
     }
 
-    fn pad_color(&self, note: u8) -> Color32 {
+    fn pad_color(&self, note: u8, visuals: &egui::Visuals) -> Color32 {
         let color_name = self.config.pages[self.page]
             .get(&note.to_string())
             .map(|pad| pad.color.as_str())
             .unwrap_or("default");
+        let base = visuals.widgets.inactive.bg_fill;
         match color_name {
-            "red" => Color32::from_rgb(90, 28, 30),
-            "orange" => Color32::from_rgb(100, 53, 21),
-            "amber" => Color32::from_rgb(96, 73, 17),
-            "green" => Color32::from_rgb(26, 78, 40),
-            "dim green" => Color32::from_rgb(25, 55, 35),
-            _ => Color32::from_rgb(43, 48, 56),
+            "red" => blend_theme_color(base, Color32::from_rgb(255, 69, 58), 0.42),
+            "orange" => blend_theme_color(base, Color32::from_rgb(255, 140, 30), 0.40),
+            "amber" => blend_theme_color(base, Color32::from_rgb(255, 180, 30), 0.42),
+            "green" => blend_theme_color(base, Color32::from_rgb(48, 209, 88), 0.40),
+            "dim green" => blend_theme_color(base, Color32::from_rgb(48, 209, 88), 0.22),
+            _ => base,
         }
     }
 
@@ -801,25 +805,37 @@ impl PadfireApp {
             .open(&mut open)
             .resizable(false)
             .collapsible(false)
-            .default_width(380.0)
+            .default_width(326.0)
             .show(context, |ui| {
-                ui.label("Default output");
-                draw_output_selector(
-                    ui,
-                    "default_output",
-                    &mut self.config.default_sink,
-                    &self.output_devices,
-                );
+                ui.set_min_width(292.0);
+                ui.set_max_width(310.0);
+                ui.spacing_mut().item_spacing.y = 6.0;
+
+                ui.label("Output");
+                ui.horizontal(|ui| {
+                    draw_output_selector(
+                        ui,
+                        "default_output",
+                        &mut self.config.default_sink,
+                        &self.output_devices,
+                        224.0,
+                    );
+                    if ui.small_button("Refresh").clicked() {
+                        self.refresh_output_devices();
+                    }
+                });
 
                 if let Some(error) = &self.output_error {
-                    ui.colored_label(Color32::LIGHT_RED, format!("Audio device discovery: {error}"));
-                }
-                if ui.button("Refresh audio devices").clicked() {
-                    self.refresh_output_devices();
+                    ui.colored_label(
+                        Color32::LIGHT_RED,
+                        format!("Audio device discovery: {error}"),
+                    );
                 }
 
-                egui::ComboBox::from_label("Global second press")
+                ui.label("Second press");
+                egui::ComboBox::from_id_salt("global_retrigger")
                     .selected_text(retrigger_label(&self.config.retrigger))
+                    .width(268.0)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut self.config.retrigger,
@@ -839,25 +855,18 @@ impl PadfireApp {
                 );
 
                 ui.separator();
-                ui.checkbox(
-                    &mut self.config.monitor_enabled,
-                    "Mirror audio to a second output",
-                );
+                draw_monitor_checkbox(ui, &mut self.config.monitor_enabled);
                 ui.add_enabled_ui(self.config.monitor_enabled, |ui| {
                     draw_output_selector(
                         ui,
                         "monitor_output",
                         &mut self.config.monitor_sink,
                         &self.output_devices,
+                        268.0,
                     );
                 });
-                ui.label(
-                    RichText::new("A second stream is opened only when the selected output is different from the primary output.")
-                        .size(10.0)
-                        .color(Color32::from_rgb(150, 157, 168)),
-                );
 
-                ui.add_space(10.0);
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.button("Save").clicked() {
                         self.save_settings();
@@ -881,46 +890,20 @@ impl PadfireApp {
             smooth_meter_level(self.meter_level_display, measured_level, elapsed);
 
         ui.horizontal_centered(|ui| {
-            ui.add_space(6.0);
-            ui.label(RichText::new("PADFIRE").strong().size(14.0));
-            ui.separator();
-            let state = if self.runtime.midi_connected() {
-                "Launchpad connected"
-            } else {
-                "Launchpad unavailable"
-            };
-            let color = if self.runtime.midi_connected() {
-                Color32::from_rgb(110, 185, 130)
-            } else {
-                Color32::from_rgb(155, 160, 170)
-            };
-            ui.colored_label(color, state);
+            ui.add_space(8.0);
+            let connected = self.runtime.midi_connected();
+            let brand_color = launchpad_brand_color(connected);
+            ui.colored_label(brand_color, RichText::new("PADFIRE").strong().size(14.0));
             ui.add(
                 egui::ProgressBar::new(self.meter_level_display)
                     .desired_width(84.0)
-                    .desired_height(4.0)
-                    .fill(Color32::from_rgb(100, 175, 215)),
-            )
-            .on_hover_text("Selected output system-loopback level while Padfire audio is active; falls back to Padfire's own mix when loopback is unavailable");
+                    .desired_height(4.0),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Settings").clicked() {
                     self.open_settings();
                 }
-                let mut monitor = self.config.monitor_enabled;
-                if ui.checkbox(&mut monitor, "Mon").changed() {
-                    self.config.monitor_enabled = monitor;
-                    match self.runtime.save_config(&self.config) {
-                        Ok(()) => {
-                            self.status = if monitor {
-                                "Audio monitoring enabled".to_owned()
-                            } else {
-                                "Audio monitoring disabled".to_owned()
-                            }
-                        }
-                        Err(error) => self.status = format!("Could not save settings: {error}"),
-                    }
-                }
-                if ui.button("Stop").clicked() {
+                if draw_stop_audio_button(ui).clicked() {
                     self.runtime.stop_audio();
                     self.status = "Audio playback stopped".to_owned();
                 }
@@ -932,16 +915,11 @@ impl PadfireApp {
         ui.horizontal(|ui| {
             for index in 0..PAGE_COUNT {
                 let selected = self.page == index;
-                let mut button =
-                    egui::Button::new(RichText::new((index + 1).to_string()).size(12.0).strong())
-                        .min_size(Vec2::new(43.0, 25.0));
-                if selected {
-                    button = button.fill(Color32::from_rgb(36, 91, 147));
-                }
-                if ui.add(button).clicked() {
+                if draw_page_button(ui, index + 1, selected).clicked() {
                     self.change_page(index);
                 }
             }
+            ui.allocate_exact_size(Vec2::new(32.0, 24.0), egui::Sense::hover());
         });
     }
 
@@ -952,30 +930,18 @@ impl PadfireApp {
             .show(ui, |ui| {
                 for row in 0..8_u8 {
                     for column in 0..8_u8 {
-                        self.draw_pad(ui, row * 16 + column);
+                        self.draw_pad(ui, row * 16 + column, 48.0);
                     }
-                    self.draw_pad(ui, row * 16 + 8);
+                    self.draw_pad(ui, row * 16 + 8, 32.0);
                     ui.end_row();
                 }
             });
     }
 
-    fn draw_pad(&mut self, ui: &mut egui::Ui, note: u8) {
+    fn draw_pad(&mut self, ui: &mut egui::Ui, note: u8, width: f32) {
         let label = self.pad_name(note);
-        let color = self.pad_color(note);
-        let text = if label.is_empty() { " " } else { &label };
-        let response = ui
-            .add_sized(
-                Vec2::new(49.0, 49.0),
-                egui::Button::new(
-                    RichText::new(text)
-                        .size(9.0)
-                        .color(Color32::from_rgb(226, 231, 237)),
-                )
-                .fill(color)
-                .stroke(Stroke::new(1.0, Color32::from_rgb(65, 71, 80))),
-            )
-            .interact(egui::Sense::click_and_drag());
+        let color = self.pad_color(note, ui.visuals());
+        let response = draw_pad_face(ui, note, width, &label, color, &mut self.pad_pressed_at);
 
         response.dnd_set_drag_payload(PadDragPayload {
             page: self.page,
@@ -985,7 +951,7 @@ impl PadfireApp {
             ui.painter().rect_stroke(
                 response.rect,
                 3.0,
-                Stroke::new(2.0, Color32::from_rgb(90, 155, 225)),
+                Stroke::new(2.0, ui.visuals().selection.stroke.color),
                 egui::StrokeKind::Outside,
             );
         }
@@ -1112,7 +1078,12 @@ impl PadfireApp {
             self.editor_open = true;
         }
 
-        response.on_hover_text(format!("Pad {} / note {}", note, note));
+        let hover_text = if label.is_empty() {
+            format!("Pad {} / note {}", note, note)
+        } else {
+            format!("{}  ·  pad {}", label, note)
+        };
+        response.on_hover_text(hover_text);
     }
 
     fn handle_keyboard(&mut self, context: &Context) {
@@ -1151,7 +1122,7 @@ impl PadfireApp {
             match escape_behavior(self.tray_available()) {
                 EscapeBehavior::HideToTray => {
                     context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                    self.status = "Padfire is running in the tray".to_owned();
+                    // No persistent status chrome; hiding the window is silent.
                 }
                 EscapeBehavior::Minimize => {
                     context.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -1164,7 +1135,9 @@ impl PadfireApp {
 impl eframe::App for PadfireApp {
     fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let context = root_ui.ctx().clone();
-        context.set_visuals(egui::Visuals::dark());
+        // Follow the desktop's light/dark theme (KDE, Windows, etc.).
+        // Eframe supplies the native system theme through egui input.
+        follow_system_theme(&context);
         // IPC, MIDI and process/audio workers post events from other threads.
         // eframe does not continuously call ui() while idle, so schedule a
         // low-frequency poll instead of leaving those commands stranded.
@@ -1180,6 +1153,7 @@ impl eframe::App for PadfireApp {
             .poll(&mut self.config, &mut self.page, &mut self.status);
         self.poll_loudness_analysis();
         let signals = self.runtime.take_signals();
+        record_midi_pad_feedback(&mut self.pad_pressed_at, &signals, Instant::now());
         if signals.show_requested {
             context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -1195,35 +1169,120 @@ impl eframe::App for PadfireApp {
             .exact_size(40.0)
             .show(root_ui, |ui| self.draw_top_bar(ui));
 
-        egui::Panel::bottom("status_bar")
-            .exact_size(25.0)
-            .show(root_ui, |ui| {
-                ui.horizontal_centered(|ui| {
-                    ui.label(
-                        RichText::new(&self.status)
-                            .size(10.0)
-                            .color(Color32::from_rgb(155, 162, 172)),
-                    );
-                });
-            });
-
         egui::CentralPanel::default().show(root_ui, |ui| {
-            self.draw_page_selector(ui);
-            ui.add_space(7.0);
-            self.draw_grid(ui);
-            ui.add_space(7.0);
-            ui.label(
-                RichText::new(
-                    "Click an assigned pad to play. Right-click an empty or assigned pad to edit.",
-                )
-                .size(10.0)
-                .color(Color32::from_rgb(143, 150, 161)),
-            );
+            ui.vertical_centered(|ui| {
+                self.draw_page_selector(ui);
+                ui.add_space(5.0);
+                self.draw_grid(ui);
+            });
         });
 
         self.draw_editor(&context);
         self.draw_settings(&context);
+
+        if self
+            .pad_pressed_at
+            .values()
+            .any(|started| started.elapsed() < Duration::from_millis(190))
+        {
+            context.request_repaint_after(Duration::from_millis(16));
+        }
     }
+}
+
+fn follow_system_theme(context: &Context) {
+    context.set_theme(egui::ThemePreference::System);
+}
+
+fn draw_monitor_checkbox(ui: &mut egui::Ui, enabled: &mut bool) -> egui::Response {
+    ui.checkbox(enabled, "Mirror audio to a second output")
+}
+
+fn draw_page_button(ui: &mut egui::Ui, number: usize, selected: bool) -> egui::Response {
+    let mut button = egui::Button::new(RichText::new(number.to_string()).size(12.0).strong());
+    if selected {
+        button = button.fill(ui.visuals().selection.bg_fill);
+    }
+    ui.add_sized(Vec2::new(48.0, 24.0), button)
+}
+
+fn draw_stop_audio_button(ui: &mut egui::Ui) -> egui::Response {
+    let stop = egui::Button::new(
+        RichText::new("■  STOP AUDIO")
+            .strong()
+            .color(Color32::WHITE),
+    )
+    .min_size(Vec2::new(108.0, 24.0))
+    .fill(Color32::from_rgb(166, 43, 43))
+    .stroke(Stroke::new(1.0, Color32::from_rgb(205, 76, 76)));
+    ui.add(stop)
+}
+
+fn draw_pad_face(
+    ui: &mut egui::Ui,
+    note: u8,
+    width: f32,
+    label: &str,
+    base_fill: Color32,
+    pad_pressed_at: &mut HashMap<u8, Instant>,
+) -> egui::Response {
+    const PAD_SIZE: f32 = 48.0;
+
+    let (hit_rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, PAD_SIZE), egui::Sense::click_and_drag());
+    let now = Instant::now();
+    let press_scale = update_pad_press_animation(
+        pad_pressed_at,
+        note,
+        now,
+        response.is_pointer_button_down_on(),
+        response.clicked(),
+    );
+
+    // Only the drawn face moves; the hit target remains fixed for reliable
+    // clicks, right-click menus, and drag/drop throughout the animation.
+    let visual_rect =
+        egui::Rect::from_center_size(hit_rect.center(), hit_rect.size() * press_scale);
+    let visuals = ui.visuals();
+    let mut fill = base_fill;
+    if response.hovered() {
+        fill = blend_theme_color(fill, visuals.widgets.hovered.bg_fill, 0.22);
+    }
+    let widget_stroke = if response.is_pointer_button_down_on() {
+        visuals.widgets.active.bg_stroke
+    } else if response.hovered() {
+        visuals.widgets.hovered.bg_stroke
+    } else {
+        visuals.widgets.inactive.bg_stroke
+    };
+
+    ui.painter()
+        .rect_filled(visual_rect, egui::CornerRadius::same(4), fill);
+    ui.painter().rect_stroke(
+        visual_rect,
+        egui::CornerRadius::same(4),
+        widget_stroke,
+        egui::StrokeKind::Inside,
+    );
+
+    let font_size = if width < 40.0 { 6.0 } else { 8.0 };
+    let displayed_label = pad_label_display(label, if width < 40.0 { 6 } else { 8 });
+    if !displayed_label.is_empty() {
+        let text_color = visuals.text_color();
+        let text_rect = visual_rect.shrink(3.0);
+        let galley = ui.painter().layout(
+            displayed_label,
+            egui::FontId::proportional(font_size),
+            text_color,
+            text_rect.width(),
+        );
+        let text_position = visual_rect.center() - galley.size() * 0.5;
+        ui.painter()
+            .with_clip_rect(text_rect)
+            .galley(text_position, galley, text_color);
+    }
+
+    response
 }
 
 fn draw_output_selector(
@@ -1231,6 +1290,7 @@ fn draw_output_selector(
     id: &'static str,
     selected: &mut String,
     devices: &[OutputDevice],
+    width: f32,
 ) {
     let selected_label = if selected.trim().is_empty() {
         "System default".to_owned()
@@ -1243,6 +1303,7 @@ fn draw_output_selector(
     };
     egui::ComboBox::from_id_salt(id)
         .selected_text(selected_label)
+        .width(width)
         .show_ui(ui, |ui| {
             ui.selectable_value(selected, String::new(), "System default");
             for device in devices {
@@ -1251,10 +1312,435 @@ fn draw_output_selector(
         });
 }
 
+fn blend_theme_color(background: Color32, foreground: Color32, amount: f32) -> Color32 {
+    let amount = amount.clamp(0.0, 1.0);
+    let blend = |base: u8, tint: u8| {
+        (f32::from(base) + (f32::from(tint) - f32::from(base)) * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color32::from_rgb(
+        blend(background.r(), foreground.r()),
+        blend(background.g(), foreground.g()),
+        blend(background.b(), foreground.b()),
+    )
+}
+
+fn pad_label_display(label: &str, max_chars: usize) -> String {
+    let mut lines = [String::new(), String::new()];
+    let mut current_line = 0;
+    let mut overflow = false;
+
+    for word in label.split_whitespace() {
+        let characters = word.chars().collect::<Vec<_>>();
+        if lines[current_line].is_empty() {
+            let shown = characters.iter().take(max_chars).collect::<String>();
+            lines[current_line] = shown;
+            if characters.len() > max_chars {
+                let remaining = &characters[max_chars..];
+                if current_line == 0 && !remaining.is_empty() {
+                    current_line = 1;
+                    lines[current_line] = remaining.iter().take(max_chars).collect::<String>();
+                    overflow = remaining.len() > max_chars;
+                } else {
+                    overflow = true;
+                }
+            }
+        } else if lines[current_line].chars().count() + 1 + characters.len() <= max_chars {
+            lines[current_line].push(' ');
+            lines[current_line].push_str(word);
+        } else if current_line == 0 {
+            current_line = 1;
+            lines[current_line] = characters.iter().take(max_chars).collect::<String>();
+            overflow = characters.len() > max_chars;
+        } else {
+            overflow = true;
+            break;
+        }
+    }
+
+    if overflow && !lines[1].is_empty() {
+        let mut chars = lines[1].chars().collect::<Vec<_>>();
+        if chars.len() >= max_chars {
+            chars.truncate(max_chars.saturating_sub(1));
+        }
+        chars.push('…');
+        lines[1] = chars.into_iter().collect();
+    }
+
+    lines
+        .into_iter()
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn record_midi_pad_feedback(
+    pad_pressed_at: &mut HashMap<u8, Instant>,
+    signals: &RuntimeSignals,
+    pressed_at: Instant,
+) {
+    for note in signals.pressed_pads.iter().copied() {
+        pad_pressed_at.insert(note, pressed_at);
+    }
+}
+
+fn update_pad_press_animation(
+    pad_pressed_at: &mut HashMap<u8, Instant>,
+    note: u8,
+    now: Instant,
+    pointer_down: bool,
+    clicked: bool,
+) -> f32 {
+    const PRESS_DURATION: Duration = Duration::from_millis(190);
+
+    if pointer_down || clicked {
+        pad_pressed_at.entry(note).or_insert(now);
+    }
+
+    let elapsed = pad_pressed_at
+        .get(&note)
+        .map(|started| now.saturating_duration_since(*started));
+    let scale = elapsed
+        .filter(|elapsed| *elapsed < PRESS_DURATION)
+        .map(pad_press_scale)
+        .unwrap_or(1.0);
+
+    // Keep the original press timestamp while held; otherwise a long press
+    // would repeatedly restart the twinge after each animation interval.
+    if !pointer_down && elapsed.is_some_and(|elapsed| elapsed >= PRESS_DURATION) {
+        pad_pressed_at.remove(&note);
+    }
+
+    scale
+}
+
+fn launchpad_brand_color(connected: bool) -> Color32 {
+    if connected {
+        Color32::from_rgb(48, 209, 88)
+    } else {
+        Color32::from_rgb(255, 69, 58)
+    }
+}
+
+fn pad_press_scale(elapsed: Duration) -> f32 {
+    const PRESS_IN: f32 = 0.055;
+    const RELEASE: f32 = 0.135;
+    const MIN_SCALE: f32 = 0.88;
+    let seconds = elapsed.as_secs_f32();
+    if seconds < PRESS_IN {
+        1.0 - (1.0 - MIN_SCALE) * (seconds / PRESS_IN).clamp(0.0, 1.0)
+    } else {
+        let progress = ((seconds - PRESS_IN) / RELEASE).clamp(0.0, 1.0);
+        let eased = progress * progress * (3.0 - 2.0 * progress);
+        MIN_SCALE + (1.0 - MIN_SCALE) * eased
+    }
+}
+
 fn smooth_meter_level(current: f32, target: f32, elapsed: Duration) -> f32 {
     let time_constant = if target > current { 0.035 } else { 0.24 };
     let alpha = 1.0 - (-elapsed.as_secs_f32() / time_constant).exp();
     current + (target - current) * alpha
+}
+
+#[cfg(test)]
+mod pad_feedback_tests {
+    use super::*;
+
+    #[test]
+    fn pad_labels_wrap_at_words_and_stay_within_two_lines() {
+        assert_eq!(pad_label_display("short", 10), "short");
+        assert_eq!(pad_label_display("Air horn", 8), "Air horn");
+        assert_eq!(pad_label_display("LONG LABEL", 8), "LONG\nLABEL");
+        assert_eq!(
+            pad_label_display("very long pad label", 10),
+            "very long\npad label"
+        );
+        assert_eq!(pad_label_display("12345678", 7), "1234567\n8");
+        let long = pad_label_display("this-is-a-very-long-pad-name", 10);
+        assert_eq!(long.lines().count(), 2);
+        assert!(long.ends_with('…'));
+        assert!(long.lines().all(|line| line.chars().count() <= 10));
+        let side = pad_label_display("TOGGLE", 6);
+        assert_eq!(side, "TOGGLE");
+        let side_long = pad_label_display("Stop all sounds", 6);
+        assert!(side_long.lines().count() <= 2);
+        assert!(side_long.lines().all(|line| line.chars().count() <= 6));
+    }
+
+    #[test]
+    fn pad_press_animation_shrinks_then_returns_to_full_size() {
+        assert_eq!(pad_press_scale(Duration::ZERO), 1.0);
+        let pressed = pad_press_scale(Duration::from_millis(55));
+        assert!((pressed - 0.88).abs() < 0.001);
+        assert!(pressed < 0.9);
+        assert_eq!(pad_press_scale(Duration::from_millis(190)), 1.0);
+    }
+
+    #[test]
+    fn physical_midi_signal_starts_the_same_pad_twinge_as_mouse_input() {
+        let pressed_at = Instant::now();
+        let signals = RuntimeSignals {
+            pressed_pads: vec![36, 37],
+            ..RuntimeSignals::default()
+        };
+        let mut pad_pressed_at = HashMap::new();
+        record_midi_pad_feedback(&mut pad_pressed_at, &signals, pressed_at);
+        assert_eq!(pad_pressed_at.get(&36), Some(&pressed_at));
+        assert_eq!(pad_pressed_at.get(&37), Some(&pressed_at));
+    }
+
+    #[test]
+    fn branding_uses_green_for_connected_and_red_for_disconnected() {
+        assert_eq!(launchpad_brand_color(true), Color32::from_rgb(48, 209, 88));
+        assert_eq!(launchpad_brand_color(false), Color32::from_rgb(255, 69, 58));
+    }
+}
+
+#[cfg(test)]
+mod ui_interaction_tests {
+    use super::*;
+
+    fn run_pointer_frame(
+        context: &Context,
+        events: Vec<egui::Event>,
+        mut render: impl FnMut(&mut egui::Ui) -> egui::Response,
+    ) -> (egui::Rect, bool, bool) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(240.0, 120.0),
+            )),
+            events,
+            ..Default::default()
+        };
+
+        let mut rect = None;
+        let mut clicked = false;
+        let mut secondary_clicked = false;
+        let output = context.run_ui(input, |ui| {
+            let response = render(ui);
+            rect = Some(response.rect);
+            clicked = response.clicked();
+            secondary_clicked = response.secondary_clicked();
+        });
+        output.drop_without_applying_deltas();
+        (
+            rect.expect("interactive control should be laid out"),
+            clicked,
+            secondary_clicked,
+        )
+    }
+
+    fn assert_primary_click(mut render: impl FnMut(&mut egui::Ui) -> egui::Response) {
+        let context = Context::default();
+        let (target, _, _) = run_pointer_frame(&context, Vec::new(), &mut render);
+        let position = target.center();
+
+        run_pointer_frame(
+            &context,
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            &mut render,
+        );
+        let (_, clicked, _) = run_pointer_frame(
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut render,
+        );
+        assert!(clicked, "primary click must activate the control");
+    }
+
+    #[test]
+    fn fixed_pad_hit_target_accepts_primary_and_secondary_clicks() {
+        let context = Context::default();
+        let mut pressed_at = HashMap::new();
+        let mut feedback_started = false;
+        let mut render = |ui: &mut egui::Ui| {
+            let response = draw_pad_face(
+                ui,
+                36,
+                48.0,
+                "very-long-demo-pad-label",
+                Color32::from_rgb(42, 48, 56),
+                &mut pressed_at,
+            );
+            feedback_started = pressed_at.contains_key(&36);
+            response
+        };
+
+        let (target, _, _) = run_pointer_frame(&context, Vec::new(), &mut render);
+        assert_eq!(target.width(), 48.0);
+        assert_eq!(target.height(), 48.0);
+        let position = target.center();
+
+        run_pointer_frame(
+            &context,
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            &mut render,
+        );
+        let (_, clicked, _) = run_pointer_frame(
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut render,
+        );
+        assert!(clicked, "primary click must reach the fixed pad hit target");
+
+        run_pointer_frame(
+            &context,
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Secondary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            &mut render,
+        );
+        let (_, _, secondary_clicked) = run_pointer_frame(
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Secondary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut render,
+        );
+        drop(render);
+        assert!(feedback_started, "mouse down should start pad feedback");
+        assert!(
+            secondary_clicked,
+            "secondary click must remain available for the edit context menu"
+        );
+    }
+
+    #[test]
+    fn long_pointer_hold_does_not_restart_the_pad_twinge() {
+        let original_press = Instant::now();
+        let held_at = original_press + Duration::from_secs(1);
+        let mut pressed_at = HashMap::from([(36, original_press)]);
+
+        let scale = update_pad_press_animation(&mut pressed_at, 36, held_at, true, false);
+        assert_eq!(pressed_at.get(&36), Some(&original_press));
+        assert_eq!(scale, 1.0);
+
+        update_pad_press_animation(
+            &mut pressed_at,
+            36,
+            held_at + Duration::from_millis(1),
+            false,
+            false,
+        );
+        assert!(
+            !pressed_at.contains_key(&36),
+            "release after a completed twinge should clear its press timestamp"
+        );
+    }
+
+    #[test]
+    fn page_selector_and_stop_audio_button_accept_primary_clicks() {
+        assert_primary_click(|ui| draw_page_button(ui, 1, false));
+        assert_primary_click(draw_stop_audio_button);
+    }
+
+    #[test]
+    fn settings_monitor_checkbox_toggles_on_click() {
+        let context = Context::default();
+        let mut enabled = false;
+        let mut render = |ui: &mut egui::Ui| draw_monitor_checkbox(ui, &mut enabled);
+        let (target, _, _) = run_pointer_frame(&context, Vec::new(), &mut render);
+        let position = target.center();
+
+        run_pointer_frame(
+            &context,
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            &mut render,
+        );
+        run_pointer_frame(
+            &context,
+            vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            &mut render,
+        );
+        drop(render);
+        assert!(enabled, "monitor checkbox must toggle when clicked");
+    }
+
+    #[test]
+    fn application_visuals_follow_light_and_dark_system_theme_changes() {
+        let context = Context::default();
+        follow_system_theme(&context);
+
+        let light_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(240.0, 120.0),
+            )),
+            system_theme: Some(egui::Theme::Light),
+            ..Default::default()
+        };
+        let mut light_mode = None;
+        let output = context.run_ui(light_input, |ui| {
+            light_mode = Some(ui.visuals().dark_mode);
+        });
+        output.drop_without_applying_deltas();
+        assert_eq!(light_mode, Some(false));
+
+        let dark_input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(240.0, 120.0),
+            )),
+            system_theme: Some(egui::Theme::Dark),
+            ..Default::default()
+        };
+        let mut dark_mode = None;
+        let output = context.run_ui(dark_input, |ui| {
+            dark_mode = Some(ui.visuals().dark_mode);
+        });
+        output.drop_without_applying_deltas();
+        assert_eq!(dark_mode, Some(true));
+    }
 }
 
 impl Drop for PadfireApp {
