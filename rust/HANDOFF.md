@@ -1,15 +1,16 @@
 # Padfire Rust rewrite handoff
 
-Updated: 2026-11-22 (America/Los_Angeles)
+Updated: 2026-11-23 (America/Los_Angeles)
 
 ## Checkpoint
 
 - Repository: `Roaring1/Padfire`
-- Production base: `main` at `f88d8fd54aa1a09e9c16474ecba89abe354e4bcf` (released v2.4.0)
-- Working branch: `rust/rewrite-foundation-20261120`
-- Latest implementation commit: `b58f9566e656433d44c79bbdb70ec9d24ca09ee9`
-- Draft PR: https://github.com/Roaring1/Padfire/pull/19
-- PR remains open, unmerged and draft; production v2.4.0 remains the reference.
+- Production reference: released Padfire v2.4.0 on `main`; current security branch is based on `1cc3af4ebc7483c29c23e1bd7f41932948a99510`.
+- Active security branch: `security/triage-codeql-paths-2026-11-23`
+- Latest security implementation commit: `cb0a168678d189185d70d9161d9558e3cb3d75ff` (`fix: make PowerShell installer temp files collision-safe`).
+- Security remediation PR #22: https://github.com/Roaring1/Padfire/pull/22 (open, non-draft, unmerged).
+- UI/final-build candidate PR #20: https://github.com/Roaring1/Padfire/pull/20 (open, draft, unmerged).
+- Both are candidates only; production v2.4.0 remains the reference and no cutover is authorized by these PRs.
 - Nobara checkout: `/home/roaring/Documents/GitHub/Padfire`
 - Windows checkout: `%USERPROFILE%\src\Padfire` on SSH alias `laptop`
 
@@ -31,22 +32,29 @@ The Rust workspace contains `padfire-core`, `padfire-platform`, and a native efr
 - Side-by-side installer: Linux user-local binary, desktop file and SVG icon; Windows per-user binary and Start Menu shortcut. Integration is created before the executable is published. If integration or binary copy fails, newly created integration artifacts are rolled back. Linux desktop `Exec` quotes spaces and escapes literal `%` field codes, backslashes, quotes and `$`. No autostart or service; never touches v2.4.0 or user configuration.
 - Windows deferred uninstall: if the running executable is inside the candidate install root, a hidden cleanup helper uses null stdio and `CREATE_NO_WINDOW`, retries removal while the executable is locked, and preserves sibling user configuration. Native regression holds a real deny-delete file handle, observes a cleanup retry, releases the lock and verifies removal.
 
-## Latest full local validation on commit `b58f956`
+## Latest validation on commit cb0a168
 
-Both actual machines point to the same clean commit and passed the complete workspace gates:
+Nobara/Linux and the hosted Windows runner both passed the complete Rust workspace validation on the exact security PR head.
 
-| Gate | Nobara Linux | Windows laptop |
+| Gate | Nobara/Linux | Hosted Windows |
 |---|---:|---:|
-| `cargo fmt --all -- --check` | pass | pass |
-| Workspace unit/integration tests | 82 passed | 87 passed |
-| Strict Clippy (`-D warnings`) | pass | pass |
+| cargo fmt --all -- --check | pass | pass |
+| Workspace unit/integration tests | 129 passed | 133 passed |
+| Strict Clippy (-D warnings) | pass | pass |
 | Optimized workspace release build | pass | pass |
 
-Linux test groups: 2 app, 28 core, 17 compatibility, 35 platform. Windows: 2 app, 28 core, 17 compatibility, 40 platform. Windows platform tests include native named-pipe, hardlink, Start Menu COM shortcut, locked-file deferred uninstall, protected DACL inspection, final and parent junction rejection, MoveFileExW replacement/backup/failure recovery, Job Object descendant termination, ProcessEngine start/output/Stop, Stop All/shutdown, and canceled-generation suppression.
+Linux test groups: 19 app, 2 CLI, 28 core, 23 compatibility and 57 platform. Windows test groups: 19 app, 2 CLI, 28 core, 23 compatibility and 61 platform. Windows-only additions cover exclusive-create collision ownership, two distinct generated PowerShell scripts executed through powershell.exe -File, and the production wrapper.
 
-The UI change on this commit passed the full matrix. Native app compilation passed on Windows; visible Windows tray interaction has not yet been accepted. Nobara isolated GUI smoke passed as detailed above. An earlier FFmpeg loudnorm end-to-end test with a generated sine WAV passed. MIDI hardware was disabled during GUI smoke.
+Hosted CI for head cb0a168678d189185d70d9161d9558e3cb3d75ff:
+- Padfire tests run 45170215775 passed, including hardware-free GTK tests, icon loading and virtual-display rendering.
+- Padfire Rust run 45170215759 passed formatting, tests, strict Clippy and optimized release builds on Ubuntu and Windows.
+- PR CodeQL run 45170207634 completed successfully: Rust reported 1 high path-injection result; Python and Actions reported 0.
 
-Hosted GitHub Actions for `b58f956`: `Padfire tests` run `44857110249` completed successfully. `Padfire Rust` run `44857110283` was still in progress at the last check, with `Core / ubuntu-latest` and `Core / windows-latest` running. Recheck final results before marking hosted CI green.
+The separate PR CodeQL policy check is red because the one high finding remains open: alert #185 at runtime.rs:261, the user-selected PID status-file open. This is a documented read-only feature; the resolver rejects traversal, opens without following links/reparse points, validates the opened handle and parses bounded numeric PIDs used only for external-process LED state. Keep the finding open for human review; do not suppress it.
+
+The repository Code Scanning API separately reports 104 open alerts on refs/heads/main at baseline 1cc3af4ebc7483c29c23e1bd7f41932948a99510 (100 high path-injection, 3 critical command-line-injection, 1 critical unsafe-deserialization). Those are a separate main-branch baseline, not the current PR-ref finding. No alerts were dismissed. The critical unsafe-deserialization and installer-root override findings are absent from the latest PR analysis.
+
+No visible KDE Wayland or Windows 11 tray acceptance, physical MIDI hardware test, or live PipeWire/WASAPI routing test is claimed. Production v2.4.0 and its user configuration/audio routing were not changed.
 
 ## 2026-11-22 follow-up audit
 
@@ -70,15 +78,15 @@ pins both third-party CI actions to verified immutable commits:
 
 ## Immediate engineering queue
 
-1. Verify hosted Actions `44857110283` pass both platforms; inspect logs if either fails.
-2. Continue behavior parity against `BEHAVIOR_MATRIX.md`, especially the full pad editor fields, settings, CLI JSON/exit behavior, MIDI reconnect lifecycle, and audio output/monitor semantics.
-3. Review config concurrency and failure semantics: backup-write failure, simultaneous saves, Windows parent-path trust, reparse attacks above the immediate parent, crash/power-loss durability. Add a serialization primitive only if multiple writers are possible in actual call paths.
-4. Stress process output reader ownership with high-volume simultaneous stdout/stderr, long-running descendants, repeated start/stop, timeout and shutdown; verify bounded events and no orphan handles/threads.
-5. Test installer rollback when executable copy fails after integration creation; preserve pre-existing custom integration during failed upgrade; test percent, apostrophe, quotes, backslashes and Unicode paths on both platforms.
-6. Visible desktop acceptance on KDE Wayland and Windows 11: resize, HiDPI, tray menu, close-to-tray, Escape hide, restore/focus and resource behavior.
-7. Physical Mini MK1/MK2 MIDI/LED/unplug/reconnect acceptance and PipeWire/WASAPI playback/monitor acceptance when it can be done without disrupting production.
-8. Add dependency/license/security gates, CodeQL or equivalent, packaging, checksums/signatures, upgrade/rollback rehearsal.
-9. Only after every `CUTOVER.md` gate passes, plan deliberate production cutover with legacy rollback retained.
+1. Keep PR #22 open for human review of the one current high-severity PID-file path finding (#185 at runtime.rs:261); the PR CodeQL policy check remains red until that finding has a reviewed disposition.
+2. Continue individual source-to-sink triage of the separate 104-alert main baseline. Do not bulk-dismiss findings; update issue #21 only with evidence-backed dispositions.
+3. Add dependency/license policy and provenance checks; cargo-deny or equivalent is not currently configured.
+4. Continue behavior parity against BEHAVIOR_MATRIX.md: full pad editor fields/settings, CLI JSON/exit behavior, MIDI reconnect, per-pad audio routing, monitor and meter semantics.
+5. Review config backup/concurrency/failure semantics and Windows ancestor trust boundary; test crash/power-loss durability before production cutover.
+6. Stress process supervision with high-volume simultaneous stdout/stderr, descendants, repeated start/stop, timeout and shutdown; inspect for orphan handles/readers.
+7. Complete installer custom-integration restoration, exotic path matrix, signing and upgrade/rollback rehearsal.
+8. Perform visible KDE Wayland and Windows 11 UI/tray/focus acceptance, then physical Launchpad Mini MK1/MK2 MIDI/LED/unplug/reconnect, PipeWire playback/monitor and WASAPI playback/monitor tests.
+9. Complete every CUTOVER.md gate, produce checksummed release artifacts, and only then decide on an explicit reviewed production transition with v2.4.0 rollback retained.
 
 ## Explicit non-goals until evidence gates pass
 
