@@ -1280,7 +1280,7 @@ fn draw_pad_face(
     let font_size = if width < 40.0 { 6.0 } else { 8.0 };
     let displayed_label = pad_label_display(label, if width < 40.0 { 6 } else { 8 });
     if !displayed_label.is_empty() {
-        let text_color = visuals.text_color();
+        let text_color = visuals.strong_text_color();
         let text_rect = visual_rect.shrink(3.0);
         let galley = ui.painter().layout(
             displayed_label,
