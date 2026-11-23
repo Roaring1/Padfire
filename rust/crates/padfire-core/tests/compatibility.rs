@@ -78,6 +78,38 @@ fn oversized_config_is_rejected_before_json_parsing() {
 }
 
 #[test]
+fn bounded_json_parser_matches_serde_for_escapes_unicode_numbers_and_duplicate_keys() {
+    let input = r#"{
+        "version": 5,
+        "vendor_extension": {
+            "text": "array [] object {} colon : quote \" slash \\ newline \n control \u0001 emoji \uD83D\uDE80 raw café",
+            "numbers": [0, -0, 1, -1, 1.5, 3.141592653589793, 1e300, 1E-9, 9223372036854775807, 18446744073709551615],
+            "duplicate": {"same": 1, "same": 2}
+        }
+    }"#.as_bytes();
+    let expected: serde_json::Value = serde_json::from_slice(input).unwrap();
+    let config = AppConfig::from_json(input).unwrap();
+
+    assert_eq!(
+        config.extra["vendor_extension"],
+        expected["vendor_extension"]
+    );
+}
+
+#[test]
+fn bounded_json_parser_rejects_malformed_number_and_trailing_input() {
+    for input in [
+        br#"{"version":05}"#.as_slice(),
+        br#"{"version":1.}"#.as_slice(),
+        br#"{"version":1e}"#.as_slice(),
+        br#"{"version":5} trailing"#.as_slice(),
+        br#"{"version":5,"extension":[1,]}"#.as_slice(),
+    ] {
+        assert!(AppConfig::from_json(input).is_err(), "accepted {input:?}");
+    }
+}
+
+#[test]
 fn configuration_bounds_reject_excessive_json_depth_and_node_count() {
     let mut nested = "null".to_owned();
     for _ in 0..65 {

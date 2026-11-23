@@ -235,17 +235,8 @@ mod tests {
 
     #[test]
     fn loudness_input_requires_an_existing_local_regular_file_and_returns_canonical_path() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "padfire-loudness-input-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
         let file = root.join("-selected-audio.wav");
         std::fs::write(&file, b"bounded test fixture").unwrap();
 
@@ -266,24 +257,15 @@ mod tests {
             Err(LoudnessError::InvalidInput(_))
         ));
 
-        let _ = std::fs::remove_dir_all(root);
+        drop(temp);
     }
 
     #[cfg(unix)]
     #[test]
     fn loudness_input_resolves_symlinks_to_their_regular_file_target() {
         use std::os::unix::fs::symlink;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "padfire-loudness-link-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
         let target = root.join("audio.wav");
         let link = root.join("selected-audio.wav");
         std::fs::write(&target, b"fixture").unwrap();
@@ -293,7 +275,7 @@ mod tests {
         assert_eq!(resolved, target.canonicalize().unwrap());
         assert_ne!(resolved, link);
 
-        let _ = std::fs::remove_dir_all(root);
+        drop(temp);
     }
 
     #[test]
@@ -347,12 +329,8 @@ mod tests {
             return;
         }
 
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("padfire-lufs-{}-{nonce}.wav", std::process::id()));
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("padfire-lufs.wav");
         let generated = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
@@ -372,7 +350,7 @@ mod tests {
         assert!(generated.success(), "could not generate analyzer fixture");
         let cancelled = AtomicBool::new(false);
         let result = analyze_lufs(path.to_str().unwrap(), &cancelled);
-        let _ = std::fs::remove_file(&path);
+        drop(temp);
         let result = result.unwrap().expect("sine fixture must not be silent");
         assert!(result.integrated_lufs.is_finite());
         assert!(result.true_peak_dbfs.is_finite());

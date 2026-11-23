@@ -317,14 +317,15 @@ fn resolve_directory_path(path: &Path, label: &str) -> Result<PathBuf, StoreErro
     let mut existing = path.to_path_buf();
     let mut missing = Vec::<std::ffi::OsString>::new();
     loop {
-        match fs::metadata(&existing) {
-            Ok(metadata) => {
-                if !metadata.is_dir() {
+        match existing.canonicalize() {
+            Ok(canonical) => {
+                if !canonical.is_dir() {
                     return Err(StoreError::UnsafePath(format!(
                         "{label} is not a directory: {}",
-                        existing.display()
+                        canonical.display()
                     )));
                 }
+                existing = canonical;
                 break;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -340,7 +341,7 @@ fn resolve_directory_path(path: &Path, label: &str) -> Result<PathBuf, StoreErro
         }
     }
 
-    let mut resolved = existing.canonicalize()?;
+    let mut resolved = existing;
     for component in missing.iter().rev() {
         resolved.push(component);
     }
@@ -933,16 +934,11 @@ fn sync_directory(_path: &Path) -> Result<(), StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    static TEST_ID: AtomicU64 = AtomicU64::new(0);
-
-    fn test_store() -> ConfigStore {
-        let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("padfire-store-test-{}-{id}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        ConfigStore::new(path)
+    fn test_store() -> (ConfigStore, tempfile::TempDir) {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = ConfigStore::new(temporary.path().join("config"));
+        (store, temporary)
     }
 
     #[cfg(windows)]
@@ -1048,7 +1044,7 @@ mod tests {
 
     #[test]
     fn missing_config_loads_defaults_and_save_creates_private_v5_file() {
-        let store = test_store();
+        let (store, _store_temp) = test_store();
         let loaded = store.load();
         assert_eq!(loaded.state, LoadState::CreatedDefault);
         assert_eq!(loaded.config.version, 5);
@@ -1083,7 +1079,7 @@ mod tests {
 
     #[test]
     fn second_save_keeps_previous_generation_as_backup() {
-        let store = test_store();
+        let (store, _store_temp) = test_store();
         let first = AppConfig::default();
         store.save(&first).unwrap();
 
@@ -1099,7 +1095,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_movefile_replace_keeps_backup_and_private_dacl() {
-        let store = test_store();
+        let (store, _store_temp) = test_store();
         let previous = AppConfig {
             default_sink: "previous-output".to_owned(),
             ..AppConfig::default()
@@ -1134,7 +1130,7 @@ mod tests {
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
-        let store = test_store();
+        let (store, _store_temp) = test_store();
         let previous = AppConfig {
             default_sink: "locked-previous-output".to_owned(),
             ..AppConfig::default()
@@ -1173,7 +1169,7 @@ mod tests {
 
     #[test]
     fn oversized_input_is_rejected_before_replacing_previous_file() {
-        let store = test_store();
+        let (store, _store_temp) = test_store();
         let original = AppConfig {
             default_sink: "keep-me".to_owned(),
             ..AppConfig::default()
@@ -1191,7 +1187,7 @@ mod tests {
     fn symbolic_link_config_is_not_followed_and_is_replaced_atomically() {
         use std::os::unix::fs::symlink;
 
-        let store = test_store();
+        let (store, _store_temp) = test_store();
         store.ensure_private_directory().unwrap();
         let target = store.directory().join("outside-target.json");
         fs::write(&target, br#"{"version":5,"default_sink":"outside"}"#).unwrap();
@@ -1217,7 +1213,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn hardlinked_config_is_rejected() {
-        let store = test_store();
+        let (store, _store_temp) = test_store();
         store.ensure_private_directory().unwrap();
         let target = store.directory().join("source.json");
         fs::write(&target, br#"{"version":5}"#).unwrap();
@@ -1231,28 +1227,21 @@ mod tests {
 
     #[test]
     fn environment_directory_resolution_requires_absolute_paths_and_normalizes_symlinks() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
         assert!(matches!(
             resolve_directory_path(Path::new("relative/config"), "XDG_CONFIG_HOME"),
             Err(StoreError::UnsafePath(_))
         ));
+        let traversal_root = tempfile::tempdir().unwrap();
+        let traversal = traversal_root.path().join("..").join("etc");
         assert!(matches!(
-            resolve_directory_path(Path::new("/tmp/../etc"), "XDG_CONFIG_HOME"),
+            resolve_directory_path(&traversal, "XDG_CONFIG_HOME"),
             Err(StoreError::UnsafePath(_))
         ));
 
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "padfire-store-root-resolution-{}-{nonce}",
-            std::process::id()
-        ));
-        let target = root.join("actual-config");
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("actual-config");
         #[cfg(unix)]
-        let link = root.join("config-link");
+        let link = root.path().join("config-link");
         fs::create_dir_all(&target).unwrap();
 
         #[cfg(unix)]
@@ -1273,28 +1262,27 @@ mod tests {
         assert_eq!(missing, target.canonicalize().unwrap().join("new/nested"));
         assert!(!missing.exists());
 
-        let _ = fs::remove_dir_all(root);
+        drop(root);
     }
 
     #[cfg(unix)]
     #[test]
     fn config_directory_symlink_is_rejected() {
         use std::os::unix::fs::symlink;
-        let store = test_store();
-        let target =
-            std::env::temp_dir().join(format!("padfire-store-target-{}", std::process::id()));
-        fs::create_dir_all(&target).unwrap();
+        let (store, _store_temp) = test_store();
+        let target_temp = tempfile::tempdir().unwrap();
+        let target = target_temp.path().to_path_buf();
         let _ = fs::remove_dir_all(store.directory());
         symlink(&target, store.directory()).unwrap();
         assert!(store.ensure_private_directory().is_err());
         let _ = fs::remove_file(store.directory());
-        let _ = fs::remove_dir_all(target);
+        drop(target_temp);
     }
 
     #[cfg(windows)]
     #[test]
     fn config_directory_and_file_have_protected_owner_only_dacls() {
-        let store = test_store();
+        let (store, _store_temp) = test_store();
         store.ensure_private_directory().unwrap();
         let directory_sddl = windows_sddl(store.directory(), true).unwrap();
         assert_private_windows_sddl(&directory_sddl);
@@ -1308,7 +1296,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn configuration_directory_junction_is_rejected() {
-        let base = test_store().directory;
+        let (store, _store_temp) = test_store();
+        let base = store.directory;
         let target = base.with_extension("junction-target");
         let junction = base.with_extension("junction");
         fs::create_dir_all(&target).unwrap();
@@ -1337,7 +1326,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn configuration_directory_with_junction_parent_is_rejected() {
-        let base = test_store().directory;
+        let (store, _store_temp) = test_store();
+        let base = store.directory;
         let target = base.with_extension("junction-parent-target");
         let junction = base.with_extension("junction-parent");
         fs::create_dir_all(&target).unwrap();
@@ -1367,7 +1357,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn hardlinked_config_is_rejected() {
-        let store = test_store();
+        let (store, _store_temp) = test_store();
         store.ensure_private_directory().unwrap();
         let target = store.directory().join("source.json");
         fs::write(&target, br#"{"version":5}"#).unwrap();

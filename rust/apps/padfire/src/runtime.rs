@@ -16,7 +16,7 @@ use padfire_platform::process_manager::{
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -199,8 +199,31 @@ impl Drop for PidFileMonitor {
     }
 }
 
+fn resolve_pid_file_path(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return None;
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let file_name = absolute.file_name()?;
+    let parent = absolute.parent()?.canonicalize().ok()?;
+    Some(parent.join(file_name))
+}
+
 fn pid_file_process_ids(path: &str) -> Vec<u32> {
-    let path = Path::new(path);
+    let Some(path) = resolve_pid_file_path(Path::new(path)) else {
+        return Vec::new();
+    };
+    let path = path.as_path();
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return Vec::new();
     };
@@ -1155,11 +1178,8 @@ mod preview_tests {
 
     #[test]
     fn pid_file_reports_current_process_and_ignores_invalid_entries() {
-        let path = std::env::temp_dir().join(format!(
-            "padfire-pid-file-{}-{}.txt",
-            std::process::id(),
-            Instant::now().elapsed().as_nanos()
-        ));
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("padfire-pid-file.txt");
         fs::write(&path, format!("not-a-pid 0 {}\n", std::process::id())).unwrap();
         let process_ids = pid_file_process_ids(&path.to_string_lossy());
         assert_eq!(process_ids, vec![std::process::id()]);
@@ -1168,7 +1188,7 @@ mod preview_tests {
         let process_ids = pid_file_process_ids(&path.to_string_lossy());
         assert_eq!(process_ids, vec![u32::MAX]);
         assert!(!process_ids_alive(&process_ids).contains(&u32::MAX));
-        let _ = fs::remove_file(path);
+        drop(temp);
     }
 
     #[cfg(target_os = "linux")]
@@ -1176,10 +1196,10 @@ mod preview_tests {
     fn pid_file_rejects_symlinks_and_directories() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir().join(format!("padfire-pid-safety-{}", std::process::id()));
-        let target = base.with_extension("target");
-        let link = base.with_extension("link");
-        let directory = base.with_extension("directory");
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let link = temp.path().join("link");
+        let directory = temp.path().join("directory");
         fs::write(&target, std::process::id().to_string()).unwrap();
         symlink(&target, &link).unwrap();
         fs::create_dir(&directory).unwrap();
@@ -1190,22 +1210,15 @@ mod preview_tests {
         let _ = fs::remove_file(link);
         let _ = fs::remove_file(target);
         let _ = fs::remove_dir(directory);
+        drop(temp);
     }
 
     #[cfg(unix)]
     #[test]
     fn pid_file_rejects_hardlinked_status_files() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "padfire-pid-hardlink-{}-{nonce}",
-            std::process::id()
-        ));
-        let linked = root.with_extension("linked");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("pid-status");
+        let linked = temp.path().join("pid-status-linked");
         fs::write(&root, std::process::id().to_string()).unwrap();
         fs::hard_link(&root, &linked).unwrap();
 
@@ -1216,15 +1229,30 @@ mod preview_tests {
 
         let _ = fs::remove_file(root);
         let _ = fs::remove_file(linked);
+        drop(temp);
+    }
+
+    #[test]
+    fn pid_file_resolver_rejects_parent_traversal_and_normalizes_existing_parents() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = temp.path().join("status.pid");
+        fs::write(&status, std::process::id().to_string()).unwrap();
+
+        let resolved = resolve_pid_file_path(&status).unwrap();
+        assert!(resolved.is_absolute());
+        assert_eq!(resolved, status.canonicalize().unwrap());
+
+        assert!(resolve_pid_file_path(Path::new("../outside.pid")).is_none());
+        assert!(resolve_pid_file_path(Path::new("relative/../outside.pid")).is_none());
     }
 
     #[test]
     fn pid_file_rejects_oversized_and_non_regular_paths() {
-        let path =
-            std::env::temp_dir().join(format!("padfire-pid-file-large-{}.txt", std::process::id()));
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("padfire-pid-file-large.txt");
         fs::write(&path, vec![b'1'; (PID_FILE_MAX_BYTES + 1) as usize]).unwrap();
         assert!(pid_file_process_ids(&path.to_string_lossy()).is_empty());
-        let _ = fs::remove_file(path);
+        drop(temp);
     }
 
     #[test]

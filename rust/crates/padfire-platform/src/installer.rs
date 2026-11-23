@@ -30,9 +30,7 @@ struct InstallPaths {
 impl InstallPaths {
     fn for_current_user() -> Result<Self, String> {
         let root = if let Some(root) = std::env::var_os("PADFIRE_INSTALL_ROOT") {
-            let root = PathBuf::from(root);
-            validate_absolute_path(&root, "PADFIRE_INSTALL_ROOT")?;
-            root
+            resolve_base_directory(&PathBuf::from(root), "PADFIRE_INSTALL_ROOT")?
         } else {
             default_install_root()?
         };
@@ -272,22 +270,63 @@ fn validate_absolute_path(path: &Path, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn canonicalize_windows_native(path: &Path, label: &str) -> Result<PathBuf, String> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    // Inspect the caller-supplied path before canonicalization so a junction
+    // or symlink cannot disappear from view when the physical target is found.
+    validate_directory_chain(path, label)?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("could not canonicalize {label}: {error}"))?;
+    let units = canonical.as_os_str().encode_wide().collect::<Vec<_>>();
+    const VERBATIM_PREFIX: [u16; 4] = [0x005C, 0x005C, 0x003F, 0x005C];
+    const VERBATIM_UNC_PREFIX: [u16; 8] = [
+        0x005C, 0x005C, 0x003F, 0x005C, 0x0055, 0x004E, 0x0043, 0x005C,
+    ];
+
+    let normalized = if units.starts_with(&VERBATIM_UNC_PREFIX) {
+        let mut ordinary = Vec::with_capacity(units.len() - 6);
+        ordinary.extend_from_slice(&[0x005C, 0x005C]);
+        ordinary.extend_from_slice(&units[VERBATIM_UNC_PREFIX.len()..]);
+        PathBuf::from(std::ffi::OsString::from_wide(&ordinary))
+    } else if units.starts_with(&VERBATIM_PREFIX) {
+        PathBuf::from(std::ffi::OsString::from_wide(
+            &units[VERBATIM_PREFIX.len()..],
+        ))
+    } else {
+        canonical
+    };
+
+    if normalized.as_os_str().encode_wide().count() >= 248 {
+        return Err(format!(
+            "{label} resolves to a path too long for the Windows Shell integration"
+        ));
+    }
+    Ok(normalized)
+}
+
 /// Resolve the nearest existing ancestor and preserve any missing suffix.
 /// Unix uses the canonical ancestor path. Windows preserves its native Win32
 /// spelling for Shell/PowerShell consumers and rejects reparse-point ancestors.
 fn resolve_base_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
     validate_absolute_path(path, label)?;
+    #[cfg(windows)]
+    validate_directory_chain(path, label)?;
+
     let mut existing = path.to_path_buf();
     let mut missing = Vec::<std::ffi::OsString>::new();
     loop {
-        match fs::metadata(&existing) {
-            Ok(metadata) => {
-                if !metadata.is_dir() {
+        match existing.canonicalize() {
+            Ok(canonical) => {
+                if !canonical.is_dir() {
                     return Err(format!(
                         "{label} is not a directory: {}",
-                        existing.display()
+                        canonical.display()
                     ));
                 }
+                existing = canonical;
                 break;
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -304,16 +343,12 @@ fn resolve_base_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
     }
     #[cfg(windows)]
     let mut resolved = {
-        // Keep Win32-native path spelling here. canonicalize() may add the
-        // \\?\ prefix, which ordinary PowerShell/COM consumers do not all
-        // accept consistently. Reject reparse points explicitly instead.
-        validate_directory_chain(&existing, label)?;
-        existing
+        // Use a physical path but strip the extended-length prefix for COM and
+        // PowerShell. The prefix is not consistently accepted by shell APIs.
+        canonicalize_windows_native(&existing, label)?
     };
     #[cfg(not(windows))]
-    let mut resolved = existing
-        .canonicalize()
-        .map_err(|error| format!("could not canonicalize {label}: {error}"))?;
+    let mut resolved = existing;
     for component in missing.iter().rev() {
         resolved.push(component);
     }
@@ -719,7 +754,8 @@ fn create_windows_shortcut(
 
 #[cfg(windows)]
 fn reserve_windows_uninstall_log() -> Result<PathBuf, String> {
-    let temp_root = std::env::temp_dir();
+    let temp_root =
+        canonicalize_windows_native(&std::env::temp_dir(), "uninstall diagnostic directory")?;
     validate_directory_chain(&temp_root, "uninstall diagnostic directory")?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -854,7 +890,10 @@ fn write_powershell_temp(script: &str) -> Result<PathBuf, String> {
     // Preserve the native Windows temp path spelling. canonicalize() can
     // produce a \\?\ path that PowerShell's -File argument and shell-facing
     // integrations do not consistently accept.
-    let temporary_root = std::env::temp_dir();
+    let temporary_root = canonicalize_windows_native(
+        &std::env::temp_dir(),
+        "temporary installer-script directory",
+    )?;
     validate_directory_chain(&temporary_root, "temporary installer-script directory")?;
     let path = temporary_root.join(format!(
         "padfire-install-{}-{nonce}.ps1",
@@ -887,19 +926,17 @@ fn write_powershell_temp(script: &str) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
-    fn temp_root() -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        std::env::temp_dir().join(format!("padfire-installer-{}-{nonce}", std::process::id()))
+    fn temp_root() -> (PathBuf, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("install-root");
+        (path, directory)
     }
 
     #[test]
     fn installer_path_helpers_reject_relative_and_parent_traversal_paths() {
-        let base = std::env::temp_dir();
-        let traversal = base.join("..").join("outside");
-        let valid = base.join("padfire-install");
+        let base = tempfile::tempdir().unwrap();
+        let traversal = base.path().join("..").join("outside");
+        let valid = base.path().join("padfire-install");
 
         assert!(validate_absolute_path(Path::new("relative/install"), "test").is_err());
         assert!(validate_absolute_path(&traversal, "test").is_err());
@@ -909,17 +946,15 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn installer_base_directory_preserves_native_windows_path_spelling() {
-        let base = std::env::temp_dir();
-        let resolved = resolve_base_directory(&base, "TEMP").unwrap();
-        assert_eq!(resolved, base);
+        let base = tempfile::tempdir().unwrap();
+        let resolved = resolve_base_directory(base.path(), "TEMP").unwrap();
+        assert_eq!(resolved, base.path());
     }
 
     #[cfg(windows)]
     #[test]
     fn powershell_temp_file_uses_native_temp_path_and_create_new_file() {
         let path = write_powershell_temp("Write-Output 'PadfireTempTest'").unwrap();
-        let native_temp = std::env::temp_dir();
-        assert!(path.starts_with(&native_temp));
         assert!(
             !path.to_string_lossy().starts_with("\\\\?\\"),
             "PowerShell script path must use ordinary Win32 spelling"
@@ -932,7 +967,7 @@ mod tests {
 
     #[test]
     fn installer_base_directory_resolves_existing_and_missing_suffixes() {
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let target = root.join("actual-data");
         fs::create_dir_all(&target).unwrap();
 
@@ -954,7 +989,7 @@ mod tests {
     fn installer_directory_chain_rejects_symlink_ancestors() {
         use std::os::unix::fs::symlink;
 
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let target = root.join("target");
         let parent = root.join("parent");
         let link = parent.join("linked");
@@ -970,7 +1005,7 @@ mod tests {
 
     #[test]
     fn copy_executable_replaces_an_existing_candidate_without_temp_leaks() {
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         fs::create_dir_all(&root).unwrap();
         let source = root.join("source.bin");
         let destination = root.join("padfire-rust");
@@ -998,7 +1033,7 @@ mod tests {
         use std::os::windows::fs::OpenOptionsExt;
         use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         fs::create_dir_all(&root).unwrap();
         let source = root.join("source.bin");
         let destination = root.join("padfire-rust.exe");
@@ -1032,7 +1067,7 @@ mod tests {
 
     #[test]
     fn install_is_idempotent_and_uninstall_preserves_user_data() {
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let integration_root = root.with_extension("integration");
         let paths = InstallPaths::for_test(&root, &integration_root);
         let source = std::env::current_exe().unwrap();
@@ -1066,7 +1101,7 @@ mod tests {
 
     #[test]
     fn uninstall_removes_only_padfire_files_and_preserves_unrelated_install_data() {
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let integration_root = root.with_extension("uninstall-safe-integration");
         let paths = InstallPaths::for_test(&root, &integration_root);
         fs::create_dir_all(&paths.root).unwrap();
@@ -1102,7 +1137,7 @@ mod tests {
 
     #[test]
     fn uninstall_refuses_to_recursively_remove_a_directory_at_the_integration_path() {
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let integration_root = root.with_extension("uninstall-directory-integration");
         let paths = InstallPaths::for_test(&root, &integration_root);
         fs::create_dir_all(&paths.root).unwrap();
@@ -1126,7 +1161,7 @@ mod tests {
     fn installer_rejects_symlink_install_roots_without_following_them() {
         use std::os::unix::fs::symlink;
 
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let target = root.with_extension("install-target");
         let integration_root = root.with_extension("install-link-integration");
         fs::create_dir_all(&target).unwrap();
@@ -1145,7 +1180,7 @@ mod tests {
 
     #[test]
     fn failed_executable_copy_rolls_back_new_integration_and_preserves_blocker() {
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let integration_root = root.with_extension("copy-failure-integration");
         let paths = InstallPaths::for_test(&root, &integration_root);
         let source = std::env::current_exe().unwrap();
@@ -1179,7 +1214,7 @@ mod tests {
 
     #[test]
     fn failed_executable_copy_restores_existing_integration_and_icon() {
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let integration_root = root.with_extension("preserve-integration");
         let paths = InstallPaths::for_test(&root, &integration_root);
         let source = std::env::current_exe().unwrap();
@@ -1240,7 +1275,7 @@ mod tests {
 
     #[test]
     fn failed_desktop_integration_does_not_leave_a_partial_install() {
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let integration_root = root.with_extension("integration");
         let paths = InstallPaths::for_test(&root, &integration_root);
         let source = std::env::current_exe().unwrap();
@@ -1266,7 +1301,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn installer_rejects_reparse_point_install_roots() {
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let target = root.with_extension("install-target");
         let integration_root = root.with_extension("install-junction-integration");
         fs::create_dir_all(&target).unwrap();
@@ -1301,7 +1336,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_start_menu_shortcut_is_created_and_removed() {
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let start_menu = root.with_extension("start-menu");
         let paths = InstallPaths::for_test(&root, &start_menu);
         let source = std::env::current_exe().unwrap();
@@ -1317,7 +1352,7 @@ mod tests {
     fn scheduled_uninstall_retries_locked_files_and_preserves_config() {
         use std::os::windows::fs::OpenOptionsExt;
 
-        let root = temp_root();
+        let (root, _temp) = temp_root();
         let config = root.with_extension("config");
         let previous_sibling_log = root.with_extension("uninstall.log");
         fs::write(&previous_sibling_log, b"preserve this unrelated file").unwrap();
@@ -1340,7 +1375,7 @@ mod tests {
             .unwrap();
         let log_path = schedule_windows_uninstall(&root).unwrap();
         assert_ne!(log_path, previous_sibling_log);
-        assert!(log_path.starts_with(std::env::temp_dir()));
+        assert!(log_path.parent().is_some_and(Path::is_dir));
 
         let retry_deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         let mut observed_locked_retry = false;

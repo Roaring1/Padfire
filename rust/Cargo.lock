@@ -2538,6 +2538,7 @@ dependencies = [
  "padfire-core",
  "padfire-platform",
  "rfd",
+ "tempfile",
  "tray-icon",
  "windows-sys 0.61.2",
 ]
@@ -2562,6 +2563,7 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "tempfile",
  "windows-sys 0.61.2",
 ]
 

@@ -285,35 +285,284 @@ impl From<serde_json::Error> for ConfigError {
     }
 }
 
-/// Bound the whole extension-preserving JSON tree before typed
-/// deserialization. This is iterative so validation itself does not recurse
-/// over attacker-controlled nesting.
-fn validate_json_budget(value: &Value) -> Result<(), ConfigError> {
-    let mut pending = vec![(value, 0_usize)];
-    let mut nodes = 0_usize;
-    while let Some((current, depth)) = pending.pop() {
-        nodes += 1;
-        if nodes > MAX_CONFIG_JSON_NODES {
-            return Err(ConfigError::InvalidStructure(format!(
-                "JSON document exceeds the {MAX_CONFIG_JSON_NODES}-node budget"
-            )));
-        }
-        if depth > MAX_CONFIG_JSON_DEPTH {
-            return Err(ConfigError::InvalidStructure(format!(
-                "JSON document exceeds the maximum nesting depth of {MAX_CONFIG_JSON_DEPTH}"
-            )));
-        }
-        match current {
-            Value::Array(items) => {
-                pending.extend(items.iter().map(|item| (item, depth + 1)));
-            }
-            Value::Object(fields) => {
-                pending.extend(fields.values().map(|item| (item, depth + 1)));
-            }
-            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+/// Parse JSON into the extension-preserving Value tree while enforcing
+/// limits before allocating attacker-controlled arrays, maps, or strings.
+/// This keeps the untrusted byte stream out of serde's general-purpose
+/// deserializer; the later typed conversion receives only this bounded tree.
+struct BoundedJsonParser<'a> {
+    input: &'a [u8],
+    cursor: usize,
+    nodes: usize,
+}
+
+impl<'a> BoundedJsonParser<'a> {
+    fn new(input: &'a [u8]) -> Self {
+        Self {
+            input,
+            cursor: 0,
+            nodes: 0,
         }
     }
-    Ok(())
+
+    fn parse(mut self) -> Result<Value, ConfigError> {
+        self.skip_whitespace();
+        let value = self.parse_value(0)?;
+        self.skip_whitespace();
+        if self.cursor != self.input.len() {
+            return self.invalid("trailing data after the configuration JSON value");
+        }
+        Ok(value)
+    }
+
+    fn parse_value(&mut self, depth: usize) -> Result<Value, ConfigError> {
+        if depth > MAX_CONFIG_JSON_DEPTH {
+            return self.invalid("configuration JSON exceeds the maximum nesting depth");
+        }
+        self.nodes += 1;
+        if self.nodes > MAX_CONFIG_JSON_NODES {
+            return self.invalid("configuration JSON exceeds the node budget");
+        }
+
+        self.skip_whitespace();
+        match self.peek() {
+            Some(b'n') => {
+                self.consume_keyword(b"null")?;
+                Ok(Value::Null)
+            }
+            Some(b't') => {
+                self.consume_keyword(b"true")?;
+                Ok(Value::Bool(true))
+            }
+            Some(b'f') => {
+                self.consume_keyword(b"false")?;
+                Ok(Value::Bool(false))
+            }
+            Some(b'"') => Ok(Value::String(self.parse_string()?)),
+            Some(b'[') => self.parse_array(depth),
+            Some(b'{') => self.parse_object(depth),
+            Some(b'-' | b'0'..=b'9') => self.parse_number(),
+            Some(_) => self.invalid("unexpected token in configuration JSON"),
+            None => self.invalid("unexpected end of configuration JSON"),
+        }
+    }
+
+    fn parse_array(&mut self, depth: usize) -> Result<Value, ConfigError> {
+        self.cursor += 1; // [
+        self.skip_whitespace();
+        let mut items = Vec::new();
+        if self.peek() == Some(b']') {
+            self.cursor += 1;
+            return Ok(Value::Array(items));
+        }
+
+        loop {
+            items.push(self.parse_value(depth + 1)?);
+            self.skip_whitespace();
+            match self.peek() {
+                Some(b',') => {
+                    self.cursor += 1;
+                    self.skip_whitespace();
+                }
+                Some(b']') => {
+                    self.cursor += 1;
+                    break;
+                }
+                Some(_) => return self.invalid("expected ',' or ']' in configuration array"),
+                None => return self.invalid("unterminated configuration array"),
+            }
+        }
+        Ok(Value::Array(items))
+    }
+
+    fn parse_object(&mut self, depth: usize) -> Result<Value, ConfigError> {
+        self.cursor += 1; // {
+        self.skip_whitespace();
+        let mut fields = Map::new();
+        if self.peek() == Some(b'}') {
+            self.cursor += 1;
+            return Ok(Value::Object(fields));
+        }
+
+        loop {
+            if self.peek() != Some(b'"') {
+                return self.invalid("expected a quoted key in configuration object");
+            }
+            let key = self.parse_string()?;
+            self.skip_whitespace();
+            if self.peek() != Some(b':') {
+                return self.invalid("expected ':' after configuration object key");
+            }
+            self.cursor += 1;
+            let value = self.parse_value(depth + 1)?;
+            fields.insert(key, value);
+            self.skip_whitespace();
+
+            match self.peek() {
+                Some(b',') => {
+                    self.cursor += 1;
+                    self.skip_whitespace();
+                }
+                Some(b'}') => {
+                    self.cursor += 1;
+                    break;
+                }
+                Some(_) => return self.invalid("expected ',' or '}' in configuration object"),
+                None => return self.invalid("unterminated configuration object"),
+            }
+        }
+        Ok(Value::Object(fields))
+    }
+
+    fn parse_string(&mut self) -> Result<String, ConfigError> {
+        if self.peek() != Some(b'"') {
+            return self.invalid("expected a JSON string");
+        }
+        self.cursor += 1;
+        let mut output = String::new();
+        let mut segment_start = self.cursor;
+
+        while let Some(byte) = self.peek() {
+            match byte {
+                b'"' => {
+                    self.append_utf8_segment(&mut output, segment_start, self.cursor)?;
+                    self.cursor += 1;
+                    return Ok(output);
+                }
+                b'\\' => {
+                    self.append_utf8_segment(&mut output, segment_start, self.cursor)?;
+                    self.cursor += 1;
+                    let escaped = self.peek().ok_or_else(|| {
+                        ConfigError::InvalidStructure("unterminated JSON escape".to_owned())
+                    })?;
+                    self.cursor += 1;
+                    match escaped {
+                        b'"' => output.push('"'),
+                        b'\\' => output.push('\\'),
+                        b'/' => output.push('/'),
+                        b'b' => output.push('\u{0008}'),
+                        b'f' => output.push('\u{000C}'),
+                        b'n' => output.push('\n'),
+                        b'r' => output.push('\r'),
+                        b't' => output.push('\t'),
+                        b'u' => {
+                            let first = self.parse_hex_quad()?;
+                            let scalar = match first {
+                                0xD800..=0xDBFF => {
+                                    if self.input.get(self.cursor..self.cursor + 2) != Some(b"\\u")
+                                    {
+                                        return self.invalid(
+                                            "high surrogate is missing its low surrogate",
+                                        );
+                                    }
+                                    self.cursor += 2;
+                                    let second = self.parse_hex_quad()?;
+                                    if !(0xDC00..=0xDFFF).contains(&second) {
+                                        return self
+                                            .invalid("invalid low surrogate in JSON string");
+                                    }
+                                    0x10000
+                                        + (((u32::from(first) - 0xD800) << 10)
+                                            | (u32::from(second) - 0xDC00))
+                                }
+                                0xDC00..=0xDFFF => {
+                                    return self.invalid("unpaired low surrogate in JSON string");
+                                }
+                                value => u32::from(value),
+                            };
+                            let character = char::from_u32(scalar).ok_or_else(|| {
+                                ConfigError::InvalidStructure(
+                                    "invalid Unicode scalar in JSON string".to_owned(),
+                                )
+                            })?;
+                            output.push(character);
+                        }
+                        _ => return self.invalid("invalid escape in configuration JSON string"),
+                    }
+                    segment_start = self.cursor;
+                }
+                0x00..=0x1F => {
+                    return self.invalid("unescaped control character in JSON string");
+                }
+                _ => self.cursor += 1,
+            }
+        }
+        self.invalid("unterminated configuration JSON string")
+    }
+
+    fn append_utf8_segment(
+        &self,
+        output: &mut String,
+        start: usize,
+        end: usize,
+    ) -> Result<(), ConfigError> {
+        let segment = std::str::from_utf8(&self.input[start..end]).map_err(|_| {
+            ConfigError::InvalidStructure("invalid UTF-8 in configuration JSON string".to_owned())
+        })?;
+        output.push_str(segment);
+        Ok(())
+    }
+
+    fn parse_hex_quad(&mut self) -> Result<u16, ConfigError> {
+        if self.cursor + 4 > self.input.len() {
+            return self.invalid("incomplete Unicode escape in configuration JSON string");
+        }
+        let mut value = 0_u16;
+        for _ in 0..4 {
+            let digit = match self.input[self.cursor] {
+                b'0'..=b'9' => self.input[self.cursor] - b'0',
+                b'a'..=b'f' => self.input[self.cursor] - b'a' + 10,
+                b'A'..=b'F' => self.input[self.cursor] - b'A' + 10,
+                _ => return self.invalid("invalid hexadecimal digit in JSON Unicode escape"),
+            };
+            value = (value << 4) | u16::from(digit);
+            self.cursor += 1;
+        }
+        Ok(value)
+    }
+
+    fn parse_number(&mut self) -> Result<Value, ConfigError> {
+        let start = self.cursor;
+        while let Some(byte) = self.peek() {
+            if matches!(byte, b',' | b']' | b'}' | b' ' | b'\n' | b'\r' | b'\t') {
+                break;
+            }
+            self.cursor += 1;
+        }
+        let token = std::str::from_utf8(&self.input[start..self.cursor]).map_err(|_| {
+            ConfigError::InvalidStructure("invalid UTF-8 in JSON number".to_owned())
+        })?;
+        let number = token.parse::<serde_json::Number>().map_err(|_| {
+            ConfigError::InvalidStructure("invalid JSON number in configuration".to_owned())
+        })?;
+        Ok(Value::Number(number))
+    }
+
+    fn consume_keyword(&mut self, keyword: &[u8]) -> Result<(), ConfigError> {
+        let end = self.cursor.saturating_add(keyword.len());
+        if self.input.get(self.cursor..end) != Some(keyword) {
+            return self.invalid("invalid JSON literal in configuration");
+        }
+        self.cursor = end;
+        Ok(())
+    }
+
+    fn skip_whitespace(&mut self) {
+        while matches!(self.peek(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+            self.cursor += 1;
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.input.get(self.cursor).copied()
+    }
+
+    fn invalid<T>(&self, message: &str) -> Result<T, ConfigError> {
+        Err(ConfigError::InvalidStructure(message.to_owned()))
+    }
+}
+
+fn parse_bounded_json(input: &[u8]) -> Result<Value, ConfigError> {
+    BoundedJsonParser::new(input).parse()
 }
 
 fn validate_bounded_string(
@@ -363,8 +612,7 @@ impl AppConfig {
             });
         }
 
-        let mut value: Value = serde_json::from_slice(input)?;
-        validate_json_budget(&value)?;
+        let mut value = parse_bounded_json(input)?;
         let Some(root) = value.as_object_mut() else {
             return Err(ConfigError::InvalidRoot);
         };
@@ -451,7 +699,7 @@ impl AppConfig {
         }
         root.insert("version".to_owned(), Value::from(CONFIG_VERSION));
 
-        Ok(serde_json::from_value(value)?)
+        Ok(Self::deserialize(value)?)
     }
 
     pub fn to_pretty_json(&self) -> Result<Vec<u8>, serde_json::Error> {
