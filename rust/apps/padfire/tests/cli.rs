@@ -13,7 +13,7 @@ impl IsolatedConfig {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "padfire-cli-{label}-{}-{unique}",
             std::process::id()
         ));

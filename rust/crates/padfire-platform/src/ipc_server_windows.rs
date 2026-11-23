@@ -454,7 +454,7 @@ mod tests {
     static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
 
     fn test_path() -> PathBuf {
-        std::env::temp_dir().join(format!(
+        std::env::temp_dir().canonicalize().unwrap().join(format!(
             "padfire-pipe-test-{}-{}",
             std::process::id(),
             NEXT_PATH.fetch_add(1, Ordering::Relaxed)

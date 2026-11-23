@@ -30,7 +30,9 @@ struct InstallPaths {
 impl InstallPaths {
     fn for_current_user() -> Result<Self, String> {
         let root = if let Some(root) = std::env::var_os("PADFIRE_INSTALL_ROOT") {
-            PathBuf::from(root)
+            let root = PathBuf::from(root);
+            validate_absolute_path(&root, "PADFIRE_INSTALL_ROOT")?;
+            root
         } else {
             default_install_root()?
         };
@@ -42,14 +44,21 @@ impl InstallPaths {
 
         #[cfg(target_os = "linux")]
         {
-            let data_root = std::env::var_os("XDG_DATA_HOME")
+            let data_root = match std::env::var_os("XDG_DATA_HOME")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    std::env::var_os("HOME")
+                .filter(|path| path.is_absolute())
+            {
+                Some(path) => resolve_base_directory(&path, "XDG_DATA_HOME")?,
+                None => {
+                    let home = std::env::var_os("HOME")
                         .map(PathBuf::from)
-                        .unwrap_or_else(|| PathBuf::from("."))
-                        .join(".local/share")
-                });
+                        .ok_or_else(|| {
+                            "HOME is not set; cannot locate desktop integration".to_owned()
+                        })
+                        .and_then(|home| resolve_base_directory(&home, "HOME"))?;
+                    home.join(".local/share")
+                }
+            };
             Ok(Self {
                 root,
                 executable,
@@ -67,8 +76,11 @@ impl InstallPaths {
             let app_data = std::env::var_os("APPDATA")
                 .map(PathBuf::from)
                 .ok_or_else(|| "APPDATA is not set; cannot locate the Start Menu".to_owned())?;
+            let app_data = resolve_base_directory(&app_data, "APPDATA")?;
             let start_menu = std::env::var_os("PADFIRE_START_MENU_DIR")
                 .map(PathBuf::from)
+                .map(|path| resolve_base_directory(&path, "PADFIRE_START_MENU_DIR"))
+                .transpose()?
                 .unwrap_or_else(|| app_data.join("Microsoft/Windows/Start Menu/Programs"));
             Ok(Self {
                 root,
@@ -112,6 +124,7 @@ fn default_install_root() -> Result<PathBuf, String> {
         let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
             "HOME is not set; cannot locate the per-user install directory".to_owned()
         })?;
+        let home = resolve_base_directory(&home, "HOME")?;
         Ok(home.join(".local/opt/padfire-rust"))
     }
     #[cfg(windows)]
@@ -121,6 +134,7 @@ fn default_install_root() -> Result<PathBuf, String> {
             .ok_or_else(|| {
                 "LOCALAPPDATA is not set; cannot locate the per-user install directory".to_owned()
             })?;
+        let local = resolve_base_directory(&local, "LOCALAPPDATA")?;
         Ok(local.join("Programs/Padfire Rust"))
     }
 }
@@ -135,6 +149,15 @@ pub fn install_current() -> Result<PathBuf, String> {
 
 pub fn uninstall_current() -> Result<String, String> {
     let paths = InstallPaths::for_current_user()?;
+    let _ = validate_install_root(&paths.root)?;
+    if let Some(parent) = paths.integration.parent() {
+        validate_directory_chain(parent, "desktop integration parent")?;
+    }
+    if let Some(icon) = &paths.icon
+        && let Some(parent) = icon.parent()
+    {
+        validate_directory_chain(parent, "icon integration parent")?;
+    }
     #[cfg(windows)]
     {
         let current = std::env::current_exe()
@@ -146,7 +169,7 @@ pub fn uninstall_current() -> Result<String, String> {
             .canonicalize()
             .unwrap_or_else(|_| paths.root.clone());
         if current.starts_with(&root) {
-            remove_if_exists(&paths.integration)?;
+            remove_file_if_exists(&paths.integration)?;
             schedule_windows_uninstall(&paths.root)?;
             return Ok(
                 "Padfire Rust uninstall scheduled; user configuration was preserved".to_owned(),
@@ -219,7 +242,7 @@ fn rollback_install_integration(
 ) -> Result<(), String> {
     let mut failures = Vec::new();
     for path in std::iter::once(&paths.integration).chain(paths.icon.iter()) {
-        if let Err(error) = remove_if_exists(path) {
+        if let Err(error) = remove_file_if_exists(path) {
             failures.push(error);
         }
     }
@@ -233,7 +256,105 @@ fn rollback_install_integration(
     }
 }
 
+fn validate_absolute_path(path: &Path, label: &str) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err(format!("{label} must be an absolute path"));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "{label} must not contain parent-directory components"
+        ));
+    }
+    Ok(())
+}
+
+/// Canonicalize the nearest existing ancestor and preserve any missing suffix.
+/// This supports per-user locations that have not been created yet without
+/// retaining symlink or parent-directory components in future destinations.
+fn resolve_base_directory(path: &Path, label: &str) -> Result<PathBuf, String> {
+    validate_absolute_path(path, label)?;
+    let mut existing = path.to_path_buf();
+    let mut missing = Vec::<std::ffi::OsString>::new();
+    loop {
+        match fs::metadata(&existing) {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
+                    return Err(format!(
+                        "{label} is not a directory: {}",
+                        existing.display()
+                    ));
+                }
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let Some(name) = existing.file_name() else {
+                    return Err(format!("could not resolve {label}: {error}"));
+                };
+                missing.push(name.to_os_string());
+                if !existing.pop() {
+                    return Err(format!("could not resolve {label}: {error}"));
+                }
+            }
+            Err(error) => return Err(format!("could not inspect {label}: {error}")),
+        }
+    }
+    let mut resolved = existing
+        .canonicalize()
+        .map_err(|error| format!("could not canonicalize {label}: {error}"))?;
+    for component in missing.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+/// Reject existing symlink/reparse-point ancestors and non-directory path
+/// components. A missing suffix is safe to create after this preflight.
+fn validate_directory_chain(path: &Path, label: &str) -> Result<(), String> {
+    validate_absolute_path(path, label)?;
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                    return Err(format!(
+                        "refusing a non-directory or symlink in {label}: {}",
+                        current.display()
+                    ));
+                }
+                #[cfg(windows)]
+                {
+                    use std::os::windows::fs::MetadataExt;
+                    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+                    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                        return Err(format!(
+                            "refusing a reparse point in {label}: {}",
+                            current.display()
+                        ));
+                    }
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect {label} component {}: {error}",
+                    current.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_install_root(root: &Path) -> Result<bool, String> {
+    validate_absolute_path(root, "install root")?;
+    let parent = root
+        .parent()
+        .ok_or_else(|| "install root has no parent directory".to_owned())?;
+    validate_directory_chain(parent, "install-root parent")?;
     let metadata = match fs::symlink_metadata(root) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -279,6 +400,11 @@ fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
         ));
     }
     let had_root = validate_install_root(&paths.root)?;
+    for path in std::iter::once(&paths.integration).chain(paths.icon.iter()) {
+        if let Some(parent) = path.parent() {
+            validate_directory_chain(parent, "desktop integration parent")?;
+        }
+    }
     let mut backups = Vec::with_capacity(2);
     for path in paths.icon.iter().chain(std::iter::once(&paths.integration)) {
         match backup_existing_integration(path) {
@@ -324,7 +450,10 @@ fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
     if let Err(error) = copy_executable(source, &paths.executable) {
         let rollback = rollback_install_integration(paths, &backups);
         if !had_root {
-            let _ = remove_if_exists(&paths.root);
+            // The installer created this directory, but another process may
+            // have placed data in it during the failed install. Remove it only
+            // when it is still empty.
+            let _ = remove_empty_directory_if_exists(&paths.root);
         }
         return Err(error_with_rollback(error, rollback));
     }
@@ -332,18 +461,31 @@ fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
     // Installation is now committed. Old integration backups are no longer
     // needed; cleanup failure is non-fatal because the candidate is usable.
     for backup in backups {
-        let _ = remove_if_exists(&backup.backup);
+        let _ = remove_file_if_exists(&backup.backup);
     }
 
     Ok(())
 }
 
 fn uninstall_from(paths: &InstallPaths) -> Result<(), String> {
-    remove_if_exists(&paths.integration)?;
-    if let Some(icon) = &paths.icon {
-        remove_if_exists(icon)?;
+    // Refuse symlink/reparse-point install and integration roots before
+    // touching any files. Remove only the files Padfire owns; custom user
+    // files in the install directory are never recursively deleted.
+    let _ = validate_install_root(&paths.root)?;
+    if let Some(parent) = paths.integration.parent() {
+        validate_directory_chain(parent, "desktop integration parent")?;
     }
-    remove_if_exists(&paths.root)?;
+    if let Some(icon) = &paths.icon
+        && let Some(parent) = icon.parent()
+    {
+        validate_directory_chain(parent, "icon integration parent")?;
+    }
+    remove_file_if_exists(&paths.integration)?;
+    if let Some(icon) = &paths.icon {
+        remove_file_if_exists(icon)?;
+    }
+    remove_file_if_exists(&paths.executable)?;
+    remove_empty_directory_if_exists(&paths.root)?;
     Ok(())
 }
 
@@ -354,8 +496,10 @@ fn copy_executable(source: &Path, destination: &Path) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or_else(|| "install executable path has no parent directory".to_owned())?;
+    validate_directory_chain(parent, "executable destination parent")?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("could not create executable directory: {error}"))?;
+    validate_directory_chain(parent, "executable destination parent")?;
 
     let temporary = temporary_path(destination);
     let result = (|| -> io::Result<()> {
@@ -422,8 +566,10 @@ fn write_atomic(destination: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or_else(|| "integration file path has no parent directory".to_owned())?;
+    validate_directory_chain(parent, "integration destination parent")?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("could not create integration directory: {error}"))?;
+    validate_directory_chain(parent, "integration destination parent")?;
     let temporary = temporary_path(destination);
     let result = (|| -> io::Result<()> {
         let mut file = OpenOptions::new()
@@ -464,19 +610,39 @@ fn same_file(first: &Path, second: &Path) -> bool {
         .is_some_and(|(first, second)| first == second)
 }
 
-fn remove_if_exists(path: &Path) -> Result<(), String> {
+fn remove_file_if_exists(path: &Path) -> Result<(), String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(format!("could not inspect {}: {error}", path.display())),
     };
     if metadata.file_type().is_dir() {
-        fs::remove_dir_all(path)
-            .map_err(|error| format!("could not remove {}: {error}", path.display()))
-    } else {
-        fs::remove_file(path)
-            .map_err(|error| format!("could not remove {}: {error}", path.display()))
+        return Err(format!(
+            "refusing to remove a directory where a Padfire file was expected: {}",
+            path.display()
+        ));
     }
+    fs::remove_file(path).map_err(|error| format!("could not remove {}: {error}", path.display()))
+}
+
+fn remove_empty_directory_if_exists(path: &Path) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("could not inspect {}: {error}", path.display())),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(format!(
+            "refusing to remove a non-directory or symlink install root: {}",
+            path.display()
+        ));
+    }
+    fs::remove_dir(path).map_err(|error| {
+        format!(
+            "could not remove empty Padfire install directory {}; remaining files were preserved: {error}",
+            path.display()
+        )
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -528,12 +694,13 @@ fn create_windows_shortcut(
         powershell_quote(executable),
         powershell_quote(working_directory),
     );
-    fs::create_dir_all(
-        shortcut
-            .parent()
-            .ok_or_else(|| "Start Menu shortcut has no parent directory".to_owned())?,
-    )
-    .map_err(|error| format!("could not create Start Menu directory: {error}"))?;
+    let parent = shortcut
+        .parent()
+        .ok_or_else(|| "Start Menu shortcut has no parent directory".to_owned())?;
+    validate_directory_chain(parent, "Start Menu shortcut parent")?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("could not create Start Menu directory: {error}"))?;
+    validate_directory_chain(parent, "Start Menu shortcut parent")?;
     run_powershell_script(&script)
 }
 
@@ -543,19 +710,25 @@ fn schedule_windows_uninstall(root: &Path) -> Result<(), String> {
 
     let log_path = root.with_extension("uninstall.log");
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let executable = root.join("padfire-rust.exe");
     let script = format!(
         "$ErrorActionPreference = 'SilentlyContinue'\n\
          $root = '{}'\n\
+         $exe = '{}'\n\
          $log = '{}'\n\
          [System.IO.File]::WriteAllText($log, 'started' + [Environment]::NewLine)\n\
          for ($attempt = 0; $attempt -lt 30; $attempt++) {{\n\
-           try {{ [System.IO.Directory]::Delete($root, $true) }} catch {{ [System.IO.File]::AppendAllText($log, $_.Exception.ToString() + [Environment]::NewLine) }}\n\
+           try {{ [System.IO.File]::Delete($exe) }} catch {{ [System.IO.File]::AppendAllText($log, $_.Exception.ToString() + [Environment]::NewLine) }}\n\
+           if (-not (Test-Path -LiteralPath $exe)) {{\n\
+             try {{ [System.IO.Directory]::Delete($root, $false) }} catch {{ [System.IO.File]::AppendAllText($log, ('preserved non-empty install root: ' + $_.Exception.ToString()) + [Environment]::NewLine) }}\n\
+           }}\n\
            if (-not (Test-Path -LiteralPath $root)) {{ break }}\n\
            Start-Sleep -Milliseconds 500\n\
          }}\n\
-         if (Test-Path -LiteralPath $root) {{ [System.IO.File]::AppendAllText($log, 'install root still exists after retries' + [Environment]::NewLine) }} else {{ [System.IO.File]::Delete($log) }}\n\
+         if (Test-Path -LiteralPath $root) {{ [System.IO.File]::AppendAllText($log, 'install root still exists after retries; unrelated files were preserved' + [Environment]::NewLine) }} else {{ [System.IO.File]::Delete($log) }}\n\
          Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n",
         powershell_quote(root),
+        powershell_quote(&executable),
         powershell_quote(&log_path),
     );
     let script_path = write_powershell_temp(&script)?;
@@ -615,7 +788,11 @@ fn write_powershell_temp(script: &str) -> Result<PathBuf, String> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!(
+    let temporary_root = std::env::temp_dir()
+        .canonicalize()
+        .map_err(|error| format!("could not resolve the temporary directory: {error}"))?;
+    validate_directory_chain(&temporary_root, "temporary installer-script directory")?;
+    let path = temporary_root.join(format!(
         "padfire-install-{}-{nonce}.ps1",
         std::process::id()
     ));
@@ -623,8 +800,22 @@ fn write_powershell_temp(script: &str) -> Result<PathBuf, String> {
     for unit in script.encode_utf16() {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
-    fs::write(&path, bytes)
-        .map_err(|error| format!("could not write temporary installer script: {error}"))?;
+    let write_result = (|| -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        file.write_all(&bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&path);
+        return Err(format!(
+            "could not write temporary installer script: {error}"
+        ));
+    }
     Ok(path)
 }
 
@@ -637,7 +828,52 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        std::env::temp_dir().join(format!("padfire-installer-{}-{nonce}", std::process::id()))
+        std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("padfire-installer-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn installer_path_helpers_reject_relative_and_parent_traversal_paths() {
+        assert!(validate_absolute_path(Path::new("relative/install"), "test").is_err());
+        assert!(validate_absolute_path(Path::new("/tmp/../outside"), "test").is_err());
+        assert!(validate_absolute_path(Path::new("/tmp/padfire-install"), "test").is_ok());
+    }
+
+    #[test]
+    fn installer_base_directory_resolves_existing_and_missing_suffixes() {
+        let root = temp_root();
+        let target = root.join("actual-data");
+        fs::create_dir_all(&target).unwrap();
+
+        let resolved = resolve_base_directory(&target, "test").unwrap();
+        assert_eq!(resolved, target.canonicalize().unwrap());
+
+        let missing = resolve_base_directory(&target.join("new/nested"), "test").unwrap();
+        assert_eq!(missing, resolved.join("new/nested"));
+        assert!(!missing.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installer_directory_chain_rejects_symlink_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_root();
+        let target = root.join("target");
+        let parent = root.join("parent");
+        let link = parent.join("linked");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&parent).unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert!(validate_directory_chain(&link.join("nested"), "test").is_err());
+        assert!(validate_directory_chain(&parent.join("missing/nested"), "test").is_ok());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -733,6 +969,63 @@ mod tests {
             b"user config"
         );
         let _ = fs::remove_dir_all(user_config);
+        let _ = fs::remove_dir_all(integration_root);
+    }
+
+    #[test]
+    fn uninstall_removes_only_padfire_files_and_preserves_unrelated_install_data() {
+        let root = temp_root();
+        let integration_root = root.with_extension("uninstall-safe-integration");
+        let paths = InstallPaths::for_test(&root, &integration_root);
+        fs::create_dir_all(&paths.root).unwrap();
+        fs::write(&paths.executable, b"installed executable").unwrap();
+        fs::write(paths.root.join("user-notes.txt"), b"keep this file").unwrap();
+        fs::create_dir_all(paths.integration.parent().unwrap()).unwrap();
+        fs::write(&paths.integration, b"Padfire desktop entry").unwrap();
+        if let Some(icon) = &paths.icon {
+            fs::create_dir_all(icon.parent().unwrap()).unwrap();
+            fs::write(icon, b"Padfire icon").unwrap();
+        }
+
+        let result = uninstall_from(&paths);
+
+        assert!(
+            result.is_err(),
+            "non-empty install root should be preserved and reported"
+        );
+        assert!(!paths.executable.exists());
+        assert!(!paths.integration.exists());
+        if let Some(icon) = &paths.icon {
+            assert!(!icon.exists());
+        }
+        assert_eq!(
+            fs::read(paths.root.join("user-notes.txt")).unwrap(),
+            b"keep this file"
+        );
+        assert!(paths.root.is_dir());
+
+        let _ = fs::remove_dir_all(&paths.root);
+        let _ = fs::remove_dir_all(integration_root);
+    }
+
+    #[test]
+    fn uninstall_refuses_to_recursively_remove_a_directory_at_the_integration_path() {
+        let root = temp_root();
+        let integration_root = root.with_extension("uninstall-directory-integration");
+        let paths = InstallPaths::for_test(&root, &integration_root);
+        fs::create_dir_all(&paths.root).unwrap();
+        fs::write(&paths.executable, b"installed executable").unwrap();
+        fs::create_dir_all(&paths.integration).unwrap();
+        fs::write(paths.integration.join("user-file.txt"), b"preserve").unwrap();
+
+        assert!(uninstall_from(&paths).is_err());
+        assert_eq!(
+            fs::read(paths.integration.join("user-file.txt")).unwrap(),
+            b"preserve"
+        );
+        assert!(paths.executable.exists());
+
+        let _ = fs::remove_dir_all(&paths.root);
         let _ = fs::remove_dir_all(integration_root);
     }
 

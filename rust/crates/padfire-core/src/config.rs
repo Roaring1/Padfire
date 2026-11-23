@@ -12,6 +12,16 @@ use std::fmt;
 pub const CONFIG_VERSION: u64 = 5;
 pub const PAGE_COUNT: usize = 8;
 pub const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
+/// Page keys and runtime PadKey identities use an unsigned byte.
+pub const MAX_CONFIG_PAGES: usize = 256;
+/// A Launchpad has 128 MIDI note identities per page.
+pub const MAX_PADS_PER_PAGE: usize = 128;
+const MAX_CONFIG_PATH_BYTES: usize = 4096;
+const MAX_CONFIG_COMMAND_BYTES: usize = 8192;
+const MAX_CONFIG_LABEL_BYTES: usize = 512;
+const MAX_CONFIG_NOTES_BYTES: usize = 16 * 1024;
+const MAX_CONFIG_JSON_DEPTH: usize = 64;
+const MAX_CONFIG_JSON_NODES: usize = 100_000;
 
 fn default_version() -> u64 {
     1
@@ -249,6 +259,7 @@ pub enum ConfigError {
     TooLarge { actual: usize, maximum: usize },
     Json(serde_json::Error),
     InvalidRoot,
+    InvalidStructure(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -259,6 +270,9 @@ impl fmt::Display for ConfigError {
             }
             Self::Json(error) => write!(f, "invalid configuration JSON: {error}"),
             Self::InvalidRoot => write!(f, "configuration root must be a JSON object"),
+            Self::InvalidStructure(message) => {
+                write!(f, "configuration structure is unsafe: {message}")
+            }
         }
     }
 }
@@ -268,6 +282,69 @@ impl std::error::Error for ConfigError {}
 impl From<serde_json::Error> for ConfigError {
     fn from(value: serde_json::Error) -> Self {
         Self::Json(value)
+    }
+}
+
+/// Bound the whole extension-preserving JSON tree before typed
+/// deserialization. This is iterative so validation itself does not recurse
+/// over attacker-controlled nesting.
+fn validate_json_budget(value: &Value) -> Result<(), ConfigError> {
+    let mut pending = vec![(value, 0_usize)];
+    let mut nodes = 0_usize;
+    while let Some((current, depth)) = pending.pop() {
+        nodes += 1;
+        if nodes > MAX_CONFIG_JSON_NODES {
+            return Err(ConfigError::InvalidStructure(format!(
+                "JSON document exceeds the {MAX_CONFIG_JSON_NODES}-node budget"
+            )));
+        }
+        if depth > MAX_CONFIG_JSON_DEPTH {
+            return Err(ConfigError::InvalidStructure(format!(
+                "JSON document exceeds the maximum nesting depth of {MAX_CONFIG_JSON_DEPTH}"
+            )));
+        }
+        match current {
+            Value::Array(items) => {
+                pending.extend(items.iter().map(|item| (item, depth + 1)));
+            }
+            Value::Object(fields) => {
+                pending.extend(fields.values().map(|item| (item, depth + 1)));
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_bounded_string(
+    object: &Map<String, Value>,
+    field: &str,
+    maximum_bytes: usize,
+) -> Result<(), ConfigError> {
+    let Some(value) = object.get(field).and_then(Value::as_str) else {
+        // Type errors are still reported by the typed serde conversion below.
+        return Ok(());
+    };
+    if value.len() > maximum_bytes {
+        return Err(ConfigError::InvalidStructure(format!(
+            "{field} is {} bytes; maximum is {maximum_bytes}",
+            value.len()
+        )));
+    }
+    if value.contains('\0') {
+        return Err(ConfigError::InvalidStructure(format!(
+            "{field} contains a NUL character"
+        )));
+    }
+    Ok(())
+}
+
+fn with_config_path(error: ConfigError, prefix: &str) -> ConfigError {
+    match error {
+        ConfigError::InvalidStructure(message) => {
+            ConfigError::InvalidStructure(format!("{prefix}.{message}"))
+        }
+        other => other,
     }
 }
 
@@ -287,11 +364,14 @@ impl AppConfig {
         }
 
         let mut value: Value = serde_json::from_slice(input)?;
+        validate_json_budget(&value)?;
         let Some(root) = value.as_object_mut() else {
             return Err(ConfigError::InvalidRoot);
         };
 
         let old_version = root.get("version").and_then(Value::as_u64).unwrap_or(1);
+        validate_bounded_string(root, "default_sink", MAX_CONFIG_PATH_BYTES)?;
+        validate_bounded_string(root, "monitor_sink", MAX_CONFIG_PATH_BYTES)?;
 
         // These are the two properties explicitly retired by v2.4.0.
         root.remove("device");
@@ -303,20 +383,58 @@ impl AppConfig {
             *pages_value = Value::Array(Vec::new());
         }
         let pages = pages_value.as_array_mut().expect("pages normalized above");
+        if pages.len() > MAX_CONFIG_PAGES {
+            return Err(ConfigError::InvalidStructure(format!(
+                "pages contains {}; maximum is {MAX_CONFIG_PAGES}",
+                pages.len()
+            )));
+        }
         while pages.len() < PAGE_COUNT {
             pages.push(Value::Object(Map::new()));
         }
 
-        for page in pages.iter_mut() {
+        for (page_index, page) in pages.iter_mut().enumerate() {
             if !page.is_object() {
                 *page = Value::Object(Map::new());
             }
             let page_object = page.as_object_mut().expect("page normalized above");
-            for pad in page_object.values_mut() {
+            if page_object.len() > MAX_PADS_PER_PAGE {
+                return Err(ConfigError::InvalidStructure(format!(
+                    "pages[{page_index}] contains {} pad entries; maximum is {MAX_PADS_PER_PAGE}",
+                    page_object.len()
+                )));
+            }
+            for (pad_key, pad) in page_object.iter_mut() {
+                if pad_key.len() > 16 {
+                    return Err(ConfigError::InvalidStructure(format!(
+                        "pages[{page_index}] contains an oversized pad key"
+                    )));
+                }
                 if !pad.is_object() {
                     *pad = Value::Object(Map::new());
                 }
                 let pad_object = pad.as_object_mut().expect("pad normalized above");
+                let pad_path = format!("pages[{page_index}][{pad_key}]");
+                validate_bounded_string(pad_object, "action", 64)
+                    .map_err(|error| with_config_path(error, &pad_path))?;
+                validate_bounded_string(pad_object, "file", MAX_CONFIG_PATH_BYTES)
+                    .map_err(|error| with_config_path(error, &pad_path))?;
+                validate_bounded_string(pad_object, "sink", MAX_CONFIG_PATH_BYTES)
+                    .map_err(|error| with_config_path(error, &pad_path))?;
+                validate_bounded_string(pad_object, "cmd", MAX_CONFIG_COMMAND_BYTES)
+                    .map_err(|error| with_config_path(error, &pad_path))?;
+                validate_bounded_string(pad_object, "pid_file", MAX_CONFIG_PATH_BYTES)
+                    .map_err(|error| with_config_path(error, &pad_path))?;
+                validate_bounded_string(pad_object, "label", MAX_CONFIG_LABEL_BYTES)
+                    .map_err(|error| with_config_path(error, &pad_path))?;
+                validate_bounded_string(pad_object, "color", MAX_CONFIG_LABEL_BYTES)
+                    .map_err(|error| with_config_path(error, &pad_path))?;
+                validate_bounded_string(pad_object, "stop_key", MAX_CONFIG_LABEL_BYTES)
+                    .map_err(|error| with_config_path(error, &pad_path))?;
+                validate_bounded_string(pad_object, "notes", MAX_CONFIG_NOTES_BYTES)
+                    .map_err(|error| with_config_path(error, &pad_path))?;
+                validate_bounded_string(pad_object, "retrigger", 64)
+                    .map_err(|error| with_config_path(error, &pad_path))?;
                 if old_version < 4 && !pad_object.contains_key("action") {
                     pad_object.insert("action".to_owned(), Value::String("play".to_owned()));
                 }

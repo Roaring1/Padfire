@@ -1410,8 +1410,10 @@ mod script_picker_tests {
         use std::fs;
         use std::process::Command;
 
-        let script =
-            std::env::temp_dir().join(format!("Padfire script picker {}.cmd", std::process::id()));
+        let script = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("Padfire script picker {}.cmd", std::process::id()));
         fs::write(
             &script,
             "@echo off\r\necho PADFIRE_PICKER_OK\r\nexit /b 0\r\n",

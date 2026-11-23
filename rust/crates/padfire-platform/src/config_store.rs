@@ -102,10 +102,12 @@ impl ConfigStore {
             let home = std::env::var_os("HOME")
                 .map(PathBuf::from)
                 .ok_or_else(|| StoreError::UnsafePath("HOME is not set".to_owned()))?;
+            let home = resolve_directory_path(&home, "HOME")?;
             let base = std::env::var_os("XDG_CONFIG_HOME")
                 .map(PathBuf::from)
                 .filter(|path| path.is_absolute())
                 .unwrap_or_else(|| home.join(".config"));
+            let base = resolve_directory_path(&base, "XDG_CONFIG_HOME")?;
             let mut store = Self::new(base.join("padfire"));
             store.legacy_path = Some(home.join(".config/roaring/padfire.json"));
             Ok(store)
@@ -120,6 +122,7 @@ impl ConfigStore {
                         "APPDATA and LOCALAPPDATA are both unavailable".to_owned(),
                     )
                 })?;
+            let base = resolve_directory_path(&base, "APPDATA/LOCALAPPDATA")?;
             Ok(Self::new(base.join("Padfire")))
         }
         #[cfg(not(any(target_os = "linux", windows)))]
@@ -290,11 +293,91 @@ impl ConfigStore {
     }
 }
 
+/// Resolve an OS-provided directory to an absolute physical path. Missing
+/// suffix components are retained for later creation; existing ancestors are
+/// canonicalized so symlink and parent-directory components cannot remain in
+/// the path used for config files or the single-instance IPC socket.
+fn resolve_directory_path(path: &Path, label: &str) -> Result<PathBuf, StoreError> {
+    use std::path::Component;
+
+    if !path.is_absolute() {
+        return Err(StoreError::UnsafePath(format!(
+            "{label} must be an absolute path"
+        )));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(StoreError::UnsafePath(format!(
+            "{label} must not contain parent-directory components"
+        )));
+    }
+
+    let mut existing = path.to_path_buf();
+    let mut missing = Vec::<std::ffi::OsString>::new();
+    loop {
+        match fs::metadata(&existing) {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
+                    return Err(StoreError::UnsafePath(format!(
+                        "{label} is not a directory: {}",
+                        existing.display()
+                    )));
+                }
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let Some(name) = existing.file_name() else {
+                    return Err(StoreError::Io(error));
+                };
+                missing.push(name.to_os_string());
+                if !existing.pop() {
+                    return Err(StoreError::Io(error));
+                }
+            }
+            Err(error) => return Err(StoreError::Io(error)),
+        }
+    }
+
+    let mut resolved = existing.canonicalize()?;
+    for component in missing.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
 fn is_not_found(error: &StoreError) -> bool {
     matches!(error, StoreError::Io(io_error) if io_error.kind() == std::io::ErrorKind::NotFound)
 }
 
 fn read_private_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, StoreError> {
+    let parent = path.parent().ok_or_else(|| {
+        StoreError::UnsafePath("Padfire config file has no parent directory".to_owned())
+    })?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| StoreError::UnsafePath("Padfire config file has no filename".to_owned()))?;
+    let parent = parent.canonicalize()?;
+    let parent_metadata = fs::metadata(&parent)?;
+    if !parent_metadata.is_dir() {
+        return Err(StoreError::UnsafePath(format!(
+            "Padfire config parent is not a directory: {}",
+            parent.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if parent_metadata.uid() != nix::unistd::Uid::current().as_raw() {
+            return Err(StoreError::UnsafePath(format!(
+                "Padfire config parent is owned by another user: {}",
+                parent.display()
+            )));
+        }
+    }
+    let resolved_path = parent.join(file_name);
+
     let mut options = OpenOptions::new();
     options.read(true);
 
@@ -316,7 +399,7 @@ fn read_private_file(path: &Path, max_bytes: usize) -> Result<Vec<u8>, StoreErro
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
 
-    let file = options.open(path)?;
+    let file = options.open(&resolved_path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
         return Err(StoreError::UnsafePath(format!(
@@ -856,8 +939,10 @@ mod tests {
 
     fn test_store() -> ConfigStore {
         let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("padfire-store-test-{}-{id}", std::process::id()));
+        let path = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("padfire-store-test-{}-{id}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         ConfigStore::new(path)
     }
@@ -1146,13 +1231,60 @@ mod tests {
         let _ = fs::remove_dir_all(store.directory());
     }
 
-    #[cfg(unix)]
+    #[test]
+    fn environment_directory_resolution_requires_absolute_paths_and_normalizes_symlinks() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        assert!(matches!(
+            resolve_directory_path(Path::new("relative/config"), "XDG_CONFIG_HOME"),
+            Err(StoreError::UnsafePath(_))
+        ));
+        assert!(matches!(
+            resolve_directory_path(Path::new("/tmp/../etc"), "XDG_CONFIG_HOME"),
+            Err(StoreError::UnsafePath(_))
+        ));
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "padfire-store-root-resolution-{}-{nonce}",
+            std::process::id()
+        ));
+        let target = root.join("actual-config");
+        let link = root.join("config-link");
+        fs::create_dir_all(&target).unwrap();
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+        }
+        #[cfg(unix)]
+        let candidate = link.as_path();
+        #[cfg(windows)]
+        let candidate = target.as_path();
+
+        let resolved = resolve_directory_path(candidate, "XDG_CONFIG_HOME").unwrap();
+        assert_eq!(resolved, target.canonicalize().unwrap());
+        assert!(resolved.is_absolute());
+
+        let missing =
+            resolve_directory_path(&target.join("new/nested"), "XDG_CONFIG_HOME").unwrap();
+        assert_eq!(missing, target.canonicalize().unwrap().join("new/nested"));
+        assert!(!missing.exists());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn config_directory_symlink_is_rejected() {
         use std::os::unix::fs::symlink;
         let store = test_store();
-        let target =
-            std::env::temp_dir().join(format!("padfire-store-target-{}", std::process::id()));
+        let target = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("padfire-store-target-{}", std::process::id()));
         fs::create_dir_all(&target).unwrap();
         let _ = fs::remove_dir_all(store.directory());
         symlink(&target, store.directory()).unwrap();

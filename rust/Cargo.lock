@@ -2534,6 +2534,7 @@ version = "3.0.0-alpha.1"
 dependencies = [
  "eframe",
  "libc",
+ "nix",
  "padfire-core",
  "padfire-platform",
  "rfd",

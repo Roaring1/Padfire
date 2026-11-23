@@ -250,6 +250,18 @@ fn pid_file_process_ids(path: &str) -> Vec<u32> {
         if !opened_metadata.is_file() || opened_metadata.len() > PID_FILE_MAX_BYTES {
             return Vec::new();
         }
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::MetadataExt;
+            // PID files describe this user's child processes. Do not consume
+            // a foreign-owned or hard-linked file whose contents can be
+            // modified through another filesystem name.
+            if opened_metadata.uid() != nix::unistd::Uid::current().as_raw()
+                || opened_metadata.nlink() != 1
+            {
+                return Vec::new();
+            }
+        }
         read_pid_ids(file)
     }
 }
@@ -1143,7 +1155,7 @@ mod preview_tests {
 
     #[test]
     fn pid_file_reports_current_process_and_ignores_invalid_entries() {
-        let path = std::env::temp_dir().join(format!(
+        let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "padfire-pid-file-{}-{}.txt",
             std::process::id(),
             Instant::now().elapsed().as_nanos()
@@ -1164,7 +1176,10 @@ mod preview_tests {
     fn pid_file_rejects_symlinks_and_directories() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir().join(format!("padfire-pid-safety-{}", std::process::id()));
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("padfire-pid-safety-{}", std::process::id()));
         let target = base.with_extension("target");
         let link = base.with_extension("link");
         let directory = base.with_extension("directory");
@@ -1180,10 +1195,38 @@ mod preview_tests {
         let _ = fs::remove_dir(directory);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn pid_file_rejects_hardlinked_status_files() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "padfire-pid-hardlink-{}-{nonce}",
+            std::process::id()
+        ));
+        let linked = root.with_extension("linked");
+        fs::write(&root, std::process::id().to_string()).unwrap();
+        fs::hard_link(&root, &linked).unwrap();
+
+        assert!(
+            pid_file_process_ids(&root.to_string_lossy()).is_empty(),
+            "hardlinked PID files must not be trusted"
+        );
+
+        let _ = fs::remove_file(root);
+        let _ = fs::remove_file(linked);
+    }
+
     #[test]
     fn pid_file_rejects_oversized_and_non_regular_paths() {
-        let path =
-            std::env::temp_dir().join(format!("padfire-pid-file-large-{}.txt", std::process::id()));
+        let path = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("padfire-pid-file-large-{}.txt", std::process::id()));
         fs::write(&path, vec![b'1'; (PID_FILE_MAX_BYTES + 1) as usize]).unwrap();
         assert!(pid_file_process_ids(&path.to_string_lossy()).is_empty());
         let _ = fs::remove_file(path);

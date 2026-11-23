@@ -775,7 +775,7 @@ pub fn resolve_crosshair_executable() -> Option<std::path::PathBuf> {
     #[cfg(unix)]
     if let Some(home) = std::env::var_os("HOME") {
         let candidate = std::path::PathBuf::from(home).join(".local/bin").join(name);
-        if is_executable_file(&candidate) {
+        if let Some(candidate) = canonical_executable(&candidate) {
             return Some(candidate);
         }
     }
@@ -785,7 +785,7 @@ pub fn resolve_crosshair_executable() -> Option<std::path::PathBuf> {
         let candidate = std::path::PathBuf::from(local)
             .join("Programs/Crosshair")
             .join(name);
-        if candidate.is_file() {
+        if let Some(candidate) = canonical_executable(&candidate) {
             return Some(candidate);
         }
     }
@@ -795,7 +795,14 @@ pub fn resolve_crosshair_executable() -> Option<std::path::PathBuf> {
 fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|directory| directory.join(name))
-        .find(|candidate| is_executable_file(candidate))
+        .find_map(|candidate| canonical_executable(&candidate))
+}
+
+/// Resolve an environment-derived executable to its actual absolute target
+/// before it is handed to the process API.
+fn canonical_executable(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let canonical = path.canonicalize().ok()?;
+    is_executable_file(&canonical).then_some(canonical)
 }
 
 fn is_executable_file(path: &std::path::Path) -> bool {
@@ -1035,7 +1042,7 @@ mod winjob {
 
         #[test]
         fn terminating_job_terminates_a_spawned_descendant() {
-            let marker = std::env::temp_dir().join(format!(
+            let marker = std::env::temp_dir().canonicalize().unwrap().join(format!(
                 "padfire-job-child-{}-{}.pid",
                 std::process::id(),
                 SystemTime::now()
@@ -1100,6 +1107,81 @@ mod winjob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crosshair_executable_resolution_returns_only_canonical_executable_files() {
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "padfire-crosshair-resolver-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let executable = root.join(if cfg!(windows) {
+            "crosshair.exe"
+        } else {
+            "crosshair"
+        });
+        fs::write(&executable, b"test executable").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        let resolved = canonical_executable(&executable).expect("valid executable should resolve");
+        assert!(resolved.is_absolute());
+        assert_eq!(resolved, executable.canonicalize().unwrap());
+        assert!(
+            canonical_executable(&root).is_none(),
+            "directories are not executables"
+        );
+
+        let non_executable = root.join("not-executable");
+        fs::write(&non_executable, b"data").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&non_executable, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(canonical_executable(&non_executable).is_none());
+        }
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn crosshair_executable_resolution_canonicalizes_symlink_targets() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "padfire-crosshair-link-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let target = root.join("actual-crosshair");
+        let link = root.join("crosshair");
+        std::fs::write(&target, b"test executable").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let resolved = canonical_executable(&link).expect("valid symlink target should resolve");
+        assert_eq!(resolved, target.canonicalize().unwrap());
+        assert_ne!(resolved, link);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn process_id_liveness_detects_self_and_rejects_invalid_ids() {
@@ -1417,7 +1499,7 @@ mod tests {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let pad = PadKey { page: 0, note: 18 };
-        let marker = std::env::temp_dir().join(format!(
+        let marker = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "padfire-cancelled-script-{}-{}.txt",
             std::process::id(),
             SystemTime::now()
