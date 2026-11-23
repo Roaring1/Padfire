@@ -1269,10 +1269,15 @@ mod tests {
         let root = temp_root();
         let config = root.with_extension("config");
         let log_path = root.with_extension("uninstall.log");
-        let locked_file = root.join("in-use.dat");
+        // The delayed helper retries removal of the actual installed image,
+        // not arbitrary user files in the install directory.
+        let locked_file = root.join("padfire-rust.exe");
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("padfire-rust.exe"), b"candidate").unwrap();
-        fs::write(&locked_file, b"hold this file open without delete sharing").unwrap();
+        fs::write(
+            &locked_file,
+            b"hold the executable open without delete sharing",
+        )
+        .unwrap();
         fs::create_dir_all(&config).unwrap();
         fs::write(config.join("padfire.json"), b"user config").unwrap();
 
