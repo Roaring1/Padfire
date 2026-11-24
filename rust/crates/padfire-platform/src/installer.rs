@@ -65,9 +65,7 @@ impl InstallPaths {
                     home.join(".local/share")
                 }
             };
-            let license_notice = data_root
-                .join("licenses/padfire-rust")
-                .join("THIRD_PARTY_LICENSES.html");
+            let license_notice = root.join("THIRD_PARTY_LICENSES.html");
             Ok(Self {
                 root,
                 executable,
@@ -126,13 +124,7 @@ impl InstallPaths {
                         .join("padfire-rust.svg"),
                 )
             },
-            license_notice: if cfg!(windows) {
-                root.join("THIRD_PARTY_LICENSES.html")
-            } else {
-                integration_root
-                    .join("licenses/padfire-rust")
-                    .join("THIRD_PARTY_LICENSES.html")
-            },
+            license_notice: root.join("THIRD_PARTY_LICENSES.html"),
         }
     }
 }
@@ -274,9 +266,6 @@ fn rollback_install_integration(
     }
     if let Err(error) = restore_integration_backups(backups) {
         failures.push(error);
-    }
-    if let Some(parent) = paths.license_notice.parent() {
-        let _ = remove_empty_directory_if_exists(parent);
     }
     if failures.is_empty() {
         Ok(())
@@ -582,9 +571,6 @@ fn uninstall_from(paths: &InstallPaths) -> Result<(), String> {
         remove_file_if_exists(icon)?;
     }
     remove_file_if_exists(&paths.license_notice)?;
-    if let Some(parent) = paths.license_notice.parent() {
-        let _ = remove_empty_directory_if_exists(parent);
-    }
     remove_file_if_exists(&paths.executable)?;
     remove_empty_directory_if_exists(&paths.root)?;
     Ok(())
@@ -1279,8 +1265,14 @@ mod tests {
         let paths = InstallPaths::for_test(&root, &integration_root);
         fs::create_dir_all(&paths.root).unwrap();
         fs::write(&paths.executable, b"installed executable").unwrap();
-        fs::create_dir_all(paths.license_notice.parent().unwrap()).unwrap();
+        let license_parent = paths.license_notice.parent().unwrap();
+        fs::create_dir_all(license_parent).unwrap();
         fs::write(&paths.license_notice, b"Padfire third-party licenses").unwrap();
+        fs::write(
+            license_parent.join("custom-notice.html"),
+            b"preserve unrelated license note",
+        )
+        .unwrap();
         fs::write(paths.root.join("user-notes.txt"), b"keep this file").unwrap();
         fs::create_dir_all(paths.integration.parent().unwrap()).unwrap();
         fs::write(&paths.integration, b"Padfire desktop entry").unwrap();
@@ -1305,6 +1297,11 @@ mod tests {
             fs::read(paths.root.join("user-notes.txt")).unwrap(),
             b"keep this file"
         );
+        assert_eq!(
+            fs::read(license_parent.join("custom-notice.html")).unwrap(),
+            b"preserve unrelated license note"
+        );
+        assert!(license_parent.is_dir());
         assert!(paths.root.is_dir());
 
         let _ = fs::remove_dir_all(&paths.root);

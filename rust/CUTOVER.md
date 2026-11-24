@@ -60,6 +60,6 @@ and owner have been verified.
 ## Third-party license notices
 
 - [ ] Regenerate `rust/THIRD_PARTY_LICENSES.html` from the exact locked workspace using cargo-about 0.9.3 and verify the checked-in report with the dependency-policy CI byte-comparison step.
-- [ ] Confirm the Linux installer places the report at `~/.local/share/licenses/padfire-rust/THIRD_PARTY_LICENSES.html` and Windows places it beside the executable.
+- [ ] Confirm the Linux installer places the report at `~/.local/opt/padfire-rust/THIRD_PARTY_LICENSES.html` and Windows places it beside the executable.
 - [ ] Verify upgrade rollback restores a pre-existing notice, normal uninstall removes only the managed notice, and deferred Windows uninstall removes it after the executable unlocks.
 - [ ] Include the notice in signed/checksummed release artifacts and verify all third-party license expressions remain allowlisted by `rust/deny.toml`.
