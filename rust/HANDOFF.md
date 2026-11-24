@@ -32,64 +32,61 @@ The Rust workspace contains `padfire-core`, `padfire-platform`, and a native efr
 - Side-by-side installer: Linux user-local binary, desktop file and SVG icon; Windows per-user binary and Start Menu shortcut. Integration is created before the executable is published. If integration or binary copy fails, newly created integration artifacts are rolled back. Linux desktop `Exec` quotes spaces and escapes literal `%` field codes, backslashes, quotes and `$`. No autostart or service; never touches v2.4.0 or user configuration.
 - Windows deferred uninstall: if the running executable is inside the candidate install root, a hidden cleanup helper uses null stdio and `CREATE_NO_WINDOW`, retries removal while the executable is locked, and preserves sibling user configuration. Native regression holds a real deny-delete file handle, observes a cleanup retry, releases the lock and verifies removal.
 
-## Current candidate: c53c3ea
+## Current candidate: 49311c3
 
-The active candidate is c53c3ea757f01456e80ca0a13220929e3bebe4f4, PR #22. It integrates the reviewed Launchpad UI commits, the security hardening, cargo-deny dependency policy, and a descriptor-relative Unix PID-file opener that removes the previous direct user-controlled path open.
+The integrated Rust candidate is `49311c3a80c71484fd86afd3edb9ee667cea8826`, PR #22 (open, non-draft, mergeable). It includes the selected Launchpad UI work, security hardening, the descriptor-relative PID-file opener, safe executable-source handle copying, dependency policy and the bundled third-party notice. It remains `3.0.0-alpha.1`, side-by-side with the legacy v2.4.0 release.
 
-Local Nobara validation:
-- Formatting: pass.
-- Workspace tests: 144 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 60 platform).
-- Strict Clippy with warnings denied: pass.
-- Optimized release build: pass.
-- cargo-deny 0.22.0: advisories, bans, licenses and sources pass.
-- Focused PID-path regression suite: 9 passed, including symlinked parent rejection.
-- Legacy GTK/Python: 83 core tests and 7 dialog tests pass; Python compile, shell syntax, ShellCheck and desktop-file validation pass.
-- Isolated Xvfb grid and Settings review passed. c53 captures (540x480) are saved under /home/roaring/Workspace/PadfireReview-2026-11-23/c53c3ea/.
+### Validation
 
-Unix PID-file opening now starts at the fixed filesystem root and walks each parent component using an open directory descriptor and openat with O_NOFOLLOW. The final component is opened relative to that verified parent descriptor with O_NOFOLLOW and O_NONBLOCK. Metadata checks remain on the opened handle. The configured path stays user-selectable; valid custom paths are preserved. The current autoclick configuration uses /run/user/1000/autoclicker/autoclick.pid, matching the live KDE runtime and /home/roaring/autoclick.sh.
+Local Nobara validation on the exact 49311c3 tree:
+- `cargo fmt --all -- --check`: pass.
+- `cargo test --workspace --locked`: **144 passed, 0 failed** (31 app, 2 CLI, 28 core, 23 compatibility, 60 platform).
+- Focused installer tests: **16 passed**, including failed-publish/same-handle retry and the Windows shared-cursor rewind regression.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`: pass.
+- `cargo build --workspace --release --locked`: pass.
+- `cargo deny check` 0.22.0: advisories, bans, licenses and sources pass.
+- cargo-about 0.9.3: offline regeneration of `THIRD_PARTY_LICENSES.html` with `--fail`, byte-for-byte comparison: pass.
+- Focused PID path tests (9), hardware-free MIDI tests (7), synthetic audio/UI interaction tests, legacy GTK/Python (83 core + 7 dialog), shell syntax, Python compile, ShellCheck and desktop-entry checks pass.
 
-### Third-party dependency notice - newly integrated installer work
+Hosted validation on exact 49311c3:
+- Push Rust workflow [45320135973](https://github.com/Roaring1/Padfire/actions/runs/45320135973): Ubuntu and Windows format/test/strict Clippy/release, UI screenshot, cargo-deny and notice regeneration all passed.
+- Pull-request Rust workflow [45320142859](https://github.com/Roaring1/Padfire/actions/runs/45320142859): Ubuntu and Windows matrices passed.
+- PR workflow [45320137717](https://github.com/Roaring1/Padfire/actions/runs/45320137717): explicit CodeQL and PR policy passed.
+- Explicit Rust CodeQL SARIF [2235814466], Python [2235797264] and Actions [2235796428]: **0 findings each**.
+- GitHub changed-file policy check [138196612506](https://github.com/Roaring1/Padfire/runs/138196612506): success, “No new alerts in code changed by this pull request.”
+- Current `refs/pull/22/head` Code Scanning inventory: **0 open alerts**.
 
-A generated `rust/THIRD_PARTY_LICENSES.html` now records all locked Rust workspace runtime, build, development and transitive dependencies for Linux x86-64 and Windows x86-64. It contains 82 full license-text sections and 311 crate attribution links (296 distinct crate/version labels), generated offline from `Cargo.lock` by cargo-about 0.9.3 using `rust/about.toml` and `rust/about.hbs` with `--fail`. The report is 465 KB. CI installs pinned cargo-about 0.9.3, fetches the locked target graph, regenerates the report offline, and compares it byte-for-byte.
+The original high-severity PID-file path findings were resolved without dismissing alerts: Unix uses a root-anchored descriptor-relative `openat(O_NOFOLLOW)` walk for each parent component and final filename; installer executable copy uses the already-open process-image handle (`/proc/self/exe` on Linux), with no path-opening test adapters. On Windows, cloned file handles share their cursor, so the copy routine seeks every clone to byte zero before every retry; a regression forces a failed publish and verifies a same-handle retry copies the whole binary.
 
-The installer now embeds that HTML and manages it with the executable/integration lifecycle: Linux location `~/.local/opt/padfire-rust/THIRD_PARTY_LICENSES.html`; Windows location beside `padfire-rust.exe`. Existing notice content is backed up during upgrades and restored on failure. Standard uninstall removes the notice; deferred Windows self-uninstall retries notice deletion after the running image unlocks it. Tests verify install/reinstall payload, failed-upgrade restoration, uninstall, and deferred Windows cleanup. The currently installed Nobara c53 binary predates this notice change; do not claim the new notice is installed until the new cross-platform CI passes and the refreshed binary is installed side-by-side.
+### Third-party notice
 
-The installer source-file boundary was also refactored after the `8c625a3` PR scan reported two path-injection flows at the legacy `source.is_file()` and `File::open(source)` callsites. Production Linux now opens the running process image through fixed `/proc/self/exe`, checks metadata on that open handle, and copies through a cloned file handle. The source path remains solely for the same-file short-circuit. The subsequent `77b40fe` CodeQL scan reduced the two alerts to one at a `#[cfg(test)]` path-opening adapter; that adapter and the corresponding copy adapter have now been removed entirely. Installer tests instead use `open_running_executable()` to obtain an already-open process-image handle. The focused installer suite passes 15/15, and the full 144-test/Clippy/release/cargo-deny/report-reproduction gate passes locally. A fresh CodeQL result for this final adapter-free tree is pending; do not treat the path findings as resolved until the changed-file policy is green.
+`rust/THIRD_PARTY_LICENSES.html` is a 465 KB deterministic HTML report for Linux x86-64 and Windows x86-64, all runtime/build/dev/transitive locked dependencies: 82 full license sections, 311 attribution entries and 296 distinct crate/version labels. It is generated by pinned cargo-about 0.9.3. CI regenerates it offline from the lockfile and byte-compares the checked-in file. The installer stores it beside the executable at `~/.local/opt/padfire-rust/THIRD_PARTY_LICENSES.html`; failed upgrades restore any previous notice, ordinary uninstall removes the managed file, and deferred Windows uninstall retries notice deletion after the executable unlocks.
 
-The hosted Windows matrix exposed a real retry issue after switching executable copying to an open handle: cloned handles share their file cursor on Windows, so the second copy could start at EOF after a failed publish. `copy_executable` now explicitly seeks each cloned handle to offset zero before every copy attempt. A new cross-platform regression forces a failed publish, retries with the same handle, and verifies a complete executable plus no leaked temporary files. The focused installer suite passes 16/16; the full workspace is now 144 tests.
+### Nobara side-by-side installation: 49311c3
 
-Hosted c53 validation:
-- PR Rust, Ubuntu and Windows, UI render, cargo-deny and GTK smoke: all passed.
-- Push Rust, Ubuntu and Windows, UI render and cargo-deny: all passed.
-- Explicit PR CodeQL Rust, Python and Actions analyses: all passed.
-- GitHub CodeQL policy check 138094831040: success, “No new alerts in code changed by this pull request.” The old #185 instance was not dismissed; the current diff no longer introduces it.
+Installed path: `~/.local/opt/padfire-rust/padfire-rust`.
+- Version: `Padfire 3.0.0-alpha.1`.
+- Binary SHA-256: `e3543668e54ea335cedfd8d43afc84b594d71ed1f319ad3afb5b3aa155bdc6aa`, exactly matches `rust/target/release/padfire`.
+- Bundled notice SHA-256: `34cc307a6726f1d6bc43d7de6aab3ec2eb9db7463fe8b21f0cbf52b61542d06b`, exactly matches `rust/THIRD_PARTY_LICENSES.html`.
+- `--status`: `running:false`. No Rust process or IPC socket remains.
+- Desktop entry and SVG icon validate; KDE cache refresh succeeded. It prints a warning for an unrelated pre-existing malformed `packettracer.desktop`; the Padfire Rust desktop entry itself validates.
+- Native x86-64 ELF loader and all dynamic libraries/symbols resolve (`ldd`, `ldd -r`).
+- Installed desktop entry launched successfully using `gtk-launch` in private D-Bus/Xvfb with hardware disabled; status and quit worked and the IPC socket was removed.
+- A private runtime smoke loaded a copy of the actual v5 Rust config. It preserved page 0, monitor enabled and `pulseaudio:vm_music`; reload/show/quit passed. The real source config SHA-256 remains `5aada0eea0a6e80206a8f4f85343be1b6c3cb46ce6714830e12e4d72c7a82c60`.
+- Source/default config remains v5 with SHA-256 `a003c9046235f987e2fd4ac907afa4d6eb55d23641aece42dd5da25fcb67edb0`; both candidate configs point to `/run/user/1000/autoclicker/autoclick.pid`.
+- Legacy v2.4.0 config remains unchanged at SHA-256 `50f8e18175f88707649ace4febdab6492e8e553feb35103752a00334d22055c5`; legacy launcher and desktop entry are unchanged.
+- Disposable install lifecycle on the exact final binary passed install/report byte equality/repeat install/clean uninstall and byte-identical v5 config preservation. An additional uninstall test verifies user-added files survive.
 
-The separate main Code Scanning baseline remains 104 open alerts on commit 1cc3af4 (100 high path injection, 3 critical command-line injection, 1 critical unsafe deserialization). Issue #21 remains open for individual baseline triage.
+Rollback binaries/UI are retained with verified manifests:
+- `~/.local/share/padfire-rust-backups/2026-11-23-pre-combined-ui/`
+- `~/.local/share/padfire-rust-backups/2026-11-23-pre-url-2.5.9/`
+- `~/.local/share/padfire-rust-backups/2026-11-23-pre-c53-openat/`
+- `~/.local/share/padfire-rust-backups/2026-11-23-pre-49311c3/` (c53 binary/desktop/icon)
+- `~/.local/share/padfire-rust-backups/2026-11-23-pid-path-before-fix/` (pre-change config copies)
 
-## Nobara side-by-side installation: c53
+Legacy startup integrations remain untouched: the pre-existing Oct 31 `~/.config/autostart/padfire.desktop` and enabled-but-inactive `~/.config/systemd/user/padfire.service` both point to legacy `padfire-launch` v2.4.0. The Rust candidate created no autostart entry or service.
 
-Current install: /home/roaring/.local/opt/padfire-rust/padfire-rust
-Version: Padfire 3.0.0-alpha.1
-SHA-256: aef9169b9ff23e96091c14f7d36930a03b53329afcbd984675e0764e9343ba5b (exactly matches rust/target/release/padfire).
-Desktop entry and SVG icon validate; KDE cache was refreshed. An unrelated pre-existing malformed packettracer.desktop emits a cache-refresh warning; the Padfire Rust entry itself validates.
-
-Rollback binary/UI sets, each with verified SHA-256 manifests:
-- ~/.local/share/padfire-rust-backups/2026-11-23-pre-combined-ui/
-- ~/.local/share/padfire-rust-backups/2026-11-23-pre-url-2.5.9/
-- ~/.local/share/padfire-rust-backups/2026-11-23-pre-c53-openat/
-
-The pre-change candidate configs are backed up under ~/.local/share/padfire-rust-backups/2026-11-23-pid-path-before-fix/ with a verified manifest. Rust runtime config is ~/.config/padfire-rust/padfire.json (v5, 8 pages, 21 assignments; SHA-256 5aada0eea0a6e80206a8f4f85343be1b6c3cb46ce6714830e12e4d72c7a82c60). Source/default config is ~/.config/padfire/padfire.json (SHA-256 a003c9046235f987e2fd4ac907afa4d6eb55d23641aece42dd5da25fcb67edb0). Both set the clicker PID path to /run/user/1000/autoclicker/autoclick.pid. Legacy v2.4.0 config is ~/.config/roaring/padfire.json (SHA-256 50f8e18175f88707649ace4febdab6492e8e553feb35103752a00334d22055c5); its desktop entry and launcher are unchanged.
-
-Installer lifecycle was tested in a disposable HOME/XDG environment: first install, repeat install, launcher/icon validation, stopped status, uninstall, and byte-identical preservation of an existing v5 config all passed. The installed candidate remains stopped; no Rust process or stale IPC socket exists.
-The notice-bearing 77b40fe Linux release is built locally at `rust/target/release/padfire`, SHA-256 `948a0cb618e11bd7e9c6bfd09b9989bc96dece14dfee45cdcee09ca9c16e39f3`. It passed a disposable HOME/XDG lifecycle after the handle refactor: install placed a byte-identical `THIRD_PARTY_LICENSES.html` beside the executable, repeat install preserved the report hash, normal uninstall removed the app-owned files, and a second uninstall with an added user note removed only Padfire files while retaining that note (and correctly reported that the non-empty install root was preserved). An existing v5 config in the disposable profile remained byte-identical. The real Nobara c53 install is still untouched until latest hosted CodeQL and both platform matrices pass.
-
-The actual installed Padfire Rust desktop entry was also launched with gtk-launch in a private HOME/XDG, D-Bus and Xvfb environment with hardware disabled. Status returned the expected c53 version, --quit exited cleanly and the IPC socket was removed. This exercised the desktop-file Exec/Name/icon path without opening live MIDI or audio devices.
-
-A private runtime smoke then loaded a copy of the actual Nobara Rust v5 config, redirected the copy’s PID path to a temp file, and exercised status/reload/show/quit under hardware-disabled Xvfb with no Pulse server. Status preserved page 0, monitor enabled and the pulseaudio:vm_music target. The real config hash remained unchanged and the private IPC socket was removed.
-
-Legacy startup entries were verified read-only and left untouched: ~/.config/autostart/padfire.desktop and ~/.config/systemd/user/padfire.service both predate this Rust install (October 31) and target the legacy padfire-launch v2.4.0 binary. The user systemd unit is enabled but currently inactive; the legacy launcher reports v2.4.0 not running. The Rust installer created no autostart entry or service.
-
-The live Launchpad Mini and LPD8 are attached. An aseqdump monitor is already connected to the LPD8, Carla is running a saved project, and PipeWire has active sinks/sources. No MIDI port, Carla session, PipeWire route, Scarlett/Astro device or physical controller was opened or changed. Physical acceptance remains a controlled user-visible step.
+The live Launchpad Mini and LPD8 remain attached, an `aseqdump` monitor is connected to LPD8, Carla has a saved project running, and PipeWire is active. No MIDI port, Carla session, physical controller or live audio route was opened or changed. Physical Launchpad input/LED/unplug/reconnect, visible KDE Wayland/Windows 11 tray/focus, real PipeWire/WASAPI routing/playback/monitor/VU, dual-machine acceptance and signing/provenance remain production cutover gates. Keep v2.4.0 as production/rollback until these manual gates are accepted.
 
 ## 2026-11-22 follow-up audit
 
