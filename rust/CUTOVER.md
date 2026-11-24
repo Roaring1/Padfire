@@ -5,7 +5,8 @@
 The native Rust application is the only installed Padfire runtime on the Nobara workstation and the only active implementation in the default branch. The old GTK/Python v2.4.0 runtime, startup files, user configs, desktop identity and local binary rollback copies are removed. The old active Python source/packaging/tests are removed from main as well. The v2.4.0 tag is retired; Git commit history and the dated changelog remain archival records, not active installable app entries.
 
 - Version: Padfire 3.0.0-alpha.1
-- Main source commit before this cleanup: ee5bd48486b5e3775edd21c4a5acd1009b63d150
+- Security-remediation base before Rust-only retirement: ee5bd48486b5e3775edd21c4a5acd1009b63d150
+- Rust-only cleanup commit: 7652a22ffc64f733ca87539c5bd1e39bb5f8ef65
 - Installed executable: ~/.local/opt/padfire-rust/padfire-rust
 - Active config: ~/.config/padfire-rust/padfire.json (v5)
 - User service: padfire-rust.service, enabled for graphical-session.target
@@ -29,7 +30,7 @@ The service starts with the user's graphical session and runs as the user. It is
 - Hosted Linux/Windows: format, tests, strict Clippy and optimized release builds passed.
 - Headless UI: main grid and Settings renders passed under Xvfb; hosted Linux UI render passed.
 - GTK/Python legacy smoke workflow was retired with that application; the Rust UI and Rust hardware-free tests are the active checks.
-- CodeQL Rust, Python and Actions analyses on ee5bd484 completed; main-branch open alert inventory was zero.
+- CodeQL default setup is disabled; `.github/workflows/codeql.yml` now analyzes Rust and Actions only (the retired Python source is no longer scanned).
 
 ## Remaining stable-release acceptance
 

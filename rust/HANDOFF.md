@@ -7,6 +7,8 @@ Updated: 2026-11-24
 - Repository: Roaring1/Padfire
 - Default branch: main
 - Current application: Padfire 3.0.0-alpha.1, native Rust only
+- Rust-only cleanup commit: `7652a22ffc64f733ca87539c5bd1e39bb5f8ef65`
+- Only active branch: `main`; retired v2.4.0 release tag and old development branches removed. Archive checkpoint tags are non-installable history.
 - The former GTK/Python runtime, launcher, packaging, Python tests and GTK-only workflow are retired from the active tree.
 - GitHub before this cleanup: zero open pull requests, zero open issues, zero open main CodeQL alerts.
 
@@ -22,7 +24,7 @@ Updated: 2026-11-24
 
 ## Verification
 
-Local Linux: 144 Rust workspace tests, formatting, strict Clippy, optimized release build, cargo-deny advisories/licenses/bans/sources, offline cargo-about notice regeneration and byte comparison, and isolated Xvfb UI rendering passed. Hosted Ubuntu and Windows format/test/Clippy/release builds passed. Hosted dependency/license policy and Linux UI rendering passed. The hardware-free Rust smoke workflow passed. CodeQL Rust/Python/Actions passed on the then-current main head; open CodeQL alert count on main was zero.
+Local Linux: 144 Rust workspace tests, formatting, strict Clippy, optimized release build, cargo-deny advisories/licenses/bans/sources, offline cargo-about notice regeneration and byte comparison, and isolated Xvfb UI rendering passed. Hosted Ubuntu and Windows format/test/Clippy/release builds passed. Hosted dependency/license policy and Linux UI rendering passed. The hardware-free Rust smoke workflow passed. CodeQL default setup has been retired because it continued to schedule an empty Python scan. The advanced CodeQL workflow in `.github/workflows/codeql.yml` analyzes only Rust and Actions with the extended security query suite; confirm its fresh run after this cleanup.
 
 The live process reported Launchpad Mini connected, page 0, no pad playing, and monitor enabled to pulseaudio:vm_music. CLI --status, --show and --reload were exercised.
 

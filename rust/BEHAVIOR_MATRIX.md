@@ -22,6 +22,6 @@ The native Rust workspace is the only active implementation. The former GTK/Pyth
 
 ## Current verification
 
-The full local workspace suite contains 144 Rust tests and passed with formatting, strict Clippy and optimized release build. Hosted Ubuntu and Windows matrices, dependency/license policy, Linux UI rendering and the hardware-free Rust smoke tests passed. Rust/Python/Actions CodeQL analyses on the current deployed source commit found zero issues.
+The full local workspace suite contains 144 Rust tests and passed with formatting, strict Clippy and optimized release build. Hosted Ubuntu and Windows matrices, dependency/license policy, Linux UI rendering and the hardware-free Rust smoke tests passed. The active CodeQL workflow scans Rust and Actions with the extended security query suite; the retired Python application is no longer a scanning target.
 
 Automated tests do not replace physical Launchpad, real audio, Windows UI or signing/provenance acceptance.
