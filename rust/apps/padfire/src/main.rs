@@ -1143,20 +1143,16 @@ impl PadfireApp {
 }
 
 impl eframe::App for PadfireApp {
-    fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let context = root_ui.ctx().clone();
-        // Follow the desktop's light/dark theme (KDE, Windows, etc.).
-        // Eframe supplies the native system theme through egui input.
-        follow_system_theme(&context);
-        // IPC, MIDI and process/audio workers post events from other threads.
-        // eframe does not continuously call ui() while idle, so schedule a
-        // low-frequency poll instead of leaving those commands stranded.
-        context.request_repaint_after(std::time::Duration::from_millis(200));
+    fn logic(&mut self, context: &Context, _frame: &mut eframe::Frame) {
+        // Eframe runs logic even when the root window is hidden or occluded.
+        // Keep tray actions, IPC, workers and close-to-tray behavior alive
+        // independently of whether the visible UI is currently being painted.
+        context.request_repaint_after(Duration::from_millis(200));
 
         #[cfg(any(target_os = "linux", windows))]
         {
             self.ensure_tray();
-            self.handle_tray_events(&context);
+            self.handle_tray_events(context);
         }
 
         self.runtime
@@ -1170,10 +1166,17 @@ impl eframe::App for PadfireApp {
             context.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         if signals.quit_requested {
-            self.request_quit(&context);
+            self.request_quit(context);
         }
+        self.handle_window_close_request(context);
+    }
+
+    fn ui(&mut self, root_ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let context = root_ui.ctx().clone();
+        // Follow the desktop's light/dark theme (KDE, Windows, etc.).
+        // Eframe supplies the native system theme through egui input.
+        follow_system_theme(&context);
         self.handle_keyboard(&context);
-        self.handle_window_close_request(&context);
 
         egui::Panel::top("top_bar")
             .exact_size(40.0)
