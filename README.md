@@ -203,7 +203,11 @@ dependency or compatibility claim.
 
 Padfire-authored source and documentation are licensed under the MIT License;
 see [LICENSE](LICENSE). Third-party libraries, desktop runtimes and any
-additional assets remain subject to their own licenses and notices.
+additional assets remain subject to their own licenses and notices. The Rust
+candidate includes a generated [third-party Rust dependency license report](rust/THIRD_PARTY_LICENSES.html)
+covering the Linux and Windows release targets. Its per-user installer installs
+that report at `~/.local/opt/padfire-rust/THIRD_PARTY_LICENSES.html`
+on Linux and beside the executable on Windows.
 
 ## Project docs
 

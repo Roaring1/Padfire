@@ -2,8 +2,9 @@ name: Padfire Rust
 
 on:
   push:
-    branches:
+    paths:
       - "rust/**"
+      - ".github/workflows/rust.yml"
   pull_request:
     paths:
       - "rust/**"
@@ -53,5 +54,92 @@ jobs:
       - name: Run Clippy with warnings denied
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-      - name: Build release core
+      - name: Build release
         run: cargo build --workspace --release --locked
+
+  ui-review:
+    name: UI / Linux render and screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Linux UI and virtual-display dependencies
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install --yes
+          libasound2-dev pkg-config
+          libgl1-mesa-dri libgl1-mesa-dev
+          libxkbcommon-dev libxkbcommon-x11-0
+          libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev
+          xvfb xauth xdotool imagemagick
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master, 2026-11-15
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build real desktop application
+        working-directory: rust
+        run: cargo build --workspace --release --locked
+
+      - name: Render main grid and Settings in an isolated desktop
+        working-directory: rust
+        run: >-
+          mkdir -p "${RUNNER_TEMP}/padfire-ui-review" &&
+          xvfb-run -a -s "-screen 0 1280x800x24"
+          ./review/render-ui.sh
+          target/release/padfire
+          "${RUNNER_TEMP}/padfire-ui-review"
+
+      - name: Upload visual review evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: padfire-ui-review
+          path: ${{ runner.temp }}/padfire-ui-review/
+          if-no-files-found: warn
+          retention-days: 14
+
+  dependency-policy:
+    name: Dependencies / cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master, 2026-11-15
+        with:
+          toolchain: stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Install pinned cargo-deny
+        run: cargo install cargo-deny --locked --version 0.22.0
+
+      - name: Check dependency advisories, licenses, bans and sources
+        run: cargo deny check
+
+      - name: Fetch all locked target dependencies for license texts
+        run: cargo fetch --locked
+
+      - name: Install pinned cargo-about
+        run: cargo install cargo-about --locked --version 0.9.3 --features cli
+
+      - name: Verify bundled third-party license notice
+        run: >-
+          cargo-about generate about.hbs --workspace --all-features
+          --locked --offline --fail
+          --output-file "${RUNNER_TEMP}/THIRD_PARTY_LICENSES.html" &&
+          cmp THIRD_PARTY_LICENSES.html
+          "${RUNNER_TEMP}/THIRD_PARTY_LICENSES.html"

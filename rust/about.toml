@@ -1,0 +1,33 @@
+# Third-party attribution policy for shipped Padfire Rust binaries.
+# Keep the supported target list aligned with the release matrix and the
+# accepted SPDX license list aligned with rust/deny.toml.
+accepted = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+
+# Include runtime, build and development dependencies, including transitive
+# dependencies; this is a complete lockfile attribution report, not just the
+# direct/runtime subset.
+ignore-build-dependencies = false
+ignore-dev-dependencies = false
+ignore-transitive-dependencies = false
+
+# Use the documented upstream clarifications for these commonly used crates.
+workarounds = ["ring", "rustls"]

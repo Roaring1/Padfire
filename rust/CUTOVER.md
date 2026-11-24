@@ -55,3 +55,11 @@ Stop only the Rust process using its own PID/IPC identity, restore the legacy
 launcher/desktop entry, and launch v2.4.0 against the unchanged v5 config.
 Never use a broad process-name kill or delete a socket unless its inode/type
 and owner have been verified.
+
+
+## Third-party license notices
+
+- [x] Regenerate `rust/THIRD_PARTY_LICENSES.html` from the exact locked workspace using cargo-about 0.9.3 and verify the checked-in report with the dependency-policy CI byte-comparison step.
+- [x] Confirm Linux install places the report at `~/.local/opt/padfire-rust/THIRD_PARTY_LICENSES.html`; Windows target path and install logic are covered by hosted tests.
+- [x] Verify upgrade rollback restores a pre-existing notice, normal uninstall removes only the managed notice, and deferred Windows uninstall removes it after the executable unlocks.
+- [ ] Include the notice in signed/checksummed release artifacts and complete release provenance/signing. The report is already bundled in the side-by-side alpha and cargo-deny validates all license expressions.

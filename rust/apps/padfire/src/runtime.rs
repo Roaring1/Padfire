@@ -14,9 +14,15 @@ use padfire_platform::process_manager::{
     ProcessEngine, ProcessEvent, ProcessKind, process_ids_alive,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+#[cfg(unix)]
+use std::ffi::CString;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -199,29 +205,100 @@ impl Drop for PidFileMonitor {
     }
 }
 
-fn pid_file_process_ids(path: &str) -> Vec<u32> {
-    let path = Path::new(path);
-    let Ok(metadata) = fs::symlink_metadata(path) else {
-        return Vec::new();
-    };
-    if !metadata.file_type().is_file() || metadata.len() > PID_FILE_MAX_BYTES {
-        return Vec::new();
+fn resolve_pid_file_path(path: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return None;
     }
 
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(path)
+    };
+    let file_name = absolute.file_name()?;
+    let parent = absolute.parent()?.canonicalize().ok()?;
+    Some(parent.join(file_name))
+}
+
+#[cfg(unix)]
+fn open_pid_file_relative_to_parent(path: &Path) -> std::io::Result<fs::File> {
+    use std::io::{Error, ErrorKind};
+    use std::path::Component;
+
+    let invalid_path = || Error::new(ErrorKind::InvalidInput, "invalid PID file path");
+    let parent = path.parent().ok_or_else(invalid_path)?;
+    let file_name = path.file_name().ok_or_else(invalid_path)?;
+    // Start at the fixed filesystem root and walk one directory handle at a
+    // time. O_NOFOLLOW applies to every user-selected component, so a
+    // replacement symlink cannot redirect a later open outside the tree.
+    let mut directory = fs::File::open("/")?;
+
+    for component in parent.components() {
+        let Component::Normal(name) = component else {
+            match component {
+                Component::RootDir | Component::CurDir => continue,
+                Component::ParentDir | Component::Prefix(_) => return Err(invalid_path()),
+                Component::Normal(_) => unreachable!(),
+            }
+        };
+        let name = CString::new(name.as_bytes()).map_err(|_| invalid_path())?;
+        // SAFETY: `directory` owns a live directory descriptor and `name` is
+        // a NUL-terminated component CString that lives through the syscall.
+        let directory_fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if directory_fd < 0 {
+            return Err(Error::last_os_error());
+        }
+        // SAFETY: `openat` returned a new descriptor owned by this File.
+        directory = unsafe { fs::File::from_raw_fd(directory_fd) };
     }
+
+    let file_name = CString::new(file_name.as_bytes()).map_err(|_| invalid_path())?;
+    // The final component is opened relative to the already-open parent handle,
+    // never by re-resolving an attacker-controlled absolute path. O_NOFOLLOW
+    // rejects a final symlink; O_NONBLOCK prevents FIFO substitution hangs.
+    // SAFETY: `directory` owns a live directory descriptor and `file_name` is
+    // a NUL-terminated final path component that lives through the syscall.
+    let file_fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            file_name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        )
+    };
+    if file_fd < 0 {
+        return Err(Error::last_os_error());
+    }
+    // SAFETY: `openat` returned a new descriptor owned by the resulting File.
+    Ok(unsafe { fs::File::from_raw_fd(file_fd) })
+}
+
+fn pid_file_process_ids(path: &str) -> Vec<u32> {
+    let Some(path) = resolve_pid_file_path(Path::new(path)) else {
+        return Vec::new();
+    };
+    // Inspect the opened handle rather than statting the path first. The
+    // platform-specific no-follow/reparse-point open and handle metadata close
+    // the file-level TOCTOU window.
     #[cfg(windows)]
     {
         use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
         use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
         // Open the reparse point itself, then reject it using handle metadata.
-        let Ok(file) = options.open(path) else {
+        let Ok(file) = options.open(&path) else {
             return Vec::new();
         };
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
@@ -237,18 +314,28 @@ fn pid_file_process_ids(path: &str) -> Vec<u32> {
         read_pid_ids(file)
     }
 
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     {
-        let Ok(file) = options.open(path) else {
+        let Ok(file) = open_pid_file_relative_to_parent(&path) else {
             return Vec::new();
         };
         let Ok(opened_metadata) = file.metadata() else {
             return Vec::new();
         };
-        // This second check is performed on the opened file, closing the
-        // symlink/FIFO replacement window between metadata and open.
         if !opened_metadata.is_file() || opened_metadata.len() > PID_FILE_MAX_BYTES {
             return Vec::new();
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::MetadataExt;
+            // PID files describe this user's child processes. Do not consume
+            // a foreign-owned or hard-linked file whose contents can be
+            // modified through another filesystem name.
+            if opened_metadata.uid() != nix::unistd::Uid::current().as_raw()
+                || opened_metadata.nlink() != 1
+            {
+                return Vec::new();
+            }
         }
         read_pid_ids(file)
     }
@@ -284,6 +371,27 @@ pub enum AppCommand {
 pub struct RuntimeSignals {
     pub show_requested: bool,
     pub quit_requested: bool,
+    /// Pad notes pressed by the physical Launchpad since the last UI frame.
+    pub pressed_pads: Vec<u8>,
+}
+
+impl RuntimeSignals {
+    fn record_pad_press(&mut self, note: u8) {
+        self.pressed_pads.push(note);
+    }
+}
+
+#[cfg(test)]
+mod runtime_signal_tests {
+    use super::*;
+
+    #[test]
+    fn physical_midi_pad_press_is_queued_for_the_next_ui_frame() {
+        let mut signals = RuntimeSignals::default();
+        signals.record_pad_press(36);
+        signals.record_pad_press(37);
+        assert_eq!(signals.pressed_pads, vec![36, 37]);
+    }
 }
 
 pub struct AppRuntime {
@@ -520,6 +628,7 @@ impl AppRuntime {
             match self.midi_events.try_recv() {
                 Ok(MidiEvent::PadPressed(control)) => {
                     let note = control.note();
+                    self.signals.record_pad_press(note);
                     self.trigger_pad(config, *page, note, status);
                 }
                 Ok(MidiEvent::PadReleased(_)) => {}
@@ -1143,11 +1252,8 @@ mod preview_tests {
 
     #[test]
     fn pid_file_reports_current_process_and_ignores_invalid_entries() {
-        let path = std::env::temp_dir().join(format!(
-            "padfire-pid-file-{}-{}.txt",
-            std::process::id(),
-            Instant::now().elapsed().as_nanos()
-        ));
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("padfire-pid-file.txt");
         fs::write(&path, format!("not-a-pid 0 {}\n", std::process::id())).unwrap();
         let process_ids = pid_file_process_ids(&path.to_string_lossy());
         assert_eq!(process_ids, vec![std::process::id()]);
@@ -1156,7 +1262,7 @@ mod preview_tests {
         let process_ids = pid_file_process_ids(&path.to_string_lossy());
         assert_eq!(process_ids, vec![u32::MAX]);
         assert!(!process_ids_alive(&process_ids).contains(&u32::MAX));
-        let _ = fs::remove_file(path);
+        drop(temp);
     }
 
     #[cfg(target_os = "linux")]
@@ -1164,10 +1270,10 @@ mod preview_tests {
     fn pid_file_rejects_symlinks_and_directories() {
         use std::os::unix::fs::symlink;
 
-        let base = std::env::temp_dir().join(format!("padfire-pid-safety-{}", std::process::id()));
-        let target = base.with_extension("target");
-        let link = base.with_extension("link");
-        let directory = base.with_extension("directory");
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let link = temp.path().join("link");
+        let directory = temp.path().join("directory");
         fs::write(&target, std::process::id().to_string()).unwrap();
         symlink(&target, &link).unwrap();
         fs::create_dir(&directory).unwrap();
@@ -1178,15 +1284,81 @@ mod preview_tests {
         let _ = fs::remove_file(link);
         let _ = fs::remove_file(target);
         let _ = fs::remove_dir(directory);
+        drop(temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_file_open_walk_rejects_symlinked_parent_components() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let real_directory = temp.path().join("real-directory");
+        let symlink_directory = temp.path().join("symlink-directory");
+        fs::create_dir(&real_directory).unwrap();
+        symlink(&real_directory, &symlink_directory).unwrap();
+        let status = symlink_directory.join("status.pid");
+        fs::write(
+            real_directory.join("status.pid"),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+
+        assert!(
+            open_pid_file_relative_to_parent(&status).is_err(),
+            "descriptor-relative traversal must reject a symlinked directory component"
+        );
+
+        // The public resolver intentionally canonicalizes an existing parent
+        // symlink first; after that normalization, the descriptor walk remains
+        // anchored to the resolved real directory and the status read succeeds.
+        let resolved = resolve_pid_file_path(&status).unwrap();
+        assert_eq!(
+            pid_file_process_ids(&resolved.to_string_lossy()),
+            vec![std::process::id()]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_file_rejects_hardlinked_status_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("pid-status");
+        let linked = temp.path().join("pid-status-linked");
+        fs::write(&root, std::process::id().to_string()).unwrap();
+        fs::hard_link(&root, &linked).unwrap();
+
+        assert!(
+            pid_file_process_ids(&root.to_string_lossy()).is_empty(),
+            "hardlinked PID files must not be trusted"
+        );
+
+        let _ = fs::remove_file(root);
+        let _ = fs::remove_file(linked);
+        drop(temp);
+    }
+
+    #[test]
+    fn pid_file_resolver_rejects_parent_traversal_and_normalizes_existing_parents() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = temp.path().join("status.pid");
+        fs::write(&status, std::process::id().to_string()).unwrap();
+
+        let resolved = resolve_pid_file_path(&status).unwrap();
+        assert!(resolved.is_absolute());
+        assert_eq!(resolved, status.canonicalize().unwrap());
+
+        assert!(resolve_pid_file_path(Path::new("../outside.pid")).is_none());
+        assert!(resolve_pid_file_path(Path::new("relative/../outside.pid")).is_none());
     }
 
     #[test]
     fn pid_file_rejects_oversized_and_non_regular_paths() {
-        let path =
-            std::env::temp_dir().join(format!("padfire-pid-file-large-{}.txt", std::process::id()));
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("padfire-pid-file-large.txt");
         fs::write(&path, vec![b'1'; (PID_FILE_MAX_BYTES + 1) as usize]).unwrap();
         assert!(pid_file_process_ids(&path.to_string_lossy()).is_empty());
-        let _ = fs::remove_file(path);
+        drop(temp);
     }
 
     #[test]

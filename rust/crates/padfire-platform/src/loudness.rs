@@ -20,6 +20,7 @@ pub enum LoudnessError {
     Read(String),
     Failed(String),
     InvalidReport(String),
+    InvalidInput(String),
     Timeout,
 }
 
@@ -30,6 +31,7 @@ impl std::fmt::Display for LoudnessError {
             Self::Read(message) => write!(f, "could not read ffmpeg output: {message}"),
             Self::Failed(message) => write!(f, "ffmpeg loudness analysis failed: {message}"),
             Self::InvalidReport(message) => write!(f, "invalid loudness report: {message}"),
+            Self::InvalidInput(message) => write!(f, "loudness input file was rejected: {message}"),
             Self::Timeout => write!(f, "loudness analysis exceeded its 30-second limit"),
         }
     }
@@ -53,19 +55,18 @@ fn analyze_lufs_with_timeout(
         return Ok(None);
     }
 
+    let input_path = resolve_local_audio_file(filepath)?;
     let mut command = Command::new("ffmpeg");
     command.args([
         "-hide_banner",
         "-t",
         "120",
+        "-protocol_whitelist",
+        "file",
         "-i",
-        filepath,
-        "-filter:a",
-        "loudnorm=print_format=json",
-        "-f",
-        "null",
-        "-",
     ]);
+    command.arg(&input_path);
+    command.args(["-filter:a", "loudnorm=print_format=json", "-f", "null", "-"]);
     command.stdout(Stdio::null()).stderr(Stdio::piped());
 
     #[cfg(unix)]
@@ -136,6 +137,26 @@ fn analyze_lufs_with_timeout(
         }));
     }
     parse_loudnorm_report(&output)
+}
+
+fn resolve_local_audio_file(filepath: &str) -> Result<std::path::PathBuf, LoudnessError> {
+    if filepath.trim().is_empty() {
+        return Err(LoudnessError::InvalidInput("path is empty".to_owned()));
+    }
+
+    let candidate = std::path::Path::new(filepath);
+    let canonical = candidate.canonicalize().map_err(|error| {
+        LoudnessError::InvalidInput(format!("path could not be resolved: {error}"))
+    })?;
+    let metadata = std::fs::metadata(&canonical).map_err(|error| {
+        LoudnessError::InvalidInput(format!("could not inspect resolved file: {error}"))
+    })?;
+    if !metadata.is_file() {
+        return Err(LoudnessError::InvalidInput(
+            "resolved path is not a regular file".to_owned(),
+        ));
+    }
+    Ok(canonical)
 }
 
 fn terminate(child: &mut std::process::Child) {
@@ -213,6 +234,51 @@ mod tests {
     }
 
     #[test]
+    fn loudness_input_requires_an_existing_local_regular_file_and_returns_canonical_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let file = root.join("-selected-audio.wav");
+        std::fs::write(&file, b"bounded test fixture").unwrap();
+
+        let resolved = resolve_local_audio_file(file.to_str().unwrap()).unwrap();
+        assert!(resolved.is_absolute());
+        assert_eq!(resolved, file.canonicalize().unwrap());
+
+        assert!(matches!(
+            resolve_local_audio_file("https://example.invalid/audio.wav"),
+            Err(LoudnessError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            resolve_local_audio_file(root.to_str().unwrap()),
+            Err(LoudnessError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            resolve_local_audio_file(""),
+            Err(LoudnessError::InvalidInput(_))
+        ));
+
+        drop(temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loudness_input_resolves_symlinks_to_their_regular_file_target() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let target = root.join("audio.wav");
+        let link = root.join("selected-audio.wav");
+        std::fs::write(&target, b"fixture").unwrap();
+        symlink(&target, &link).unwrap();
+
+        let resolved = resolve_local_audio_file(link.to_str().unwrap()).unwrap();
+        assert_eq!(resolved, target.canonicalize().unwrap());
+        assert_ne!(resolved, link);
+
+        drop(temp);
+    }
+
+    #[test]
     fn target_level_suggests_unity_volume() {
         let result = parse_loudnorm_report(&report("-18.0", "-1.0"))
             .unwrap()
@@ -263,12 +329,8 @@ mod tests {
             return;
         }
 
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("padfire-lufs-{}-{nonce}.wav", std::process::id()));
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("padfire-lufs.wav");
         let generated = Command::new("ffmpeg")
             .args([
                 "-hide_banner",
@@ -288,7 +350,7 @@ mod tests {
         assert!(generated.success(), "could not generate analyzer fixture");
         let cancelled = AtomicBool::new(false);
         let result = analyze_lufs(path.to_str().unwrap(), &cancelled);
-        let _ = std::fs::remove_file(&path);
+        drop(temp);
         let result = result.unwrap().expect("sine fixture must not be silent");
         assert!(result.integrated_lufs.is_finite());
         assert!(result.true_peak_dbfs.is_finite());

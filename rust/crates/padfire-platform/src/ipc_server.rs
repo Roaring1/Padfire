@@ -40,12 +40,20 @@ mod unix_transport {
         where
             F: Fn(IpcCommand) -> String + Send + Sync + 'static,
         {
-            let path = path.into();
-            if !path.is_absolute() {
-                return Err("IPC socket path must be absolute".to_owned());
-            }
-            let parent = path.parent().ok_or("IPC socket path has no parent")?;
+            let requested_path = path.into();
+            let parent = requested_path
+                .parent()
+                .ok_or("IPC socket path has no parent")?;
+            validate_socket_parent(parent)?;
             fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            validate_socket_parent(parent)?;
+            let canonical_parent = parent
+                .canonicalize()
+                .map_err(|error| format!("could not canonicalize IPC socket directory: {error}"))?;
+            let file_name = requested_path
+                .file_name()
+                .ok_or("IPC socket path has no filename")?;
+            let path = canonical_parent.join(file_name);
 
             let stop = Arc::new(AtomicBool::new(false));
             let thread_stop = stop.clone();
@@ -116,6 +124,45 @@ mod unix_transport {
         fn drop(&mut self) {
             self.shutdown();
         }
+    }
+
+    fn validate_socket_parent(parent: &Path) -> Result<(), String> {
+        use std::path::Component;
+
+        if !parent.is_absolute() {
+            return Err("IPC socket directory must be absolute".to_owned());
+        }
+        if parent
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+        {
+            return Err(
+                "IPC socket directory must not contain parent-directory components".to_owned(),
+            );
+        }
+
+        let mut current = PathBuf::new();
+        for component in parent.components() {
+            current.push(component.as_os_str());
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) => {
+                    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                        return Err(format!(
+                            "refusing a non-directory or symlink in IPC socket path: {}",
+                            current.display()
+                        ));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => {
+                    return Err(format!(
+                        "could not inspect IPC socket path component {}: {error}",
+                        current.display()
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn bind_private_listener(path: &Path) -> Result<(UnixListener, u64, u64), String> {
@@ -303,7 +350,17 @@ mod unix_transport {
     }
 
     pub fn send(path: &Path, command: IpcCommand) -> Result<Option<String>, String> {
-        let mut stream = match UnixStream::connect(path) {
+        let parent = path.parent().ok_or("IPC socket path has no parent")?;
+        if !parent.exists() {
+            return Ok(None);
+        }
+        validate_socket_parent(parent)?;
+        let canonical_parent = parent
+            .canonicalize()
+            .map_err(|error| format!("could not canonicalize IPC socket directory: {error}"))?;
+        let file_name = path.file_name().ok_or("IPC socket path has no filename")?;
+        let path = canonical_parent.join(file_name);
+        let mut stream = match UnixStream::connect(&path) {
             Ok(stream) => stream,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return Ok(None),
@@ -354,27 +411,40 @@ mod unix_transport {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use std::sync::atomic::{AtomicU64, Ordering};
-        use std::time::SystemTime;
+        fn test_path() -> (tempfile::TempDir, PathBuf) {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("padfire-ipc.sock");
+            (directory, path)
+        }
 
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        #[test]
+        fn socket_paths_reject_relative_and_parent_traversal_directories() {
+            assert!(validate_socket_parent(Path::new("relative")).is_err());
+            let traversal_root = tempfile::tempdir().unwrap();
+            let traversal = traversal_root.path().join("..").join("var/tmp");
+            assert!(validate_socket_parent(&traversal).is_err());
+        }
 
-        fn test_path() -> PathBuf {
-            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            std::env::temp_dir().join(format!(
-                "padfire-ipc-{}-{}-{}.sock",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos(),
-                id
-            ))
+        #[cfg(unix)]
+        #[test]
+        fn socket_paths_reject_symlinked_parent_directories() {
+            use std::os::unix::fs::symlink;
+
+            let directory = tempfile::tempdir().unwrap();
+            let target = directory.path().join("target");
+            let alias = directory.path().join("alias");
+            fs::create_dir_all(&target).unwrap();
+            symlink(&target, &alias).unwrap();
+
+            assert!(validate_socket_parent(&alias).is_err());
+            assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+
+            drop(directory);
         }
 
         #[test]
         fn owner_only_socket_serves_fixed_commands_and_removes_itself_on_shutdown() {
-            let path = test_path();
+            let (_directory, path) = test_path();
             let mut server = IpcServer::spawn(&path, |command| match command {
                 IpcCommand::Status => r#"{"connected":false,"page":0}"#.to_owned(),
                 _ => "ok".to_owned(),
@@ -399,7 +469,7 @@ mod unix_transport {
 
         #[test]
         fn live_second_instance_is_refused() {
-            let path = test_path();
+            let (_directory, path) = test_path();
             let mut first = IpcServer::spawn(&path, |_| "ok".to_owned()).unwrap();
             let second = IpcServer::spawn(&path, |_| "wrong".to_owned());
             assert!(second.unwrap_err().contains("already owns"));
@@ -408,13 +478,13 @@ mod unix_transport {
 
         #[test]
         fn stale_socket_is_removed_but_non_socket_paths_are_never_unlinked() {
-            let stale = test_path();
+            let (_stale_directory, stale) = test_path();
             let _listener = UnixListener::bind(&stale).unwrap();
             drop(_listener);
             let mut server = IpcServer::spawn(&stale, |_| "ok".to_owned()).unwrap();
             server.shutdown();
 
-            let protected = test_path();
+            let (_protected_directory, protected) = test_path();
             fs::write(&protected, b"keep").unwrap();
             assert!(IpcServer::spawn(&protected, |_| "bad".to_owned()).is_err());
             assert_eq!(fs::read(&protected).unwrap(), b"keep");
@@ -423,7 +493,7 @@ mod unix_transport {
 
         #[test]
         fn incomplete_or_unknown_requests_are_not_dispatched() {
-            let path = test_path();
+            let (_directory, path) = test_path();
             let calls = Arc::new(AtomicUsize::new(0));
             let target = calls.clone();
             let mut server = IpcServer::spawn(&path, move |_| {

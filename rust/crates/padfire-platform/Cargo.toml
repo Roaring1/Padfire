@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Windows and Linux adapters for Padfire audio, MIDI, process, storage and IPC"
 
 [dependencies]
-padfire-core = { path = "../padfire-core" }
+padfire-core = { version = "3.0.0-alpha.1", path = "../padfire-core" }
 serde.workspace = true
 serde_json.workspace = true
 midir = "0.11.1"
@@ -28,3 +28,6 @@ unsafe_code = "warn"
 
 [lints.clippy]
 all = "warn"
+
+[dev-dependencies]
+tempfile = "3.27.0"

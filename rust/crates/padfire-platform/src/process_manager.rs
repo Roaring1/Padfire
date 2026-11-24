@@ -775,7 +775,7 @@ pub fn resolve_crosshair_executable() -> Option<std::path::PathBuf> {
     #[cfg(unix)]
     if let Some(home) = std::env::var_os("HOME") {
         let candidate = std::path::PathBuf::from(home).join(".local/bin").join(name);
-        if is_executable_file(&candidate) {
+        if let Some(candidate) = canonical_executable(&candidate) {
             return Some(candidate);
         }
     }
@@ -785,7 +785,7 @@ pub fn resolve_crosshair_executable() -> Option<std::path::PathBuf> {
         let candidate = std::path::PathBuf::from(local)
             .join("Programs/Crosshair")
             .join(name);
-        if candidate.is_file() {
+        if let Some(candidate) = canonical_executable(&candidate) {
             return Some(candidate);
         }
     }
@@ -795,7 +795,14 @@ pub fn resolve_crosshair_executable() -> Option<std::path::PathBuf> {
 fn find_on_path(name: &str) -> Option<std::path::PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|directory| directory.join(name))
-        .find(|candidate| is_executable_file(candidate))
+        .find_map(|candidate| canonical_executable(&candidate))
+}
+
+/// Resolve an environment-derived executable to its actual absolute target
+/// before it is handed to the process API.
+fn canonical_executable(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let canonical = path.canonicalize().ok()?;
+    is_executable_file(&canonical).then_some(canonical)
 }
 
 fn is_executable_file(path: &std::path::Path) -> bool {
@@ -1027,7 +1034,7 @@ mod winjob {
         use super::*;
         use std::fs;
         use std::process::Command;
-        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+        use std::time::{Duration, Instant};
         use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
         use windows_sys::Win32::System::Threading::{
             OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
@@ -1035,14 +1042,8 @@ mod winjob {
 
         #[test]
         fn terminating_job_terminates_a_spawned_descendant() {
-            let marker = std::env::temp_dir().join(format!(
-                "padfire-job-child-{}-{}.pid",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            ));
+            let temp = tempfile::tempdir().unwrap();
+            let marker = temp.path().join("padfire-job-child.pid");
             let marker_text = marker.to_string_lossy().replace('\'', "''");
             let script = format!(
                 "$ErrorActionPreference = 'Stop'; Start-Sleep -Milliseconds 400; $child = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile -Command Start-Sleep -Seconds 30' -PassThru -WindowStyle Hidden; [System.IO.File]::WriteAllText('{marker_text}', [string]$child.Id); Start-Sleep -Seconds 30"
@@ -1089,6 +1090,7 @@ mod winjob {
             unsafe { CloseHandle(child_process) };
             let _ = parent.wait();
             let _ = fs::remove_file(&marker);
+            drop(temp);
             assert_eq!(
                 wait, WAIT_OBJECT_0,
                 "Job Object did not terminate the descendant"
@@ -1100,6 +1102,63 @@ mod winjob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crosshair_executable_resolution_returns_only_canonical_executable_files() {
+        use std::fs;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let executable = root.join(if cfg!(windows) {
+            "crosshair.exe"
+        } else {
+            "crosshair"
+        });
+        fs::write(&executable, b"test executable").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+
+        let resolved = canonical_executable(&executable).expect("valid executable should resolve");
+        assert!(resolved.is_absolute());
+        assert_eq!(resolved, executable.canonicalize().unwrap());
+        assert!(
+            canonical_executable(root).is_none(),
+            "directories are not executables"
+        );
+
+        let non_executable = root.join("not-executable");
+        fs::write(&non_executable, b"data").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&non_executable, fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(canonical_executable(&non_executable).is_none());
+        }
+
+        drop(temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn crosshair_executable_resolution_canonicalizes_symlink_targets() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let target = root.join("actual-crosshair");
+        let link = root.join("crosshair");
+        std::fs::write(&target, b"test executable").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        let resolved = canonical_executable(&link).expect("valid symlink target should resolve");
+        assert_eq!(resolved, target.canonicalize().unwrap());
+        assert_ne!(resolved, link);
+
+        drop(temp);
+    }
 
     #[test]
     fn process_id_liveness_detects_self_and_rejects_invalid_ids() {
@@ -1414,17 +1473,9 @@ mod tests {
     fn cancelled_generation_cannot_launch_a_late_script() {
         use padfire_core::runtime::{GenerationTracker, OperationKey, OperationKind};
         use std::sync::mpsc::channel;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
         let pad = PadKey { page: 0, note: 18 };
-        let marker = std::env::temp_dir().join(format!(
-            "padfire-cancelled-script-{}-{}.txt",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("padfire-cancelled-script.txt");
         let generations = Arc::new(Mutex::new(GenerationTracker::default()));
         let key = OperationKey::new(OperationKind::Script, pad.to_key());
         let token = generations.lock().unwrap().begin(key.clone());
@@ -1440,6 +1491,7 @@ mod tests {
             "cancelled Windows script generation executed its command"
         );
         let _ = std::fs::remove_file(marker);
+        drop(temp);
     }
 
     #[cfg(unix)]
@@ -1449,17 +1501,21 @@ mod tests {
         use std::sync::mpsc::channel;
 
         let pad = PadKey { page: 0, note: 18 };
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("padfire-should-not-run");
         let generations = Arc::new(Mutex::new(GenerationTracker::default()));
         let key = OperationKey::new(OperationKind::Script, pad.to_key());
         let token = generations.lock().unwrap().begin(key.clone());
         generations.lock().unwrap().cancel(key);
         let (events_tx, events_rx) = channel();
         let mut engine = ProcessEngine::spawn(generations, events_tx).unwrap();
+        let marker_command = marker.to_string_lossy().replace('\'', r"'\''");
         engine
-            .start_script(token, pad, "touch /tmp/padfire-should-not-run", true)
+            .start_script(token, pad, format!("touch '{marker_command}'"), true)
             .unwrap();
         assert!(events_rx.recv_timeout(Duration::from_millis(350)).is_err());
         engine.shutdown();
-        assert!(!std::path::Path::new("/tmp/padfire-should-not-run").exists());
+        assert!(!marker.exists());
+        drop(temp);
     }
 }

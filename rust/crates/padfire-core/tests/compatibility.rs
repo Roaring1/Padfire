@@ -78,6 +78,124 @@ fn oversized_config_is_rejected_before_json_parsing() {
 }
 
 #[test]
+fn bounded_json_parser_matches_serde_for_escapes_unicode_numbers_and_duplicate_keys() {
+    let input = r#"{
+        "version": 5,
+        "vendor_extension": {
+            "text": "array [] object {} colon : quote \" slash \\ newline \n control \u0001 emoji \uD83D\uDE80 raw café",
+            "numbers": [0, -0, 1, -1, 1.5, 3.141592653589793, 1e300, 1E-9, 9223372036854775807, 18446744073709551615],
+            "duplicate": {"same": 1, "same": 2}
+        }
+    }"#.as_bytes();
+    let expected: serde_json::Value = serde_json::from_slice(input).unwrap();
+    let config = AppConfig::from_json(input).unwrap();
+
+    assert_eq!(
+        config.extra["vendor_extension"],
+        expected["vendor_extension"]
+    );
+}
+
+#[test]
+fn bounded_json_parser_rejects_malformed_number_and_trailing_input() {
+    for input in [
+        br#"{"version":05}"#.as_slice(),
+        br#"{"version":1.}"#.as_slice(),
+        br#"{"version":1e}"#.as_slice(),
+        br#"{"version":5} trailing"#.as_slice(),
+        br#"{"version":5,"extension":[1,]}"#.as_slice(),
+    ] {
+        assert!(AppConfig::from_json(input).is_err(), "accepted {input:?}");
+    }
+}
+
+#[test]
+fn configuration_bounds_reject_excessive_json_depth_and_node_count() {
+    let mut nested = "null".to_owned();
+    for _ in 0..65 {
+        nested = format!("[{nested}]");
+    }
+    let deep = format!(r#"{{"version":5,"vendor_extension":{nested}}}"#);
+    assert!(AppConfig::from_json(deep.as_bytes()).is_err());
+
+    let many_nodes = serde_json::json!({
+        "version": 5,
+        "vendor_extension": vec![serde_json::Value::Null; 100_001]
+    });
+    assert!(AppConfig::from_json(&serde_json::to_vec(&many_nodes).unwrap()).is_err());
+}
+
+#[test]
+fn configuration_bounds_reject_excessive_pages_and_pad_entries() {
+    let too_many_pages = serde_json::json!({
+        "version": 5,
+        "pages": vec![serde_json::json!({}); 257]
+    });
+    assert!(AppConfig::from_json(&serde_json::to_vec(&too_many_pages).unwrap()).is_err());
+
+    let mut too_many_pads = serde_json::Map::new();
+    for note in 0..129 {
+        too_many_pads.insert(note.to_string(), serde_json::json!({"action":"stop_sfx"}));
+    }
+    let too_many_pads = serde_json::json!({
+        "version": 5,
+        "pages": [serde_json::Value::Object(too_many_pads)]
+    });
+    assert!(AppConfig::from_json(&serde_json::to_vec(&too_many_pads).unwrap()).is_err());
+}
+
+#[test]
+fn configuration_bounds_reject_overlong_command_paths_and_nul_bytes() {
+    let overlong_file = serde_json::json!({
+        "version": 5,
+        "pages": [{"0": {"action":"play", "file":"x".repeat(4097)}}]
+    });
+    assert!(AppConfig::from_json(&serde_json::to_vec(&overlong_file).unwrap()).is_err());
+
+    let overlong_command = serde_json::json!({
+        "version": 5,
+        "pages": [{"0": {"action":"script", "cmd":"x".repeat(8193)}}]
+    });
+    assert!(AppConfig::from_json(&serde_json::to_vec(&overlong_command).unwrap()).is_err());
+
+    let nul_path = serde_json::json!({
+        "version": 5,
+        "pages": [{"0": {"action":"play", "file":"audio.wav\0ignored"}}]
+    });
+    assert!(AppConfig::from_json(&serde_json::to_vec(&nul_path).unwrap()).is_err());
+}
+
+#[test]
+fn configuration_bounds_keep_ordinary_extra_pages_volume_and_extension_fields() {
+    let mut page = serde_json::Map::new();
+    page.insert(
+        "17".to_owned(),
+        serde_json::json!({
+            "action":"play",
+            "file":"sound.wav",
+            "vol":999,
+            "future_pad_field":{"keep":true}
+        }),
+    );
+    let input = serde_json::json!({
+        "version":5,
+        "vendor_extension":{"keep":true},
+        "pages":[{}, {}, {}, {}, {}, {}, {}, {}, serde_json::Value::Object(page)]
+    });
+    let config = AppConfig::from_json(&serde_json::to_vec(&input).unwrap()).unwrap();
+    assert_eq!(config.pages.len(), 9);
+    assert_eq!(config.pages[8]["17"].vol, 999);
+    assert_eq!(
+        config.pages[8]["17"].extra["future_pad_field"]["keep"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        config.extra["vendor_extension"]["keep"],
+        serde_json::json!(true)
+    );
+}
+
+#[test]
 fn volume_is_not_rewritten_but_playback_volume_is_bounded() {
     let config = AppConfig::from_json(
         br#"{"version":5,"pages":[{"0":{"action":"play","file":"x.wav","vol":999}}]}"#,
