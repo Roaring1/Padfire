@@ -38,7 +38,7 @@ The active candidate is c53c3ea757f01456e80ca0a13220929e3bebe4f4, PR #22. It int
 
 Local Nobara validation:
 - Formatting: pass.
-- Workspace tests: 141 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 57 platform).
+- Workspace tests: 142 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 58 platform).
 - Strict Clippy with warnings denied: pass.
 - Optimized release build: pass.
 - cargo-deny 0.22.0: advisories, bans, licenses and sources pass.
@@ -47,6 +47,12 @@ Local Nobara validation:
 - Isolated Xvfb grid and Settings review passed. c53 captures (540x480) are saved under /home/roaring/Workspace/PadfireReview-2026-11-23/c53c3ea/.
 
 Unix PID-file opening now starts at the fixed filesystem root and walks each parent component using an open directory descriptor and openat with O_NOFOLLOW. The final component is opened relative to that verified parent descriptor with O_NOFOLLOW and O_NONBLOCK. Metadata checks remain on the opened handle. The configured path stays user-selectable; valid custom paths are preserved. The current autoclick configuration uses /run/user/1000/autoclicker/autoclick.pid, matching the live KDE runtime and /home/roaring/autoclick.sh.
+
+### Third-party dependency notice - newly integrated installer work
+
+A generated `rust/THIRD_PARTY_LICENSES.html` now records all locked Rust workspace runtime, build, development and transitive dependencies for Linux x86-64 and Windows x86-64. It contains 82 full license-text sections and 311 crate attribution links (296 distinct crate/version labels), generated offline from `Cargo.lock` by cargo-about 0.9.3 using `rust/about.toml` and `rust/about.hbs` with `--fail`. The report is 465 KB. CI installs pinned cargo-about 0.9.3, fetches the locked target graph, regenerates the report offline, and compares it byte-for-byte.
+
+The installer now embeds that HTML and manages it with the executable/integration lifecycle: Linux location `~/.local/share/licenses/padfire-rust/THIRD_PARTY_LICENSES.html`; Windows location beside `padfire-rust.exe`. Existing notice content is backed up during upgrades and restored on failure. Standard uninstall removes the notice; deferred Windows self-uninstall retries notice deletion after the running image unlocks it. Tests verify install/reinstall payload, failed-upgrade restoration, uninstall, and deferred Windows cleanup. The currently installed Nobara c53 binary predates this notice change; do not claim the new notice is installed until the new cross-platform CI passes and the refreshed binary is installed side-by-side.
 
 Hosted c53 validation:
 - PR Rust, Ubuntu and Windows, UI render, cargo-deny and GTK smoke: all passed.
@@ -71,6 +77,10 @@ Rollback binary/UI sets, each with verified SHA-256 manifests:
 The pre-change candidate configs are backed up under ~/.local/share/padfire-rust-backups/2026-11-23-pid-path-before-fix/ with a verified manifest. Rust runtime config is ~/.config/padfire-rust/padfire.json (v5, 8 pages, 21 assignments; SHA-256 5aada0eea0a6e80206a8f4f85343be1b6c3cb46ce6714830e12e4d72c7a82c60). Source/default config is ~/.config/padfire/padfire.json (SHA-256 a003c9046235f987e2fd4ac907afa4d6eb55d23641aece42dd5da25fcb67edb0). Both set the clicker PID path to /run/user/1000/autoclicker/autoclick.pid. Legacy v2.4.0 config is ~/.config/roaring/padfire.json (SHA-256 50f8e18175f88707649ace4febdab6492e8e553feb35103752a00334d22055c5); its desktop entry and launcher are unchanged.
 
 Installer lifecycle was tested in a disposable HOME/XDG environment: first install, repeat install, launcher/icon validation, stopped status, uninstall, and byte-identical preservation of an existing v5 config all passed. The installed candidate remains stopped; no Rust process or stale IPC socket exists.
+
+The actual installed Padfire Rust desktop entry was also launched with gtk-launch in a private HOME/XDG, D-Bus and Xvfb environment with hardware disabled. Status returned the expected c53 version, --quit exited cleanly and the IPC socket was removed. This exercised the desktop-file Exec/Name/icon path without opening live MIDI or audio devices.
+
+A private runtime smoke then loaded a copy of the actual Nobara Rust v5 config, redirected the copy’s PID path to a temp file, and exercised status/reload/show/quit under hardware-disabled Xvfb with no Pulse server. Status preserved page 0, monitor enabled and the pulseaudio:vm_music target. The real config hash remained unchanged and the private IPC socket was removed.
 
 Legacy startup entries were verified read-only and left untouched: ~/.config/autostart/padfire.desktop and ~/.config/systemd/user/padfire.service both predate this Rust install (October 31) and target the legacy padfire-launch v2.4.0 binary. The user systemd unit is enabled but currently inactive; the legacy launcher reports v2.4.0 not running. The Rust installer created no autostart entry or service.
 

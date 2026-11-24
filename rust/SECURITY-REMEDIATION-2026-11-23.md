@@ -45,6 +45,14 @@ After bounded parsing and schema normalization, the typed AppConfig conversion u
 - Duplicate transitive crate versions (including OS-specific Windows/macOS/Android dependencies) remain warnings for review, not suppressed or silently accepted as equivalent.
 - The Rust GitHub Actions workflow now installs pinned cargo-deny 0.22.0 and runs `cargo deny check` on each Rust push/PR. The exact c1a5232 hosted dependency-policy jobs passed on both PR and push workflows.
 
+### Third-party notice packaging
+
+A 465 KB HTML license report is generated at `rust/THIRD_PARTY_LICENSES.html` using cargo-about 0.9.3 and the exact Cargo.lock. It includes 82 full license-text sections and 311 crate attribution links for 296 distinct crate/version labels across the Linux x86-64 and Windows x86-64 release targets, including runtime/build/dev/transitive dependencies. `rust/about.toml` defines the accepted SPDX licenses to stay aligned with `rust/deny.toml`; `rust/about.hbs` supplies the readable HTML format. `--fail` ensures unrecognized license expressions stop generation.
+
+The installer embeds this report and treats it as a managed install asset. Linux installs to `~/.local/share/licenses/padfire-rust/THIRD_PARTY_LICENSES.html`; Windows installs beside `padfire-rust.exe`. Existing report bytes participate in the same backup/restore transaction as desktop integration and the executable. Uninstall removes only the app-owned notice, and deferred Windows uninstall retries removal after the running executable unlocks. Installer tests verify repeat-install, byte-exact payload, rollback restoration, ordinary uninstall, and deferred Windows cleanup. The dependency-policy CI job fetches all locked target crates, installs pinned cargo-about 0.9.3, regenerates the notice offline with `--fail`, then byte-compares the result against the checked-in HTML.
+
+The generated notice and installer integration are currently under fresh local validation; the c53 binary already installed on Nobara does not yet contain this new asset. Update the side-by-side installation only after exact-head Ubuntu/Windows CI passes.
+
 ### Process and IPC boundaries
 
 - Crosshair discovery now canonicalizes PATH and user-local candidates and returns only an absolute regular executable (and, on Unix, one with executable permission).
@@ -63,7 +71,7 @@ After bounded parsing and schema normalization, the typed AppConfig conversion u
 
 Latest local Nobara/Linux validation for c53c3ea757f01456e80ca0a13220929e3bebe4f4:
 - cargo fmt --all -- --check: pass
-- cargo test --workspace --locked: 141 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 57 platform)
+- cargo test --workspace --locked: 142 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 58 platform)
 - cargo clippy --workspace --all-targets --locked -- -D warnings: pass
 - cargo build --workspace --release --locked: pass
 - cargo deny check 0.22.0: advisories, licenses, bans and sources all passed

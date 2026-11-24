@@ -129,3 +129,17 @@ jobs:
 
       - name: Check dependency advisories, licenses, bans and sources
         run: cargo deny check
+
+      - name: Fetch all locked target dependencies for license texts
+        run: cargo fetch --locked
+
+      - name: Install pinned cargo-about
+        run: cargo install cargo-about --locked --version 0.9.3 --features cli
+
+      - name: Verify bundled third-party license notice
+        run: >-
+          cargo-about generate about.hbs --workspace --all-features
+          --locked --offline --fail
+          --output-file "${RUNNER_TEMP}/THIRD_PARTY_LICENSES.html" &&
+          cmp THIRD_PARTY_LICENSES.html
+          "${RUNNER_TEMP}/THIRD_PARTY_LICENSES.html"

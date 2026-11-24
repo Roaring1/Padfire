@@ -2,7 +2,8 @@
 //!
 //! The installer deliberately uses a distinct "Padfire Rust" identity and
 //! never touches the v2.4.0 application or user configuration. It creates a
-//! desktop/Start Menu entry only; it never registers autostart or a service.
+//! desktop/Start Menu entry and installs the third-party license notice; it
+//! never registers autostart or a service.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -15,6 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(windows)]
 static POWERSHELL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const THIRD_PARTY_LICENSES_HTML: &[u8] = include_bytes!("../../../THIRD_PARTY_LICENSES.html");
 
 #[cfg(target_os = "linux")]
 const LINUX_ICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
@@ -30,6 +33,7 @@ struct InstallPaths {
     executable: PathBuf,
     integration: PathBuf,
     icon: Option<PathBuf>,
+    license_notice: PathBuf,
 }
 
 impl InstallPaths {
@@ -61,6 +65,9 @@ impl InstallPaths {
                     home.join(".local/share")
                 }
             };
+            let license_notice = data_root
+                .join("licenses/padfire-rust")
+                .join("THIRD_PARTY_LICENSES.html");
             Ok(Self {
                 root,
                 executable,
@@ -70,6 +77,7 @@ impl InstallPaths {
                         .join("icons/hicolor/scalable/apps")
                         .join("padfire-rust.svg"),
                 ),
+                license_notice,
             })
         }
 
@@ -84,11 +92,13 @@ impl InstallPaths {
                 .map(|path| resolve_base_directory(&path, "PADFIRE_START_MENU_DIR"))
                 .transpose()?
                 .unwrap_or_else(|| app_data.join("Microsoft/Windows/Start Menu/Programs"));
+            let license_notice = root.join("THIRD_PARTY_LICENSES.html");
             Ok(Self {
                 root,
                 executable,
                 integration: start_menu.join("Padfire Rust.lnk"),
                 icon: None,
+                license_notice,
             })
         }
     }
@@ -115,6 +125,13 @@ impl InstallPaths {
                         .join("icons/hicolor/scalable/apps")
                         .join("padfire-rust.svg"),
                 )
+            },
+            license_notice: if cfg!(windows) {
+                root.join("THIRD_PARTY_LICENSES.html")
+            } else {
+                integration_root
+                    .join("licenses/padfire-rust")
+                    .join("THIRD_PARTY_LICENSES.html")
             },
         }
     }
@@ -159,6 +176,9 @@ pub fn uninstall_current() -> Result<String, String> {
         && let Some(parent) = icon.parent()
     {
         validate_directory_chain(parent, "icon integration parent")?;
+    }
+    if let Some(parent) = paths.license_notice.parent() {
+        validate_directory_chain(parent, "third-party license notice parent")?;
     }
     #[cfg(windows)]
     {
@@ -244,13 +264,19 @@ fn rollback_install_integration(
     backups: &[IntegrationBackup],
 ) -> Result<(), String> {
     let mut failures = Vec::new();
-    for path in std::iter::once(&paths.integration).chain(paths.icon.iter()) {
+    for path in std::iter::once(&paths.integration)
+        .chain(paths.icon.iter())
+        .chain(std::iter::once(&paths.license_notice))
+    {
         if let Err(error) = remove_file_if_exists(path) {
             failures.push(error);
         }
     }
     if let Err(error) = restore_integration_backups(backups) {
         failures.push(error);
+    }
+    if let Some(parent) = paths.license_notice.parent() {
+        let _ = remove_empty_directory_if_exists(parent);
     }
     if failures.is_empty() {
         Ok(())
@@ -452,13 +478,21 @@ fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
         ));
     }
     let had_root = validate_install_root(&paths.root)?;
-    for path in std::iter::once(&paths.integration).chain(paths.icon.iter()) {
+    for path in std::iter::once(&paths.integration)
+        .chain(paths.icon.iter())
+        .chain(std::iter::once(&paths.license_notice))
+    {
         if let Some(parent) = path.parent() {
             validate_directory_chain(parent, "desktop integration parent")?;
         }
     }
-    let mut backups = Vec::with_capacity(2);
-    for path in paths.icon.iter().chain(std::iter::once(&paths.integration)) {
+    let mut backups = Vec::with_capacity(3);
+    for path in paths
+        .icon
+        .iter()
+        .chain(std::iter::once(&paths.integration))
+        .chain(std::iter::once(&paths.license_notice))
+    {
         match backup_existing_integration(path) {
             Ok(Some(backup)) => backups.push(backup),
             Ok(None) => {}
@@ -499,6 +533,14 @@ fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
         return Err(error_with_rollback(error, rollback));
     }
 
+    if let Err(error) = write_atomic(&paths.license_notice, THIRD_PARTY_LICENSES_HTML) {
+        let rollback = rollback_install_integration(paths, &backups);
+        if !had_root {
+            let _ = remove_empty_directory_if_exists(&paths.root);
+        }
+        return Err(error_with_rollback(error, rollback));
+    }
+
     if let Err(error) = copy_executable(source, &paths.executable) {
         let rollback = rollback_install_integration(paths, &backups);
         if !had_root {
@@ -532,9 +574,16 @@ fn uninstall_from(paths: &InstallPaths) -> Result<(), String> {
     {
         validate_directory_chain(parent, "icon integration parent")?;
     }
+    if let Some(parent) = paths.license_notice.parent() {
+        validate_directory_chain(parent, "third-party license notice parent")?;
+    }
     remove_file_if_exists(&paths.integration)?;
     if let Some(icon) = &paths.icon {
         remove_file_if_exists(icon)?;
+    }
+    remove_file_if_exists(&paths.license_notice)?;
+    if let Some(parent) = paths.license_notice.parent() {
+        let _ = remove_empty_directory_if_exists(parent);
     }
     remove_file_if_exists(&paths.executable)?;
     remove_empty_directory_if_exists(&paths.root)?;
@@ -569,7 +618,7 @@ fn copy_executable(source: &Path, destination: &Path) -> Result<(), String> {
             fs::set_permissions(&temporary, fs::Permissions::from_mode(0o755))?;
         }
         #[cfg(windows)]
-        replace_windows_executable(&temporary, destination)?;
+        replace_windows_file(&temporary, destination)?;
         #[cfg(not(windows))]
         fs::rename(&temporary, destination)?;
         sync_directory(parent)?;
@@ -584,7 +633,7 @@ fn copy_executable(source: &Path, destination: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 #[allow(unsafe_code)]
-fn replace_windows_executable(source: &Path, destination: &Path) -> io::Result<()> {
+fn replace_windows_file(source: &Path, destination: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
@@ -600,10 +649,10 @@ fn replace_windows_executable(source: &Path, destination: &Path) -> io::Result<(
         .encode_wide()
         .chain(Some(0))
         .collect::<Vec<_>>();
-    // The staged binary has already been sync_all'd. This same-volume move
-    // atomically replaces an older candidate and requests write-through. If
-    // the old executable is locked without delete sharing, Windows rejects
-    // the replacement and the old file remains intact.
+    // The staged file has already been sync_all'd. This same-volume move
+    // atomically replaces the previous managed asset and requests write-through.
+    // If its destination is locked without delete sharing, the previous file
+    // remains intact and the caller can roll back other staged integration.
     let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
     // SAFETY: both arguments are valid, NUL-terminated UTF-16 paths.
     if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
@@ -613,7 +662,6 @@ fn replace_windows_executable(source: &Path, destination: &Path) -> io::Result<(
     }
 }
 
-#[cfg(target_os = "linux")]
 fn write_atomic(destination: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = destination
         .parent()
@@ -631,6 +679,9 @@ fn write_atomic(destination: &Path, bytes: &[u8]) -> Result<(), String> {
         file.write_all(bytes)?;
         file.flush()?;
         file.sync_all()?;
+        #[cfg(windows)]
+        replace_windows_file(&temporary, destination)?;
+        #[cfg(not(windows))]
         fs::rename(&temporary, destination)?;
         sync_directory(parent)?;
         Ok(())
@@ -802,15 +853,18 @@ fn schedule_windows_uninstall(root: &Path) -> Result<PathBuf, String> {
     let log_path = reserve_windows_uninstall_log()?;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let executable = root.join("padfire-rust.exe");
+    let license_notice = root.join("THIRD_PARTY_LICENSES.html");
     let script = format!(
         "$ErrorActionPreference = 'SilentlyContinue'\n\
          $root = '{}'\n\
          $exe = '{}'\n\
+         $license = '{}'\n\
          $log = '{}'\n\
          [System.IO.File]::WriteAllText($log, 'started' + [Environment]::NewLine)\n\
          for ($attempt = 0; $attempt -lt 30; $attempt++) {{\n\
            try {{ [System.IO.File]::Delete($exe) }} catch {{ [System.IO.File]::AppendAllText($log, $_.Exception.ToString() + [Environment]::NewLine) }}\n\
-           if (-not (Test-Path -LiteralPath $exe)) {{\n\
+           try {{ [System.IO.File]::Delete($license) }} catch {{ [System.IO.File]::AppendAllText($log, $_.Exception.ToString() + [Environment]::NewLine) }}\n\
+           if (-not (Test-Path -LiteralPath $exe) -and -not (Test-Path -LiteralPath $license)) {{\n\
              try {{ [System.IO.Directory]::Delete($root, $false) }} catch {{ [System.IO.File]::AppendAllText($log, ('preserved non-empty install root: ' + $_.Exception.ToString()) + [Environment]::NewLine) }}\n\
            }}\n\
            if (-not (Test-Path -LiteralPath $root)) {{ break }}\n\
@@ -820,6 +874,7 @@ fn schedule_windows_uninstall(root: &Path) -> Result<PathBuf, String> {
          Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue\n",
         powershell_quote(root),
         powershell_quote(&executable),
+        powershell_quote(&license_notice),
         powershell_quote(&log_path),
     );
     let script_path = match write_powershell_temp(&script) {
@@ -1161,16 +1216,26 @@ mod tests {
         install_from(&source, &paths).unwrap();
         assert!(paths.executable.is_file());
         assert!(paths.integration.is_file());
+        assert!(paths.license_notice.is_file());
+        assert_eq!(
+            fs::read(&paths.license_notice).unwrap(),
+            THIRD_PARTY_LICENSES_HTML
+        );
         if let Some(icon) = &paths.icon {
             assert!(icon.is_file());
         }
 
         install_from(&source, &paths).unwrap();
         assert!(paths.executable.is_file());
+        assert_eq!(
+            fs::read(&paths.license_notice).unwrap(),
+            THIRD_PARTY_LICENSES_HTML
+        );
 
         uninstall_from(&paths).unwrap();
         assert!(!paths.root.exists());
         assert!(!paths.integration.exists());
+        assert!(!paths.license_notice.exists());
         if let Some(icon) = &paths.icon {
             assert!(!icon.exists());
         }
@@ -1183,12 +1248,39 @@ mod tests {
     }
 
     #[test]
+    fn failed_executable_publication_restores_previous_license_notice() {
+        let (root, _temp) = temp_root();
+        let integration_root = root.with_extension("license-rollback-integration");
+        let paths = InstallPaths::for_test(&root, &integration_root);
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(paths.license_notice.parent().unwrap()).unwrap();
+        fs::write(&paths.license_notice, b"previous third-party notice").unwrap();
+        fs::create_dir_all(&paths.executable).unwrap();
+        let source = std::env::current_exe().unwrap();
+
+        assert!(install_from(&source, &paths).is_err());
+        assert_eq!(
+            fs::read(&paths.license_notice).unwrap(),
+            b"previous third-party notice"
+        );
+        assert!(!paths.integration.exists());
+        if let Some(icon) = &paths.icon {
+            assert!(!icon.exists());
+        }
+
+        let _ = fs::remove_dir_all(&paths.root);
+        let _ = fs::remove_dir_all(integration_root);
+    }
+
+    #[test]
     fn uninstall_removes_only_padfire_files_and_preserves_unrelated_install_data() {
         let (root, _temp) = temp_root();
         let integration_root = root.with_extension("uninstall-safe-integration");
         let paths = InstallPaths::for_test(&root, &integration_root);
         fs::create_dir_all(&paths.root).unwrap();
         fs::write(&paths.executable, b"installed executable").unwrap();
+        fs::create_dir_all(paths.license_notice.parent().unwrap()).unwrap();
+        fs::write(&paths.license_notice, b"Padfire third-party licenses").unwrap();
         fs::write(paths.root.join("user-notes.txt"), b"keep this file").unwrap();
         fs::create_dir_all(paths.integration.parent().unwrap()).unwrap();
         fs::write(&paths.integration, b"Padfire desktop entry").unwrap();
@@ -1205,6 +1297,7 @@ mod tests {
         );
         assert!(!paths.executable.exists());
         assert!(!paths.integration.exists());
+        assert!(!paths.license_notice.exists());
         if let Some(icon) = &paths.icon {
             assert!(!icon.exists());
         }
@@ -1425,8 +1518,10 @@ mod tests {
         let source = std::env::current_exe().unwrap();
         install_from(&source, &paths).unwrap();
         assert!(paths.integration.is_file());
+        assert!(paths.license_notice.is_file());
         uninstall_from(&paths).unwrap();
         assert!(!paths.integration.exists());
+        assert!(!paths.license_notice.exists());
         let _ = fs::remove_dir_all(start_menu);
     }
 
@@ -1446,6 +1541,11 @@ mod tests {
         fs::write(
             &locked_file,
             b"hold the executable open without delete sharing",
+        )
+        .unwrap();
+        fs::write(
+            root.join("THIRD_PARTY_LICENSES.html"),
+            b"third-party licenses",
         )
         .unwrap();
         fs::create_dir_all(&config).unwrap();
@@ -1503,5 +1603,6 @@ mod tests {
         );
         assert_eq!(config_contents, b"user config");
         assert_eq!(sibling_log_contents, b"preserve this unrelated file");
+        assert!(!root.join("THIRD_PARTY_LICENSES.html").exists());
     }
 }
