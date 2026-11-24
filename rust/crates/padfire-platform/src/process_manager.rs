@@ -772,14 +772,9 @@ pub fn resolve_crosshair_executable() -> Option<std::path::PathBuf> {
         return Some(path);
     }
 
-    #[cfg(unix)]
-    if let Some(home) = std::env::var_os("HOME") {
-        let candidate = std::path::PathBuf::from(home).join(".local/bin").join(name);
-        if let Some(candidate) = canonical_executable(&candidate) {
-            return Some(candidate);
-        }
-    }
-
+    // Unix user-local installs are expected to be exposed through PATH. Avoid
+    // a second HOME-derived executable path, which would introduce an
+    // independent environment-controlled input to filesystem and process APIs.
     #[cfg(windows)]
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         let candidate = std::path::PathBuf::from(local)

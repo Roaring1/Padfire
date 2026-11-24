@@ -1,23 +1,16 @@
-use std::fs;
-use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 struct IsolatedConfig {
-    root: PathBuf,
+    root: tempfile::TempDir,
 }
 
 impl IsolatedConfig {
     fn new(label: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "padfire-cli-{label}-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).expect("create isolated CLI test directory");
+        let prefix = format!("padfire-cli-{label}-");
+        let root = tempfile::Builder::new()
+            .prefix(&prefix)
+            .tempdir()
+            .expect("create isolated CLI test directory");
         Self { root }
     }
 
@@ -28,18 +21,18 @@ impl IsolatedConfig {
         #[cfg(target_os = "linux")]
         {
             command
-                .env("HOME", &self.root)
-                .env("XDG_CONFIG_HOME", self.root.join("xdg-config"))
-                .env("XDG_DATA_HOME", self.root.join("xdg-data"))
-                .env("XDG_RUNTIME_DIR", self.root.join("xdg-runtime"));
+                .env("HOME", self.root.path())
+                .env("XDG_CONFIG_HOME", self.root.path().join("xdg-config"))
+                .env("XDG_DATA_HOME", self.root.path().join("xdg-data"))
+                .env("XDG_RUNTIME_DIR", self.root.path());
         }
 
         #[cfg(windows)]
         {
             command
-                .env("APPDATA", self.root.join("AppData"))
-                .env("LOCALAPPDATA", self.root.join("LocalAppData"))
-                .env("USERPROFILE", &self.root);
+                .env("APPDATA", self.root.path().join("AppData"))
+                .env("LOCALAPPDATA", self.root.path().join("LocalAppData"))
+                .env("USERPROFILE", self.root.path());
         }
 
         command
@@ -49,12 +42,6 @@ impl IsolatedConfig {
         self.command(args)
             .output()
             .expect("run isolated Padfire CLI")
-    }
-}
-
-impl Drop for IsolatedConfig {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 

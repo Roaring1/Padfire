@@ -113,11 +113,22 @@ Rust runtime config remains v5 at `~/.config/padfire-rust/padfire.json` (SHA-256
 
 The old Oct 31 legacy autostart desktop and systemd user unit remain untouched; both target the v2.4.0 launcher. No Rust autostart entry or service was created. Physical Launchpad/LPD8, visible KDE/Windows tray, real PipeWire/WASAPI playback/monitor/VU, dual-machine acceptance and release signing/provenance remain manual production gates. No live MIDI port, Carla session or PipeWire route was opened/changed during this update.
 
+## Post-merge CodeQL reconciliation - 2026-11-24
+
+PR #22 was merged into `main` as `986cc14946392150578fae97a9cd865864eaea39`. The first fresh main-branch CodeQL analysis completed successfully and reduced the old 104-alert inventory to four current findings on that merge commit:
+
+- Alert #16, critical `rust/command-line-injection`, at `process_manager.rs:475`. The reported source was the explicit Unix `HOME/.local/bin/crosshair` fallback at line 776. The sink is `Command::new(&executable)`; the selected path is canonicalized, and the only argument is the fixed literal `--toggle`. It does not pass through a shell.
+- Alerts #115 and #57, high `rust/path-injection`, at `process_manager.rs:812-813`. Both came from that same HOME-derived candidate and were limited to regular-file and executable-permission metadata checks before process launch.
+- Alert #75, high `rust/path-injection`, at `apps/padfire/tests/cli.rs:20`. The test helper constructed a directory from `std::env::temp_dir()` and passed it to `create_dir_all`.
+
+These findings were reviewed individually rather than bulk-dismissed. The source changes remove the redundant Unix HOME fallback (the supervised user-session PATH is verified to include `~/.local/bin`) and use the existing canonicalized PATH lookup, retaining Windows' LOCALAPPDATA fallback. The CLI tests now use `tempfile::TempDir` for exclusive temporary-directory creation and automatic cleanup. No alert was dismissed to obtain the reduced count.
+
+Local verification of this follow-up: `cargo fmt --all -- --check`, the full 144-test workspace suite, strict Clippy with `-D warnings`, optimized release build, and `git diff --check` all pass. The follow-up must be pushed and receive a fresh main CodeQL scan before issue #21 can be closed; do not treat the merge-commit scan as confirmation of the subsequent code change.
+
 ## Remaining acceptance
 
-1. Keep PR #22 open for final review; c53 explicit CodeQL analysis and the changed-file CodeQL policy check pass with no new alerts. The older #185 instance remains historical and was not dismissed.
-2. Continue individual source-to-sink triage of the separate 104-alert main baseline. Do not bulk-dismiss findings; issue #21 remains open.
-3. Continue reviewing user-authored shell scripts and PATH-selected Crosshair execution against their documented trust boundaries.
-4. Review cargo-deny duplicate-version warnings and add signing/release provenance checks; dependency/license/advisory policy is configured and passing.
-5. Complete physical Launchpad MK1/MK2, KDE Wayland/PipeWire loopback, Windows WASAPI, UI/tray/input, side-by-side install/uninstall, config migration and rollback acceptance before production cutover.
-6. Keep v2.4.0 as production until all gates in CUTOVER.md pass.
+1. Verify the fresh main CodeQL scan after the 2026-11-24 follow-up and confirm each affected alert is fixed; keep issue #21 open until then.
+2. Continue reviewing user-authored shell-script execution against the documented same-user trust boundary.
+3. Review cargo-deny duplicate-version warnings and add signing/release provenance checks; dependency/license/advisory policy is configured and passing.
+4. Complete physical Launchpad MK1/MK2 input/LED/reconnect, KDE Wayland/PipeWire playback and loopback, Windows WASAPI, visible UI/tray, install/uninstall, config migration and rollback acceptance before production release.
+5. Keep v2.4.0 as the rollback until all gates in CUTOVER.md pass.
