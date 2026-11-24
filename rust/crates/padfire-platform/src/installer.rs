@@ -563,13 +563,6 @@ fn install_from_file(
     Ok(())
 }
 
-#[cfg(test)]
-fn install_from(source_path: &Path, paths: &InstallPaths) -> Result<(), String> {
-    let source = File::open(source_path)
-        .map_err(|error| format!("could not open test executable source: {error}"))?;
-    install_from_file(source_path, &source, paths)
-}
-
 fn uninstall_from(paths: &InstallPaths) -> Result<(), String> {
     // Refuse symlink/reparse-point install and integration roots before
     // touching any files. Remove only the files Padfire owns; custom user
@@ -635,13 +628,6 @@ fn copy_executable(source_path: &Path, source: &File, destination: &Path) -> Res
         return Err(format!("could not install Padfire executable: {error}"));
     }
     Ok(())
-}
-
-#[cfg(test)]
-fn copy_executable_from_path(source_path: &Path, destination: &Path) -> Result<(), String> {
-    let source = File::open(source_path)
-        .map_err(|error| format!("could not open test executable source: {error}"))?;
-    copy_executable(source_path, &source, destination)
 }
 
 #[cfg(windows)]
@@ -1016,6 +1002,20 @@ mod tests {
         (path, directory)
     }
 
+    fn running_executable_source() -> (PathBuf, File) {
+        let source_path = std::env::current_exe().unwrap();
+        let source = open_running_executable(&source_path).unwrap();
+        (source_path, source)
+    }
+
+    fn running_executable_bytes() -> Vec<u8> {
+        use std::io::Read;
+        let (mut _source_path, mut source) = running_executable_source();
+        let mut bytes = Vec::new();
+        source.read_to_end(&mut bytes).unwrap();
+        bytes
+    }
+
     #[cfg(windows)]
     #[test]
     fn exclusive_temp_file_collision_preserves_the_existing_owner_file() {
@@ -1167,14 +1167,14 @@ mod tests {
     fn copy_executable_replaces_an_existing_candidate_without_temp_leaks() {
         let (root, _temp) = temp_root();
         fs::create_dir_all(&root).unwrap();
-        let source = root.join("source.bin");
+        let (source_path, source) = running_executable_source();
+        let expected = running_executable_bytes();
         let destination = root.join("padfire-rust");
-        fs::write(&source, b"new executable contents").unwrap();
         fs::write(&destination, b"old executable contents").unwrap();
 
-        copy_executable_from_path(&source, &destination).unwrap();
+        copy_executable(&source_path, &source, &destination).unwrap();
 
-        assert_eq!(fs::read(&destination).unwrap(), b"new executable contents");
+        assert_eq!(fs::read(&destination).unwrap(), expected);
         let leftovers = fs::read_dir(&root)
             .unwrap()
             .filter_map(Result::ok)
@@ -1195,9 +1195,9 @@ mod tests {
 
         let (root, _temp) = temp_root();
         fs::create_dir_all(&root).unwrap();
-        let source = root.join("source.bin");
+        let (source_path, source) = running_executable_source();
+        let expected = running_executable_bytes();
         let destination = root.join("padfire-rust.exe");
-        fs::write(&source, b"new executable contents").unwrap();
         fs::write(&destination, b"old executable contents").unwrap();
 
         // Deliberately deny FILE_SHARE_DELETE so the candidate cannot be
@@ -1207,12 +1207,12 @@ mod tests {
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
             .open(&destination)
             .unwrap();
-        assert!(copy_executable_from_path(&source, &destination).is_err());
+        assert!(copy_executable(&source_path, &source, &destination).is_err());
         assert_eq!(fs::read(&destination).unwrap(), b"old executable contents");
         drop(locked);
 
-        copy_executable_from_path(&source, &destination).unwrap();
-        assert_eq!(fs::read(&destination).unwrap(), b"new executable contents");
+        copy_executable(&source_path, &source, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), expected);
         let leftovers = fs::read_dir(&root)
             .unwrap()
             .filter_map(Result::ok)
@@ -1230,12 +1230,12 @@ mod tests {
         let (root, _temp) = temp_root();
         let integration_root = root.with_extension("integration");
         let paths = InstallPaths::for_test(&root, &integration_root);
-        let source = std::env::current_exe().unwrap();
+        let (source_path, source) = running_executable_source();
         let user_config = root.with_extension("config");
         fs::create_dir_all(&user_config).unwrap();
         fs::write(user_config.join("padfire.json"), b"user config").unwrap();
 
-        install_from(&source, &paths).unwrap();
+        install_from_file(&source_path, &source, &paths).unwrap();
         assert!(paths.executable.is_file());
         assert!(paths.integration.is_file());
         assert!(paths.license_notice.is_file());
@@ -1247,7 +1247,7 @@ mod tests {
             assert!(icon.is_file());
         }
 
-        install_from(&source, &paths).unwrap();
+        install_from_file(&source_path, &source, &paths).unwrap();
         assert!(paths.executable.is_file());
         assert_eq!(
             fs::read(&paths.license_notice).unwrap(),
@@ -1278,9 +1278,9 @@ mod tests {
         fs::create_dir_all(paths.license_notice.parent().unwrap()).unwrap();
         fs::write(&paths.license_notice, b"previous third-party notice").unwrap();
         fs::create_dir_all(&paths.executable).unwrap();
-        let source = std::env::current_exe().unwrap();
+        let (source_path, source) = running_executable_source();
 
-        assert!(install_from(&source, &paths).is_err());
+        assert!(install_from_file(&source_path, &source, &paths).is_err());
         assert_eq!(
             fs::read(&paths.license_notice).unwrap(),
             b"previous third-party notice"
@@ -1376,9 +1376,9 @@ mod tests {
         fs::create_dir_all(&target).unwrap();
         symlink(&target, &root).unwrap();
         let paths = InstallPaths::for_test(&root, &integration_root);
-        let source = std::env::current_exe().unwrap();
+        let (source_path, source) = running_executable_source();
 
-        let result = install_from(&source, &paths);
+        let result = install_from_file(&source_path, &source, &paths);
         assert!(result.is_err(), "installer followed a symlink install root");
         assert!(!paths.integration.exists());
         assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
@@ -1392,7 +1392,7 @@ mod tests {
         let (root, _temp) = temp_root();
         let integration_root = root.with_extension("copy-failure-integration");
         let paths = InstallPaths::for_test(&root, &integration_root);
-        let source = std::env::current_exe().unwrap();
+        let (source_path, source) = running_executable_source();
         fs::create_dir_all(&paths.executable).unwrap();
         fs::write(
             paths.executable.join("keep.txt"),
@@ -1400,7 +1400,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = install_from(&source, &paths);
+        let result = install_from_file(&source_path, &source, &paths);
         assert!(
             result.is_err(),
             "copy into a non-directory install root unexpectedly succeeded"
@@ -1426,7 +1426,7 @@ mod tests {
         let (root, _temp) = temp_root();
         let integration_root = root.with_extension("preserve-integration");
         let paths = InstallPaths::for_test(&root, &integration_root);
-        let source = std::env::current_exe().unwrap();
+        let (source_path, source) = running_executable_source();
         let original_integration = b"custom user desktop integration";
         let original_icon = b"custom user icon";
         fs::create_dir_all(paths.integration.parent().unwrap()).unwrap();
@@ -1444,7 +1444,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = install_from(&source, &paths);
+        let result = install_from_file(&source_path, &source, &paths);
         assert!(
             result.is_err(),
             "copy into a blocked install root unexpectedly succeeded"
@@ -1487,10 +1487,10 @@ mod tests {
         let (root, _temp) = temp_root();
         let integration_root = root.with_extension("integration");
         let paths = InstallPaths::for_test(&root, &integration_root);
-        let source = std::env::current_exe().unwrap();
+        let (source_path, source) = running_executable_source();
         fs::write(&integration_root, b"block the integration parent path").unwrap();
 
-        let result = install_from(&source, &paths);
+        let result = install_from_file(&source_path, &source, &paths);
         assert!(result.is_err());
         assert!(
             !paths.executable.exists(),
@@ -1528,8 +1528,8 @@ mod tests {
         );
 
         let paths = InstallPaths::for_test(&root, &integration_root);
-        let source = std::env::current_exe().unwrap();
-        let result = install_from(&source, &paths);
+        let (source_path, source) = running_executable_source();
+        let result = install_from_file(&source_path, &source, &paths);
         assert!(
             result.is_err(),
             "installer followed a reparse-point install root"
@@ -1548,8 +1548,8 @@ mod tests {
         let (root, _temp) = temp_root();
         let start_menu = root.with_extension("start-menu");
         let paths = InstallPaths::for_test(&root, &start_menu);
-        let source = std::env::current_exe().unwrap();
-        install_from(&source, &paths).unwrap();
+        let (source_path, source) = running_executable_source();
+        install_from_file(&source_path, &source, &paths).unwrap();
         assert!(paths.integration.is_file());
         assert!(paths.license_notice.is_file());
         uninstall_from(&paths).unwrap();
