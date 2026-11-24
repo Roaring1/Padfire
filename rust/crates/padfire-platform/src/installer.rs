@@ -1,9 +1,8 @@
-//! Side-by-side per-user installation for the Rust candidate.
+//! Per-user installation for the native Padfire application.
 //!
-//! The installer deliberately uses a distinct "Padfire Rust" identity and
-//! never touches the v2.4.0 application or user configuration. It creates a
-//! desktop/Start Menu entry and installs the third-party license notice; it
-//! never registers autostart or a service.
+//! Padfire is now the single supported Rust application. The installer
+//! creates the desktop/Start Menu entry and installs the third-party license
+//! notice; it preserves user configuration and does not manage services.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
@@ -69,11 +68,11 @@ impl InstallPaths {
             Ok(Self {
                 root,
                 executable,
-                integration: data_root.join("applications").join("padfire-rust.desktop"),
+                integration: data_root.join("applications").join("padfire.desktop"),
                 icon: Some(
                     data_root
                         .join("icons/hicolor/scalable/apps")
-                        .join("padfire-rust.svg"),
+                        .join("padfire.svg"),
                 ),
                 license_notice,
             })
@@ -94,7 +93,7 @@ impl InstallPaths {
             Ok(Self {
                 root,
                 executable,
-                integration: start_menu.join("Padfire Rust.lnk"),
+                integration: start_menu.join("Padfire.lnk"),
                 icon: None,
                 license_notice,
             })
@@ -111,9 +110,9 @@ impl InstallPaths {
                 "padfire-rust"
             }),
             integration: if cfg!(windows) {
-                integration_root.join("Padfire Rust.lnk")
+                integration_root.join("Padfire.lnk")
             } else {
-                integration_root.join("applications/padfire-rust.desktop")
+                integration_root.join("applications/padfire.desktop")
             },
             icon: if cfg!(windows) {
                 None
@@ -121,7 +120,7 @@ impl InstallPaths {
                 Some(
                     integration_root
                         .join("icons/hicolor/scalable/apps")
-                        .join("padfire-rust.svg"),
+                        .join("padfire.svg"),
                 )
             },
             license_notice: root.join("THIRD_PARTY_LICENSES.html"),
@@ -146,7 +145,7 @@ fn default_install_root() -> Result<PathBuf, String> {
                 "LOCALAPPDATA is not set; cannot locate the per-user install directory".to_owned()
             })?;
         let local = resolve_base_directory(&local, "LOCALAPPDATA")?;
-        Ok(local.join("Programs/Padfire Rust"))
+        Ok(local.join("Programs/Padfire"))
     }
 }
 
@@ -195,14 +194,14 @@ pub fn uninstall_current() -> Result<String, String> {
             remove_file_if_exists(&paths.integration)?;
             let log_path = schedule_windows_uninstall(&paths.root)?;
             return Ok(format!(
-                "Padfire Rust uninstall scheduled; user configuration was preserved; diagnostics: {}",
+                "Padfire uninstall scheduled; user configuration was preserved; diagnostics: {}",
                 log_path.display()
             ));
         }
     }
 
     uninstall_from(&paths)?;
-    Ok("Padfire Rust removed; user configuration was preserved".to_owned())
+    Ok("Padfire removed; user configuration was preserved".to_owned())
 }
 
 #[derive(Debug)]
@@ -772,10 +771,10 @@ fn desktop_entry(executable: &Path) -> String {
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=Padfire Rust\n\
-         Comment=Padfire Rust candidate\n\
+         Name=Padfire\n\
+         Comment=Native Launchpad soundboard and macro controller\n\
          Exec=\"{escaped}\"\n\
-         Icon=padfire-rust\n\
+         Icon=padfire\n\
          Terminal=false\n\
          Categories=AudioVideo;Audio;\n\
          StartupNotify=true\n"
@@ -794,7 +793,7 @@ fn create_windows_shortcut(
          $shortcut = $shell.CreateShortcut('{}')\n\
          $shortcut.TargetPath = '{}'\n\
          $shortcut.WorkingDirectory = '{}'\n\
-         $shortcut.Description = 'Padfire Rust'\n\
+         $shortcut.Description = 'Padfire'\n\
          $shortcut.Save()\n",
         powershell_quote(shortcut),
         powershell_quote(executable),
@@ -908,7 +907,7 @@ fn schedule_windows_uninstall(root: &Path) -> Result<PathBuf, String> {
         Err(error) => {
             let _ = fs::remove_file(&script_path);
             let _ = fs::remove_file(&log_path);
-            Err(format!("could not schedule Padfire Rust removal: {error}"))
+            Err(format!("could not schedule Padfire removal: {error}"))
         }
     }
 }

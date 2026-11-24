@@ -1,5 +1,7 @@
 # Padfire Rust security remediation - 2026-11-23
 
+> Historical, chronological remediation record. Earlier checkpoint sections describe the state at their dates and are not the current deployment instructions. The current state is: Rust 3.0.0-alpha.1 only, main at ee5bd48486b5e3775edd21c4a5acd1009b63d150, all automated workflows green, and zero open main CodeQL alerts. See the repository README and rust/HANDOFF.md for the current deployment.
+
 ## Status and boundaries
 
 This is the integrated Rust security + Launchpad UI candidate branch based on main. It is not a release and it does not change the installed Padfire v2.4.0 GTK application, its config, audio routing, service state, or Launchpad integration. The reviewed UI commits formerly in draft PR #20 were cherry-picked onto PR #22; PR #20 is now closed as superseded. Keep v2.4.0 as the production fallback until the Rust candidate completes its separate security, hardware and install/uninstall acceptance.

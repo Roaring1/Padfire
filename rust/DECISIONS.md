@@ -29,13 +29,13 @@ different native GUI implementations, because behavior would drift.
 
 ## ADR-002 - Keep the existing JSON config schema during the port
 
-**Decision:** Read/write v5 at first. Preserve unrecognized root and pad
-properties. Only remove the two retired keys that v2.4.0 already removes:
-root device and per-pad mode.
+**Decision:** Read/write v5 and preserve unrecognized root and pad properties.
+The Rust app performs a guarded one-time import from the historical
+~/.config/roaring/padfire.json location only when no Rust config exists.
 
-**Why:** This permits safe rollback to v2.4.0 and allows the old and new builds
-to coexist during acceptance. A future schema change requires an explicit
-migration, backup and rollback test.
+**Why:** Retiring the GTK/Python executable does not justify discarding user
+pad assignments or breaking existing v5 configurations. A future schema
+change requires an explicit migration and backup test.
 
 ## ADR-003 - Treat hardware as capability-scoped profiles
 
@@ -79,19 +79,22 @@ JSON status shape and CLI exit behavior. Linux uses an owner-only Unix socket.
 Windows uses a current-user-only named pipe. Both have bounded requests,
 bounded clients, deadlines, one-instance ownership and no network listener.
 
-## ADR-007 - Manual start and no hidden background service
+## ADR-007 - User-session lifecycle
 
-**Decision:** A normal launch runs the GUI/application; closing/quit stops
-audio, MIDI, VU capture and children. Installing desktop integration does not
-create autostart. An optional user service may be installed but is never
-enabled by default.
+**Decision:** A normal launch runs the native GUI/application; explicit quit
+stops audio, MIDI, VU capture and child processes. On the Nobara deployment,
+a user-scoped systemd unit starts Padfire with graphical-session.target and
+runs with the logged-in user. It is not a system/root service.
 
-## ADR-008 - Prove behavior before retiring the legacy implementation
+## ADR-008 - Retire the legacy GTK/Python application
 
-**Decision:** Keep v2.4.0 and the unmerged Windows implementation as reference
-until every subsystem has unit parity, cross-platform build/CI, GUI tests and
-physical-device acceptance. The Rust app is not installed over either
-production app during development.
+**Status:** Accepted; retirement completed 2026-11-24.
+
+**Decision:** Keep historical v2.4.0 source recoverable through Git history,
+but remove the GTK/Python runtime, launchers, packaging, tests and separate CI
+workflow from the default branch and workstation. The native Rust workspace is
+the only current implementation and installation. Preserve compatible v5
+configuration parsing/migration; do not keep a second executable installed.
 
 ## ADR-009 - Model application actions as typed intent, not UI callbacks
 
@@ -100,3 +103,15 @@ one state owner. UI code does not call audio/MIDI/process APIs directly.
 
 **Why:** This makes event ordering, Stop races, page-change behavior and
 multi-input operation deterministic and unit-testable.
+
+
+## ADR-010 - One Padfire desktop identity
+
+**Decision:** The Rust executable remains named padfire-rust internally, but
+its user-facing desktop and Start Menu identity is simply Padfire. The
+Nobara workstation uses one user-scoped padfire-rust.service unit. Do not
+create a duplicate legacy GTK entry or startup unit.
+
+**Why:** There is now one active implementation. Keeping a separate “Padfire
+Rust” launcher would imply two supported versions and invite accidental
+launch of an obsolete runtime.

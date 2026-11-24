@@ -1,53 +1,31 @@
 # Release process
 
-Padfire's public default branch is `main`. A release branch may be used for
-staging, but a version tag must point to a commit that has been reconciled into
-`main` and passed the same CI checks.
+The active application is the native Rust workspace in rust/. The old GTK/Python application has been retired from the default branch and workstation installation. Do not publish a stable tag until the alpha's remaining physical-device, Windows interactive UI/audio and signing/provenance gates are recorded.
 
 ## Before a release
 
-1. Update `VER` in `padfire.py`, add a dated version section to
-   `CHANGELOG.md`, and check all README/packaging references.
-2. Run the commands in [CONTRIBUTING.md](CONTRIBUTING.md).
-3. Review the complete diff for configuration/data migration, shell execution,
-   local IPC, permissions, dependencies, packaging and documentation changes.
-4. Verify that the root `LICENSE` covers Padfire-authored source and docs.
-   Third-party dependencies and bundled assets retain their own licenses.
-5. Complete physical Launchpad Mini MK1/MK2 input, page, pad, LED and
-   unplug/replug testing. Verify actual playback, stop, looping/retrigger and
-   monitor routing. Record what was tested and what was not.
-6. Confirm the exact candidate commit has successful Linux CI and CodeQL
-   runs. Review the repository's code-scanning alerts as well; a successful
-   analysis/upload job does not by itself mean there are zero open findings.
-7. Merge the candidate into `main` through a reviewed pull request. Resolve
-   branch-history conflicts deliberately; do not force-push or retarget a
-   conflict-heavy release PR merely to make the graph look linear.
+1. Update the workspace version in rust/Cargo.toml and add a dated section to CHANGELOG.md. Keep Cargo.lock and the generated third-party license notice consistent.
+2. Run the full local gates in CONTRIBUTING.md.
+3. Review the complete diff for configuration migration, filesystem boundaries, IPC, process execution, audio lifecycle, dependency advisories, accepted licenses and provenance.
+4. Confirm the exact candidate commit has successful Ubuntu and Windows Rust workflows, Linux UI rendering, hardware-free smoke tests, cargo-deny/license report validation and Rust/Python/Actions CodeQL results. Review the open Code Scanning inventory separately.
+5. Complete physical Launchpad Mini MK1/MK2 input, page, pad, LED and reconnect tests. Verify real playback, stop, looping/retrigger, routing, monitor and VU behavior on Nobara/PipeWire and Windows/WASAPI.
+6. Review the installed binary and third-party notice hashes against the exact build artifacts. Record signing and provenance evidence.
+7. Merge the candidate to main through a reviewed pull request.
 
-## Tag and publish
+## Publish
 
-After the candidate is on `main`:
+Only after all gates pass:
 
-```bash
-git checkout main
-git pull --ff-only
-git status --short
-python3 padfire.py --version
-git tag -a v2.4.0 -m "Padfire v2.4.0"
-git push origin v2.4.0
-gh release create v2.4.0 --verify-tag --title "Padfire v2.4.0" \
-  --notes-file /path/to/release-notes.md
-```
+    git switch main
+    git pull --ff-only
+    git status --short
+    cargo build --workspace --release --locked
+    git tag -a vX.Y.Z -m "Padfire vX.Y.Z"
+    git push origin vX.Y.Z
+    gh release create vX.Y.Z --verify-tag --title "Padfire vX.Y.Z" --notes-file RELEASE_NOTES.md
 
-Use the actual version and release-notes path for each release. Do not tag a
-dirty worktree or a feature branch. Confirm the tag resolves to the intended
-main commit and the tag-triggered CI run passes.
+Use the actual version and release-note path. Do not tag a dirty worktree, an unmerged branch, or a build whose binary/notice hashes do not match the validated artifacts. Do not label the current alpha as a stable release.
 
 ## Distribution scope
 
-The Linux release is a source release for GTK3/Python on Linux. GitHub supplies
-source archives; no signed binary package, Flatpak or distro package is
-currently produced by this repository.
-
-The native Windows port is a separate draft and has its own PySide/Qt
-redistribution and LGPL review requirements. A Linux release does not imply
-that the Windows draft is ready to publish.
+The Rust installer supports per-user Linux and Windows installation. A source checkout or green CI run is not a signed distribution. Flatpak, distro packages, automatic updates and release signing/provenance must be completed and reviewed before they are advertised.

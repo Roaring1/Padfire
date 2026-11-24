@@ -1,4 +1,4 @@
-# Dependency policy for the Padfire Rust candidate.
+# Dependency policy for the Padfire application.
 # Run with: cargo deny check
 
 [graph]

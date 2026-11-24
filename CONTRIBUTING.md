@@ -1,48 +1,25 @@
 # Contributing
 
-## Scope
+Padfire's current implementation is the native Rust workspace in rust/. Do not add a second GTK, Qt, Python or webview frontend. Keep Linux and Windows behavior behind the padfire-platform adapters and shared product behavior in padfire-core.
 
-Padfire is currently a Linux GTK3 desktop app for Launchpad Mini MK1/MK2.
-Changes to MIDI input, LED output, audio playback, process lifecycle, config
-migration and local IPC should preserve the existing supported hardware and
-single-user trust model.
+## Required local checks
 
-Do not assume other Launchpad generations share the MK1/MK2 protocol. Add a
-separate, tested device profile before expanding hardware support.
+From rust/:
 
-## Local checks
+    cargo fmt --all -- --check
+    cargo test --workspace --locked
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo build --workspace --release --locked
+    cargo deny check
 
-Run the hardware-free core and UI checks:
+When dependencies or features change, regenerate the third-party notice with the pinned cargo-about 0.9.3 tool and compare it byte-for-byte with THIRD_PARTY_LICENSES.html. Run git diff --check from the repository root.
 
-```bash
-python3 tests/test_padfire_core.py
-xvfb-run -a python3 tests/test_padfire_dialogs.py
-python3 -m py_compile padfire.py tools/padfire-shot tests/test_padfire_core.py tests/test_padfire_dialogs.py packaging/extra-scripts/padfire_test.py
-bash -n padfire-launch packaging/extra-scripts/padfire-restart.sh
-shellcheck padfire-launch packaging/extra-scripts/padfire-restart.sh
-desktop-file-validate packaging/padfire.desktop
-git diff --check
-```
-
-The core tests use a temporary home directory and stub devices/processes.
-The GTK dialog suite runs under a virtual display. Neither test suite is a
-substitute for testing the physical Launchpad and real audio routes.
+For Linux UI changes, use the isolated Xvfb renderer in rust/review/render-ui.sh. It runs without physical hardware or the user's real configuration. Never open a physical MIDI port or play audio from an unattended automated test.
 
 ## Manual acceptance
 
-Before tagging a release, verify on supported hardware:
-
-- Pad presses, releases, top-row page changes and side-column mapping.
-- LED states for assigned, empty, playing, stop and page indicators.
-- USB unplug/replug while the application remains open; the top-bar badge
-  should change to Disconnected and return to Connected without relaunch.
-- Real sound playback, stop, loop/retrigger and monitor mirroring.
-- Settings persistence, restart and a clean application quit.
-
-Do not perform physical pad presses or audio playback in automated tests.
+Before a stable release, record actual results for Launchpad Mini MK1/MK2 pad input, page changes, LED output, USB unplug/replug, real PipeWire playback, stop/loop/retrigger, output routing and monitor/VU behavior. Repeat the audio/UI acceptance on Windows with WASAPI and a visible desktop session. Hosted CI does not substitute for physical-device acceptance.
 
 ## Configuration and privacy
 
-Pad configurations may contain local file paths and executable shell commands.
-Never attach a real `padfire.json` to an issue or pull request without
-reviewing and redacting it. Treat imported script-pad assignments as code.
+The current v5 configuration is ~/.config/padfire-rust/padfire.json. Pad assignments can contain local file paths and executable shell commands. Never attach a live padfire.json or screenshots containing private paths to an issue without review and redaction. Treat imported Script-pad assignments as executable code.

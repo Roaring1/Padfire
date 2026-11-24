@@ -1,46 +1,63 @@
-# Padfire Rust rewrite
+# Padfire
 
-This is the parallel replacement implementation for Padfire 3.x. The released v2.4.0 application remains the production reference and must remain installed until every gate in `CUTOVER.md` has passed.
-
-The goal is one shared Rust application source tree for Windows 11 and Linux/Nobara. Domain rules, configuration, pad actions and MIDI protocol are shared. OS-specific storage, process lifecycle, audio devices and IPC stay behind platform adapters.
+Padfire is the native Rust soundboard and Launchpad controller. The active implementation is version 3.0.0-alpha.1. The former GTK/Python v2.4.0 application has been retired from the current source tree and workstation installation.
 
 ## Workspace
 
-- `crates/padfire-core`: configuration schema/migration, action semantics, audio routing decisions, MIDI packet model and IPC contract.
-- `crates/padfire-platform`: secure config storage, MIDI backend/reconnect worker, audio playback engine, process supervision and local IPC transports.
-- `apps/padfire`: eframe/egui desktop shell, pad editor/settings, app runtime and CLI.
+- crates/padfire-core: configuration schema and migration, action semantics, audio routing decisions, MIDI packet model and IPC contract.
+- crates/padfire-platform: secure configuration storage, MIDI discovery/reconnect, audio playback, process supervision, per-user installation and local IPC.
+- apps/padfire: native eframe/egui desktop app, pad editor, settings, tray, runtime and command-line interface.
+
+The same Rust application is built for Linux and Windows. Linux uses the PulseAudio compatibility layer provided by PipeWire where available; Windows uses WASAPI. Platform-specific behavior remains behind the platform crate.
 
 ## Build and validate
 
-From this directory:
+Run from this directory:
 
-```sh
-cargo test --workspace --locked
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo build --workspace --release --locked
-```
+    cargo fmt --all -- --check
+    cargo test --workspace --locked
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo build --workspace --release --locked
+    cargo deny check
 
-CI runs the same gates on Ubuntu and Windows. The current local environment is Nobara Linux; Windows native compilation and behavior must be proven by the Windows CI runner and the actual Windows laptop before cutover.
+The dependency workflow also regenerates the third-party notice with cargo-about 0.9.3 and verifies it byte-for-byte. Hosted CI runs the Rust matrix on Ubuntu and Windows and renders the actual UI in a headless Linux desktop.
 
-## Compatibility and safety invariants
+For a local headless UI review on Linux, build first and run:
 
-- Preserve the released v5 JSON config and allow rollback to v2.4.0 without data loss.
-- Preserve 8 pages, the 8x8 pad grid, right-side column, CC page selection and per-pad behavior.
-- Keep Mini MK1/MK2 note and LED protocol. Reject MK3 before opening an output port; never probe by sending speculative LED messages.
-- Make playback and script operations generation-safe. Stop must defeat work still decoding, opening a device or registering a worker.
-- Keep user-authored shell scripts an explicit feature with a visible trust boundary.
-- Keep IPC local-only, user/owner restricted, bounded and version-compatible.
-- A new installation uses the current system default output; never bake machine-specific sink names into portable defaults.
-- LUFS analysis is opt-in and uses FFmpeg when installed; it analyzes at most the first 120 seconds, targets -18 LUFS and never silently changes pad volume. Applying the suggested 1-150% gain is an explicit editor action.
-- The primary meter taps Padfire's decoded/mixed signal after pad-volume scaling, aggregates in 256-sample chunks with one atomic update per chunk, uses fast-attack/slow-release smoothing, and returns to zero while idle. A separate optional system-output loopback meter is started only while Padfire audio is active: Linux uses the selected PulseAudio/PipeWire monitor source and Windows uses WASAPI loopback. The capture callback reduces samples to RMS only; samples are not retained or written. The app-mix meter remains the fallback when loopback is unavailable, and the loopback worker is stopped while idle.
-- Do not add automatic startup or an always-running helper.
+    out=$(mktemp -d /tmp/padfire-review.XXXXXX)
+    xvfb-run -a bash review/render-ui.sh target/release/padfire "$out"
 
-## Side-by-side candidate install
+The renderer disables real hardware and personal configuration. It writes main-grid and Settings screenshots into the selected output directory.
 
-Build the release binary, then run `padfire --install` (or `padfire.exe --install`). The Rust candidate installs under `~/.local/opt/padfire-rust` on Linux with a desktop entry/icon, or `%LOCALAPPDATA%\\Programs\\Padfire Rust` on Windows with a Start Menu shortcut. It never replaces the v2.4.0 installation and never creates a login/startup task or background service.
+## Install and run
 
-Run `--uninstall` to remove only the Rust candidate binary and its desktop/Start Menu integration. User configuration is intentionally preserved. On Windows, removal is deferred until the running executable exits. Release packaging, signatures and in-app updates remain separate unfinished work.
-- Never replace the production launcher or running process during development.
+A per-user install uses the native executable and creates the Padfire desktop entry plus the third-party license notice. On Linux the managed executable directory is ~/.local/opt/padfire-rust. The normal app identity is Padfire; Rust is the implementation.
 
-See `DECISIONS.md`, `BEHAVIOR_MATRIX.md`, `MAP.md`, `CUTOVER.md` and `research/STACK.md`.
+Useful commands:
+
+    padfire-rust --version
+    padfire-rust --status
+    padfire-rust --show
+    padfire-rust --stop
+    padfire-rust --reload
+    padfire-rust --quit
+    padfire-rust --install
+    padfire-rust --uninstall
+
+The Nobara workstation runs the installed binary through the padfire-rust.service user unit, attached to graphical-session.target. The unit starts with the graphical session and is managed with systemctl --user. The installer itself does not silently create or enable a service.
+
+## User configuration
+
+The active v5 configuration is ~/.config/padfire-rust/padfire.json. Saves are atomic and keep a rolling padfire.json.bak. The current Rust runtime config is the source of truth. A guarded one-time migration reader for the old ~/.config/padfire/padfire.json path remains for clean upgrades, but the legacy file has been removed from the deployed workstation after its assignments were imported.
+
+The configuration supports eight pages, 64 pads per page, per-pad files/actions/output routing, volume, looping, labels, colors, notes, stop targets and retrigger behavior. Only Launchpad Mini MK1/MK2 output protocols are supported. Unknown devices and MK3 are not probed with speculative LED messages.
+
+## Security and trust
+
+Padfire is a local, single-user application, not a network service. Configuration and IPC are owner-restricted and bounded. User-authored Script pad actions intentionally execute the configured command with the user's permissions; treat pad configurations as executable content. Only import trusted configurations. Crosshair is resolved from the user-session PATH and launched with a fixed argument, not through a shell.
+
+The checked-in third-party license notice is rust/THIRD_PARTY_LICENSES.html. It is installed beside the Linux executable and included in the Windows installation.
+
+## Remaining stable-release acceptance
+
+The automated matrix is green, but stable release acceptance still requires physical Launchpad pad/LED/reconnect tests, actual PipeWire playback and monitor/VU verification, Windows WASAPI and visible UI/tray acceptance, and signed release provenance. The current version remains alpha until those gates are recorded.

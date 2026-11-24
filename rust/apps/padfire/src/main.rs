@@ -122,7 +122,7 @@ fn run() -> Result<(), String> {
 
     if action == Some(CliAction::Install) {
         let path = padfire_platform::installer::install_current()?;
-        println!("Padfire Rust installed to {}", path.display());
+        println!("Padfire installed to {}", path.display());
         return Ok(());
     }
     if action == Some(CliAction::Uninstall) {
@@ -130,7 +130,7 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let store = ConfigStore::for_development().map_err(|error| error.to_string())?;
+    let store = ConfigStore::for_current_user().map_err(|error| error.to_string())?;
     let socket_path = store.directory().join("padfire-rust.sock");
 
     if let Some(action) = action {
@@ -214,7 +214,7 @@ fn print_help() {
          --quit       Quit the running instance\n\
          --status     Print machine-readable JSON status\n\
          --version    Print the application version\n\
-         --install    Install Padfire Rust alongside the existing app\n         --uninstall  Remove Padfire Rust without deleting user configuration\n"
+         --install    Install Padfire for this user\n         --uninstall  Remove Padfire without deleting user configuration\n"
     );
 }
 

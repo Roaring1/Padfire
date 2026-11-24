@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Rust-only application tree.** Retired the GTK/Python v2.4.0 implementation, launcher, desktop/service packaging, Python tests and GTK-only CI workflow from main. The native Rust application is now the sole supported implementation. Historical v2.4.0 change notes remain below for reference.
+- **Single desktop identity.** The Rust install and Start Menu entry now appear simply as Padfire, not as a second “Padfire Rust” application.
+
+## v3.0.0-alpha.1 - 2026-11-24
+
+- Native cross-platform Rust application is the only active implementation. The Linux and Windows CI matrices, UI rendering, dependency/license policy and Rust/Python/Actions CodeQL checks passed on main.
+- Nobara deployment runs from a user-scoped systemd service and uses the v5 configuration at ~/.config/padfire-rust/padfire.json. Physical controller/audio, Windows interactive acceptance and signed release provenance remain stable-release gates.
+
 ## v2.4.0 — 2026-11-01
 
 - **Standalone, denser main window.** Removed the permanent bottom status bar

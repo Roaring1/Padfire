@@ -95,7 +95,10 @@ impl ConfigStore {
         }
     }
 
-    /// Resolve the current user's platform configuration directory.
+    /// Resolve the sole current user's Padfire configuration directory.
+    ///
+    /// When this is a first launch after upgrading from the retired GTK app,
+    /// import the old v5 file from ~/.config/padfire/padfire.json once.
     pub fn for_current_user() -> Result<Self, StoreError> {
         #[cfg(target_os = "linux")]
         {
@@ -108,8 +111,8 @@ impl ConfigStore {
                 .filter(|path| path.is_absolute())
                 .unwrap_or_else(|| home.join(".config"));
             let base = resolve_directory_path(&base, "XDG_CONFIG_HOME")?;
-            let mut store = Self::new(base.join("padfire"));
-            store.legacy_path = Some(home.join(".config/roaring/padfire.json"));
+            let mut store = Self::new(base.join("padfire-rust"));
+            store.legacy_path = Some(base.join("padfire/padfire.json"));
             Ok(store)
         }
         #[cfg(windows)]
@@ -123,7 +126,9 @@ impl ConfigStore {
                     )
                 })?;
             let base = resolve_directory_path(&base, "APPDATA/LOCALAPPDATA")?;
-            Ok(Self::new(base.join("Padfire")))
+            let mut store = Self::new(base.join("padfire-rust"));
+            store.legacy_path = Some(base.join("Padfire/padfire.json"));
+            Ok(store)
         }
         #[cfg(not(any(target_os = "linux", windows)))]
         {
@@ -131,22 +136,6 @@ impl ConfigStore {
                 "Padfire config storage is not implemented for this operating system".to_owned(),
             ))
         }
-    }
-
-    /// Development-only namespace for side-by-side testing while v2.4.0
-    /// remains installed. It reads/imports the released config once but all
-    /// subsequent saves and IPC use separate filenames and cannot race the
-    /// production process.
-    pub fn for_development() -> Result<Self, StoreError> {
-        let production = Self::for_current_user()?;
-        let production_directory = production.directory.clone();
-        let directory = production_directory.with_file_name("padfire-rust");
-        Ok(Self {
-            config_path: directory.join("padfire.json"),
-            backup_path: directory.join("padfire.json.bak"),
-            directory,
-            legacy_path: Some(production_directory.join("padfire.json")),
-        })
     }
 
     pub fn directory(&self) -> &Path {
