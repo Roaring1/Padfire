@@ -151,11 +151,20 @@ fn default_install_root() -> Result<PathBuf, String> {
 }
 
 pub fn install_current() -> Result<PathBuf, String> {
-    let source = std::env::current_exe()
+    let source_path = std::env::current_exe()
         .map_err(|error| format!("could not locate the running Padfire executable: {error}"))?;
+    let source = open_running_executable(&source_path)?;
     let paths = InstallPaths::for_current_user()?;
-    install_from(&source, &paths)?;
+    install_from_file(&source_path, &source, &paths)?;
     Ok(paths.executable)
+}
+
+fn open_running_executable(_source_path: &Path) -> Result<File, String> {
+    #[cfg(target_os = "linux")]
+    let source = File::open("/proc/self/exe");
+    #[cfg(windows)]
+    let source = File::open(_source_path);
+    source.map_err(|error| format!("could not open the running Padfire executable: {error}"))
 }
 
 pub fn uninstall_current() -> Result<String, String> {
@@ -459,12 +468,16 @@ fn error_with_rollback(original: String, rollback: Result<(), String>) -> String
     }
 }
 
-fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
-    if !source.is_file() {
-        return Err(format!(
-            "Padfire executable does not exist: {}",
-            source.display()
-        ));
+fn install_from_file(
+    source_path: &Path,
+    source: &File,
+    paths: &InstallPaths,
+) -> Result<(), String> {
+    let source_metadata = source
+        .metadata()
+        .map_err(|error| format!("could not inspect running Padfire executable: {error}"))?;
+    if !source_metadata.is_file() {
+        return Err("running Padfire executable handle is not a regular file".to_owned());
     }
     let had_root = validate_install_root(&paths.root)?;
     for path in std::iter::once(&paths.integration)
@@ -530,7 +543,7 @@ fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
         return Err(error_with_rollback(error, rollback));
     }
 
-    if let Err(error) = copy_executable(source, &paths.executable) {
+    if let Err(error) = copy_executable(source_path, source, &paths.executable) {
         let rollback = rollback_install_integration(paths, &backups);
         if !had_root {
             // The installer created this directory, but another process may
@@ -548,6 +561,13 @@ fn install_from(source: &Path, paths: &InstallPaths) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+fn install_from(source_path: &Path, paths: &InstallPaths) -> Result<(), String> {
+    let source = File::open(source_path)
+        .map_err(|error| format!("could not open test executable source: {error}"))?;
+    install_from_file(source_path, &source, paths)
 }
 
 fn uninstall_from(paths: &InstallPaths) -> Result<(), String> {
@@ -576,8 +596,8 @@ fn uninstall_from(paths: &InstallPaths) -> Result<(), String> {
     Ok(())
 }
 
-fn copy_executable(source: &Path, destination: &Path) -> Result<(), String> {
-    if same_file(source, destination) {
+fn copy_executable(source_path: &Path, source: &File, destination: &Path) -> Result<(), String> {
+    if same_file(source_path, destination) {
         return Ok(());
     }
     let parent = destination
@@ -590,7 +610,7 @@ fn copy_executable(source: &Path, destination: &Path) -> Result<(), String> {
 
     let temporary = temporary_path(destination);
     let result = (|| -> io::Result<()> {
-        let mut input = File::open(source)?;
+        let mut input = source.try_clone()?;
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -615,6 +635,13 @@ fn copy_executable(source: &Path, destination: &Path) -> Result<(), String> {
         return Err(format!("could not install Padfire executable: {error}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn copy_executable_from_path(source_path: &Path, destination: &Path) -> Result<(), String> {
+    let source = File::open(source_path)
+        .map_err(|error| format!("could not open test executable source: {error}"))?;
+    copy_executable(source_path, &source, destination)
 }
 
 #[cfg(windows)]
@@ -1082,6 +1109,15 @@ mod tests {
         run_powershell_script("exit 0").unwrap();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn running_executable_is_opened_through_the_process_image_handle() {
+        let source_path = std::env::current_exe().unwrap();
+        let source = open_running_executable(&source_path).unwrap();
+        assert!(source.metadata().unwrap().is_file());
+        assert!(same_file(&source_path, &std::env::current_exe().unwrap()));
+    }
+
     #[test]
     fn installer_base_directory_resolves_existing_and_missing_suffixes() {
         let (root, _temp) = temp_root();
@@ -1136,7 +1172,7 @@ mod tests {
         fs::write(&source, b"new executable contents").unwrap();
         fs::write(&destination, b"old executable contents").unwrap();
 
-        copy_executable(&source, &destination).unwrap();
+        copy_executable_from_path(&source, &destination).unwrap();
 
         assert_eq!(fs::read(&destination).unwrap(), b"new executable contents");
         let leftovers = fs::read_dir(&root)
@@ -1171,11 +1207,11 @@ mod tests {
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
             .open(&destination)
             .unwrap();
-        assert!(copy_executable(&source, &destination).is_err());
+        assert!(copy_executable_from_path(&source, &destination).is_err());
         assert_eq!(fs::read(&destination).unwrap(), b"old executable contents");
         drop(locked);
 
-        copy_executable(&source, &destination).unwrap();
+        copy_executable_from_path(&source, &destination).unwrap();
         assert_eq!(fs::read(&destination).unwrap(), b"new executable contents");
         let leftovers = fs::read_dir(&root)
             .unwrap()

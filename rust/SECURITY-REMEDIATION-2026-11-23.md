@@ -51,6 +51,8 @@ A 465 KB HTML license report is generated at `rust/THIRD_PARTY_LICENSES.html` us
 
 The installer embeds this report and treats it as a managed install asset. Linux installs to `~/.local/opt/padfire-rust/THIRD_PARTY_LICENSES.html`; Windows installs beside `padfire-rust.exe`. Existing report bytes participate in the same backup/restore transaction as desktop integration and the executable. Uninstall removes only the app-owned notice, and deferred Windows uninstall retries removal after the running executable unlocks. Installer tests verify repeat-install, byte-exact payload, rollback restoration, ordinary uninstall, and deferred Windows cleanup. The dependency-policy CI job fetches all locked target crates, installs pinned cargo-about 0.9.3, regenerates the notice offline with `--fail`, then byte-compares the result against the checked-in HTML.
 
+The production executable-copy path was subsequently changed to avoid reopening the running executable by a caller-provided pathname. Linux uses the fixed `/proc/self/exe` process-image handle, verifies its metadata as a regular file, and copies via a cloned handle. The path-taking wrappers remain test-only; the source path is still available only for the same-file check. The fresh CodeQL result for this handle-based refactor is pending, so the two path findings reported on `8c625a3` must not be considered closed until the current changed-file policy passes.
+
 The generated notice and installer integration are currently under fresh local validation; the c53 binary already installed on Nobara does not yet contain this new asset. Update the side-by-side installation only after exact-head Ubuntu/Windows CI passes.
 
 ### Process and IPC boundaries
@@ -71,7 +73,7 @@ The generated notice and installer integration are currently under fresh local v
 
 Latest local Nobara/Linux validation for c53c3ea757f01456e80ca0a13220929e3bebe4f4:
 - cargo fmt --all -- --check: pass
-- cargo test --workspace --locked: 142 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 58 platform)
+- cargo test --workspace --locked: 143 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 59 platform)
 - cargo clippy --workspace --all-targets --locked -- -D warnings: pass
 - cargo build --workspace --release --locked: pass
 - cargo deny check 0.22.0: advisories, licenses, bans and sources all passed

@@ -38,7 +38,7 @@ The active candidate is c53c3ea757f01456e80ca0a13220929e3bebe4f4, PR #22. It int
 
 Local Nobara validation:
 - Formatting: pass.
-- Workspace tests: 142 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 58 platform).
+- Workspace tests: 143 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 59 platform).
 - Strict Clippy with warnings denied: pass.
 - Optimized release build: pass.
 - cargo-deny 0.22.0: advisories, bans, licenses and sources pass.
@@ -53,6 +53,8 @@ Unix PID-file opening now starts at the fixed filesystem root and walks each par
 A generated `rust/THIRD_PARTY_LICENSES.html` now records all locked Rust workspace runtime, build, development and transitive dependencies for Linux x86-64 and Windows x86-64. It contains 82 full license-text sections and 311 crate attribution links (296 distinct crate/version labels), generated offline from `Cargo.lock` by cargo-about 0.9.3 using `rust/about.toml` and `rust/about.hbs` with `--fail`. The report is 465 KB. CI installs pinned cargo-about 0.9.3, fetches the locked target graph, regenerates the report offline, and compares it byte-for-byte.
 
 The installer now embeds that HTML and manages it with the executable/integration lifecycle: Linux location `~/.local/opt/padfire-rust/THIRD_PARTY_LICENSES.html`; Windows location beside `padfire-rust.exe`. Existing notice content is backed up during upgrades and restored on failure. Standard uninstall removes the notice; deferred Windows self-uninstall retries notice deletion after the running image unlocks it. Tests verify install/reinstall payload, failed-upgrade restoration, uninstall, and deferred Windows cleanup. The currently installed Nobara c53 binary predates this notice change; do not claim the new notice is installed until the new cross-platform CI passes and the refreshed binary is installed side-by-side.
+
+The installer source-file boundary was also refactored after the `8c625a3` PR scan reported two path-injection flows at the legacy `source.is_file()` and `File::open(source)` callsites. Production Linux now opens the running process image through fixed `/proc/self/exe`, checks metadata on that open handle, and copies through a cloned file handle. The old path-taking adapters are `#[cfg(test)]` only; the source path remains solely for the existing same-file short-circuit. A Linux regression verifies the process-image handle is a regular file. The new scan result is pending on the latest commit; do not treat these alerts as resolved until CodeQL's changed-file policy is green.
 
 Hosted c53 validation:
 - PR Rust, Ubuntu and Windows, UI render, cargo-deny and GTK smoke: all passed.
