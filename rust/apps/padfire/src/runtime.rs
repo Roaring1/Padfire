@@ -1,5 +1,7 @@
 //! Application runtime: one shared action dispatcher for UI, MIDI and IPC.
 
+use crate::kwin_window_control;
+use eframe::egui;
 use padfire_core::ipc::{IpcCommand, PlayingInfo, RunningStatus, StatusResponse};
 use padfire_core::{
     ActionEffect, AppConfig, Control, GenerationTracker, LED_AMBER, LED_DIM, LED_GREEN, LED_OFF,
@@ -23,7 +25,7 @@ use std::os::fd::{AsRawFd, FromRawFd};
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -406,6 +408,8 @@ pub struct AppRuntime {
     process_events: Receiver<ProcessEvent>,
     pid_file_monitor: PidFileMonitor,
     app_commands: Receiver<AppCommand>,
+    app_command_sender: Sender<AppCommand>,
+    repaint_context: Arc<Mutex<Option<egui::Context>>>,
     ipc: Option<IpcServer>,
     status_snapshot: Arc<Mutex<RunningStatus>>,
     playing_audio: HashSet<PadKey>,
@@ -454,6 +458,8 @@ impl AppRuntime {
         };
         let status_snapshot = Arc::new(Mutex::new(initial_status));
         let ipc_commands = app_command_sender.clone();
+        let repaint_context = Arc::new(Mutex::new(None::<egui::Context>));
+        let ipc_repaint_context = repaint_context.clone();
         let ipc_snapshot = status_snapshot.clone();
         let ipc_version = version.clone();
         let ipc_path = store.directory().join("padfire-rust.sock");
@@ -471,7 +477,15 @@ impl AppRuntime {
                 "ok".to_owned()
             }
             IpcCommand::Show => {
-                let _ = ipc_commands.send(AppCommand::Show);
+                let context = ipc_repaint_context
+                    .lock()
+                    .ok()
+                    .and_then(|context| context.clone());
+                if let Some(context) = context {
+                    kwin_window_control::show_from_tray(&context);
+                } else {
+                    let _ = ipc_commands.send(AppCommand::Show);
+                }
                 "ok".to_owned()
             }
             IpcCommand::Reload => {
@@ -509,6 +523,8 @@ impl AppRuntime {
             process_events,
             pid_file_monitor,
             app_commands,
+            app_command_sender,
+            repaint_context,
             ipc,
             status_snapshot,
             playing_audio: HashSet::new(),
@@ -524,6 +540,16 @@ impl AppRuntime {
         };
         runtime.refresh_leds(config, 0);
         Ok(runtime)
+    }
+
+    pub fn set_egui_context(&self, context: &egui::Context) {
+        if let Ok(mut stored) = self.repaint_context.lock() {
+            stored.get_or_insert_with(|| context.clone());
+        }
+    }
+
+    pub fn command_sender(&self) -> Sender<AppCommand> {
+        self.app_command_sender.clone()
     }
 
     pub fn midi_connected(&self) -> bool {

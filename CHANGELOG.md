@@ -5,6 +5,7 @@
 - **Rust-only application tree.** Retired the GTK/Python v2.4.0 implementation, launcher, desktop/service packaging, Python tests and GTK-only CI workflow from main. The native Rust application is now the sole supported implementation. Historical v2.4.0 change notes remain below for reference.
 - **Single desktop identity.** The Rust install and Start Menu entry now appear simply as Padfire, not as a second “Padfire Rust” application.
 - **Rust-only CodeQL.** Retired default CodeQL setup's empty Python target; advanced CodeQL now scans Rust and Actions only.
+- **KDE Wayland close-to-tray.** Closing the titlebar now hides Padfire through KWin, removes it from the taskbar/pager/switcher, and leaves its process and tray service alive. A tray left-click, tray-menu Show, or IPC Show restores and focuses the window. Other backends retain their native viewport behavior.
 
 ## v3.0.0-alpha.1 - 2026-11-24
 

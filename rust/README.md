@@ -46,6 +46,8 @@ Useful commands:
 
 The Nobara workstation runs the installed binary through the padfire-rust.service user unit, attached to graphical-session.target. The unit starts with the graphical session and is managed with systemctl --user. The installer itself does not silently create or enable a service.
 
+On KDE Wayland, the titlebar close button sends Padfire to the tray instead of exiting. KWin hides the window from the taskbar, pager and app switcher while the soundboard process and controller workers stay active. Left-click the tray icon or choose Show from its menu to restore and focus the window. This uses a short-lived, process-scoped KWin script through `qdbus`, because Wayland does not support the generic window hide/unminimize calls used by other backends.
+
 ## User configuration
 
 The active v5 configuration is ~/.config/padfire-rust/padfire.json. Saves are atomic and keep a rolling padfire.json.bak. The current Rust runtime config is the source of truth. A guarded one-time migration reader for the old ~/.config/padfire/padfire.json path remains for clean upgrades, but the legacy file has been removed from the deployed workstation after its assignments were imported.

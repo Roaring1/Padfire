@@ -1,3 +1,4 @@
+mod kwin_window_control;
 mod runtime;
 
 use eframe::egui::{self, Align, Color32, Context, Grid, Layout, RichText, Stroke, Vec2};
@@ -8,7 +9,7 @@ use padfire_platform::audio_engine::enumerate_output_devices;
 use padfire_platform::config_store::{ConfigStore, LoadState};
 use padfire_platform::ipc_server;
 use padfire_platform::loudness::LoudnessResult;
-use runtime::{AppRuntime, RuntimeSignals};
+use runtime::{AppCommand, AppRuntime, RuntimeSignals};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -370,36 +371,58 @@ impl PadfireApp {
     }
 
     #[cfg(any(target_os = "linux", windows))]
-    fn ensure_tray(&mut self) {
+    fn ensure_tray(&mut self, context: &Context) {
         if self.tray_initialized {
             return;
         }
         self.tray_initialized = true;
         match build_tray_icon() {
-            Ok(icon) => self.tray_icon = Some(icon),
+            Ok(icon) => {
+                // tray-icon explicitly recommends an event handler for winit
+                // applications: it wakes the event loop when a menu item is
+                // selected, including while the root window is hidden.
+                use tray_icon::menu::MenuEvent;
+                use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent};
+                let context = context.clone();
+                let click_context = context.clone();
+                let commands = self.runtime.command_sender();
+                MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+                    match event.id.0.as_str() {
+                        "padfire-show" => {
+                            kwin_window_control::show_from_tray(&context);
+                        }
+                        "padfire-stop" => {
+                            let _ = commands.send(AppCommand::StopAll);
+                            context.request_repaint();
+                        }
+                        "padfire-quit" => {
+                            let _ = commands.send(AppCommand::Quit);
+                            context.request_repaint();
+                        }
+                        _ => {}
+                    }
+                }));
+
+                TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
+                    let should_show = matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } | TrayIconEvent::DoubleClick {
+                            button: MouseButton::Left,
+                            ..
+                        }
+                    );
+                    if should_show {
+                        kwin_window_control::show_from_tray(&click_context);
+                    }
+                }));
+                self.tray_icon = Some(icon);
+            }
             Err(error) => {
                 eprintln!("Padfire tray unavailable: {error}");
-            }
-        }
-    }
-
-    #[cfg(any(target_os = "linux", windows))]
-    fn handle_tray_events(&mut self, context: &Context) {
-        use tray_icon::menu::MenuEvent;
-
-        for event in MenuEvent::receiver().try_iter() {
-            match event.id.0.as_str() {
-                "padfire-show" => {
-                    context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    context.send_viewport_cmd(egui::ViewportCommand::Focus);
-                }
-                "padfire-stop" => {
-                    self.runtime.stop_audio();
-                    self.status = "Audio playback stopped".to_owned();
-                }
-                "padfire-quit" => self.request_quit(context),
-                _ => {}
             }
         }
     }
@@ -422,11 +445,12 @@ impl PadfireApp {
 
     fn handle_window_close_request(&mut self, context: &Context) {
         let close_requested = context.input(|input| input.viewport().close_requested());
-        if should_hide_on_close(close_requested, self.quit_requested, self.tray_available()) {
+        let tray_available = self.tray_available();
+        if should_hide_on_close(close_requested, self.quit_requested, tray_available) {
             // Closing the titlebar should leave the app and its device workers
             // alive in the tray. Explicit Quit paths set quit_requested first.
             context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            kwin_window_control::hide_to_tray(context);
             // Hiding the window is silent; no persistent status message.
         }
     }
@@ -1131,7 +1155,7 @@ impl PadfireApp {
         } else if escape {
             match escape_behavior(self.tray_available()) {
                 EscapeBehavior::HideToTray => {
-                    context.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    kwin_window_control::hide_to_tray(context);
                     // No persistent status chrome; hiding the window is silent.
                 }
                 EscapeBehavior::Minimize => {
@@ -1144,16 +1168,14 @@ impl PadfireApp {
 
 impl eframe::App for PadfireApp {
     fn logic(&mut self, context: &Context, _frame: &mut eframe::Frame) {
+        self.runtime.set_egui_context(context);
         // Eframe runs logic even when the root window is hidden or occluded.
         // Keep tray actions, IPC, workers and close-to-tray behavior alive
         // independently of whether the visible UI is currently being painted.
         context.request_repaint_after(Duration::from_millis(200));
 
         #[cfg(any(target_os = "linux", windows))]
-        {
-            self.ensure_tray();
-            self.handle_tray_events(context);
-        }
+        self.ensure_tray(context);
 
         self.runtime
             .poll(&mut self.config, &mut self.page, &mut self.status);
@@ -1161,9 +1183,7 @@ impl eframe::App for PadfireApp {
         let signals = self.runtime.take_signals();
         record_midi_pad_feedback(&mut self.pad_pressed_at, &signals, Instant::now());
         if signals.show_requested {
-            context.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            context.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            context.send_viewport_cmd(egui::ViewportCommand::Focus);
+            kwin_window_control::show_from_tray(context);
         }
         if signals.quit_requested {
             self.request_quit(context);
