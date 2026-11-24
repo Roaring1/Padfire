@@ -6,7 +6,7 @@
 //! never registers autostart or a service.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::process::{Command, Stdio};
@@ -604,6 +604,10 @@ fn copy_executable(source_path: &Path, source: &File, destination: &Path) -> Res
     let temporary = temporary_path(destination);
     let result = (|| -> io::Result<()> {
         let mut input = source.try_clone()?;
+        // Cloned file handles share their cursor on Windows. A failed publish
+        // may consume the source before the destination replacement fails, so
+        // every retry must restart from byte zero.
+        input.seek(SeekFrom::Start(0))?;
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -1184,6 +1188,30 @@ mod tests {
             leftovers, 0,
             "successful executable upgrade left a temp file"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn copy_executable_rewinds_source_handle_after_failed_publish_retry() {
+        let (root, _temp) = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let (source_path, source) = running_executable_source();
+        let expected = running_executable_bytes();
+        let destination = root.join("padfire-rust");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("keep.txt"), b"block replacement").unwrap();
+
+        assert!(copy_executable(&source_path, &source, &destination).is_err());
+        fs::remove_dir_all(&destination).unwrap();
+        copy_executable(&source_path, &source, &destination).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), expected);
+        let leftovers = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "retry left a temporary copy behind");
         let _ = fs::remove_dir_all(root);
     }
 

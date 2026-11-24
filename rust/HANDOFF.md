@@ -38,7 +38,7 @@ The active candidate is c53c3ea757f01456e80ca0a13220929e3bebe4f4, PR #22. It int
 
 Local Nobara validation:
 - Formatting: pass.
-- Workspace tests: 143 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 59 platform).
+- Workspace tests: 144 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 60 platform).
 - Strict Clippy with warnings denied: pass.
 - Optimized release build: pass.
 - cargo-deny 0.22.0: advisories, bans, licenses and sources pass.
@@ -54,7 +54,9 @@ A generated `rust/THIRD_PARTY_LICENSES.html` now records all locked Rust workspa
 
 The installer now embeds that HTML and manages it with the executable/integration lifecycle: Linux location `~/.local/opt/padfire-rust/THIRD_PARTY_LICENSES.html`; Windows location beside `padfire-rust.exe`. Existing notice content is backed up during upgrades and restored on failure. Standard uninstall removes the notice; deferred Windows self-uninstall retries notice deletion after the running image unlocks it. Tests verify install/reinstall payload, failed-upgrade restoration, uninstall, and deferred Windows cleanup. The currently installed Nobara c53 binary predates this notice change; do not claim the new notice is installed until the new cross-platform CI passes and the refreshed binary is installed side-by-side.
 
-The installer source-file boundary was also refactored after the `8c625a3` PR scan reported two path-injection flows at the legacy `source.is_file()` and `File::open(source)` callsites. Production Linux now opens the running process image through fixed `/proc/self/exe`, checks metadata on that open handle, and copies through a cloned file handle. The source path remains solely for the same-file short-circuit. The subsequent `77b40fe` CodeQL scan reduced the two alerts to one at a `#[cfg(test)]` path-opening adapter; that adapter and the corresponding copy adapter have now been removed entirely. Installer tests instead use `open_running_executable()` to obtain an already-open process-image handle. The focused installer suite passes 15/15, and the full 143-test/Clippy/release/cargo-deny/report-reproduction gate passes locally. A fresh CodeQL result for this final adapter-free tree is pending; do not treat the path findings as resolved until the changed-file policy is green.
+The installer source-file boundary was also refactored after the `8c625a3` PR scan reported two path-injection flows at the legacy `source.is_file()` and `File::open(source)` callsites. Production Linux now opens the running process image through fixed `/proc/self/exe`, checks metadata on that open handle, and copies through a cloned file handle. The source path remains solely for the same-file short-circuit. The subsequent `77b40fe` CodeQL scan reduced the two alerts to one at a `#[cfg(test)]` path-opening adapter; that adapter and the corresponding copy adapter have now been removed entirely. Installer tests instead use `open_running_executable()` to obtain an already-open process-image handle. The focused installer suite passes 15/15, and the full 144-test/Clippy/release/cargo-deny/report-reproduction gate passes locally. A fresh CodeQL result for this final adapter-free tree is pending; do not treat the path findings as resolved until the changed-file policy is green.
+
+The hosted Windows matrix exposed a real retry issue after switching executable copying to an open handle: cloned handles share their file cursor on Windows, so the second copy could start at EOF after a failed publish. `copy_executable` now explicitly seeks each cloned handle to offset zero before every copy attempt. A new cross-platform regression forces a failed publish, retries with the same handle, and verifies a complete executable plus no leaked temporary files. The focused installer suite passes 16/16; the full workspace is now 144 tests.
 
 Hosted c53 validation:
 - PR Rust, Ubuntu and Windows, UI render, cargo-deny and GTK smoke: all passed.

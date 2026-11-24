@@ -51,7 +51,7 @@ A 465 KB HTML license report is generated at `rust/THIRD_PARTY_LICENSES.html` us
 
 The installer embeds this report and treats it as a managed install asset. Linux installs to `~/.local/opt/padfire-rust/THIRD_PARTY_LICENSES.html`; Windows installs beside `padfire-rust.exe`. Existing report bytes participate in the same backup/restore transaction as desktop integration and the executable. Uninstall removes only the app-owned notice, and deferred Windows uninstall retries removal after the running executable unlocks. Installer tests verify repeat-install, byte-exact payload, rollback restoration, ordinary uninstall, and deferred Windows cleanup. The dependency-policy CI job fetches all locked target crates, installs pinned cargo-about 0.9.3, regenerates the notice offline with `--fail`, then byte-compares the result against the checked-in HTML.
 
-The production executable-copy path was subsequently changed to avoid reopening the running executable by a caller-provided pathname. Linux uses the fixed `/proc/self/exe` process-image handle, verifies its metadata as a regular file, and copies via a cloned handle. The `77b40fe` scan reduced the two initial path findings to one at a test-only adapter; the path-opening install/copy test adapters have since been removed, and tests use the opened process-image helper. The latest local 143-test workspace suite, strict Clippy, release build, cargo-deny and offline notice regeneration/byte comparison all pass. A fresh CodeQL result for the adapter-free tree is pending; keep the path findings unresolved until the current changed-file policy passes.
+The production executable-copy path was subsequently changed to avoid reopening the running executable by a caller-provided pathname. Linux uses the fixed `/proc/self/exe` process-image handle, verifies its metadata as a regular file, and copies via a cloned handle. The `77b40fe` scan reduced the two initial path findings to one at a test-only adapter; the path-opening install/copy test adapters have since been removed, and tests use the opened process-image helper. The latest local 144-test workspace suite, strict Clippy, release build, cargo-deny and offline notice regeneration/byte comparison all pass. The hosted Windows matrix then exposed that cloned source handles share their file cursor: a failed publish consumed it, leaving a retry at EOF. The copy routine now seeks every cloned handle to byte zero before copying, with a cross-platform failed-publish/retry regression. A fresh CodeQL result for the adapter-free tree is pending; keep the path findings unresolved until the current changed-file policy passes.
 
 The generated notice and installer integration are currently under fresh local validation; the c53 binary already installed on Nobara does not yet contain this new asset. Update the side-by-side installation only after exact-head Ubuntu/Windows CI passes.
 
@@ -73,7 +73,7 @@ The generated notice and installer integration are currently under fresh local v
 
 Latest local Nobara/Linux validation for c53c3ea757f01456e80ca0a13220929e3bebe4f4:
 - cargo fmt --all -- --check: pass
-- cargo test --workspace --locked: 143 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 59 platform)
+- cargo test --workspace --locked: 144 passed, 0 failed (31 app, 2 CLI, 28 core, 23 compatibility, 60 platform)
 - cargo clippy --workspace --all-targets --locked -- -D warnings: pass
 - cargo build --workspace --release --locked: pass
 - cargo deny check 0.22.0: advisories, licenses, bans and sources all passed
