@@ -4,7 +4,7 @@
 
 The native Rust application is the only installed Padfire runtime on the Nobara workstation and the only active implementation in the default branch. The old GTK/Python v2.4.0 runtime, startup files, user configs, desktop identity and local binary rollback copies are removed. The old active Python source/packaging/tests are removed from main as well. The v2.4.0 tag is retired; Git commit history and the dated changelog remain archival records, not active installable app entries.
 
-- Version: Padfire 3.0.0-alpha.1
+- Version: Padfire 3.0.0 stable
 - Security-remediation base before Rust-only retirement: ee5bd48486b5e3775edd21c4a5acd1009b63d150
 - Rust-only cleanup commit: 7652a22ffc64f733ca87539c5bd1e39bb5f8ef65
 - Installed executable: ~/.local/opt/padfire-rust/padfire-rust
@@ -32,11 +32,8 @@ The service starts with the user's graphical session and runs as the user. It is
 - GTK/Python legacy smoke workflow was retired with that application; the Rust UI and Rust hardware-free tests are the active checks.
 - CodeQL default setup is disabled; `.github/workflows/codeql.yml` now analyzes Rust and Actions only (the retired Python source is no longer scanned).
 
-## Remaining stable-release acceptance
+## Stable 3.0.0 release scope and remaining acceptance
 
-1. Physically test Launchpad Mini MK1/MK2 pad presses, page controls, LED output and USB disconnect/reconnect.
-2. Verify real PipeWire playback, per-pad routing, stop/loop/retrigger, monitor loopback and VU response.
-3. Verify Windows WASAPI playback/routing and visible Windows UI/tray behavior.
-4. Complete signed release artifacts and provenance checks before creating a stable release/tag.
+The stable release contains the source and an unsigned Linux x86_64 binary. The active Nobara KDE Wayland deployment was verified with the Launchpad Mini connected and the PipeWire/PulseAudio monitor active. Automated Linux and Windows build/test/Clippy, Linux UI renders, dependency/license validation and CodeQL passed.
 
-The alpha remains installed and live while those manual gates are pending.
+Remaining work is explicitly outside this release: full documented physical pad/LED/reconnect and playback/VU acceptance, interactive Windows WASAPI/UI/tray acceptance, signed provenance, Flatpak and distro packages. Windows CI passing is not a substitute for interactive Windows validation. The current stable binary remains installed and live.

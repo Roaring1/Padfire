@@ -249,8 +249,12 @@ mod tests {
 
     #[test]
     fn stopped_status_matches_the_existing_cli_shape() {
-        let status = StatusResponse::stopped("3.0.0-alpha.1").to_json().unwrap();
-        assert_eq!(status, r#"{"running":false,"version":"3.0.0-alpha.1"}"#);
+        let version = env!("CARGO_PKG_VERSION");
+        let status = StatusResponse::stopped(version).to_json().unwrap();
+        assert_eq!(
+            status,
+            format!(r#"{{"running":false,"version":"{version}"}}"#)
+        );
     }
 
     #[test]
@@ -266,7 +270,7 @@ mod tests {
                 page: 3,
             }],
             device: "Launchpad Mini".to_owned(),
-            version: "3.0.0-alpha.1".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
             monitor_enabled: true,
             monitor_sink: "headset".to_owned(),
         };

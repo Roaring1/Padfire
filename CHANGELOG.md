@@ -11,10 +11,14 @@
 - **Full-width page strip and text-only Stop Audio.** The 1-8 page selector now forms one continuous strip matching all nine board columns, including the far-right utility column. Removed the unsupported Unicode square from Stop Audio.
 - **Classic and Compact UI styles.** Settings now offers saved Style A (the existing header) and Style B (no branding/action header, with a distinct vector Settings gear beside page 8). Both styles respect the saved UI scale and retain a fixed, non-resizable window.
 
-## v3.0.0-alpha.1 - 2026-11-24
+## v3.0.0 - 2026-11-24
 
-- Native cross-platform Rust application is the only active implementation. The Linux and Windows CI matrices, UI rendering, dependency/license policy and Rust and Actions CodeQL checks cover the active source tree.
-- Nobara deployment runs from a user-scoped systemd service and uses the v5 configuration at ~/.config/padfire-rust/padfire.json. Physical controller/audio, Windows interactive acceptance and signed release provenance remain stable-release gates.
+- First stable release of the native Rust Padfire application; the retired GTK/Python v2.4.0 runtime is no longer part of the active application.
+- Launchpad Mini MK1/MK2 MIDI controller support, eight-page pad grid, per-pad sound/script actions, audio routing, monitor, stop/retrigger controls, tray integration and user-scoped IPC.
+- Saved Classic and Compact UI styles, a bounded 75%-125% UI scale, non-resizable grid-fit window, full-width page selector and vector Settings control.
+- KDE Wayland close-to-tray behavior with tray-click/menu/IPC restore; configuration remains in the existing v5 format with backward-compatible defaults.
+- Validation: 149 Rust workspace tests, formatting, strict Clippy, optimized Linux release build, cargo-deny/license verification, isolated Classic/Compact UI renders, Ubuntu/Windows CI builds and Rust/Actions CodeQL. Zero open CodeQL alerts at release preparation.
+- Release scope: Linux x86_64 binary and source. Windows is CI-build tested but not interactively accepted for WASAPI/UI/tray in this release. Binary artifacts are unsigned; signed provenance, Flatpak and distro packages are not provided.
 
 ## v2.4.0 — 2026-11-01
 

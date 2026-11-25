@@ -2530,7 +2530,7 @@ dependencies = [
 
 [[package]]
 name = "padfire"
-version = "3.0.0-alpha.1"
+version = "3.0.0"
 dependencies = [
  "eframe",
  "libc",
@@ -2545,7 +2545,7 @@ dependencies = [
 
 [[package]]
 name = "padfire-core"
-version = "3.0.0-alpha.1"
+version = "3.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2553,7 +2553,7 @@ dependencies = [
 
 [[package]]
 name = "padfire-platform"
-version = "3.0.0-alpha.1"
+version = "3.0.0"
 dependencies = [
  "cpal",
  "libc",

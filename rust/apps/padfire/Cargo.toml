@@ -12,8 +12,8 @@ name = "padfire"
 path = "src/main.rs"
 
 [dependencies]
-padfire-core = { version = "3.0.0-alpha.1", path = "../../crates/padfire-core" }
-padfire-platform = { version = "3.0.0-alpha.1", path = "../../crates/padfire-platform" }
+padfire-core = { version = "3.0.0", path = "../../crates/padfire-core" }
+padfire-platform = { version = "3.0.0", path = "../../crates/padfire-platform" }
 rfd = { version = "0.15.4", default-features = true }
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 

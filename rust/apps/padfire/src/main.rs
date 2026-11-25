@@ -210,12 +210,19 @@ fn run() -> Result<(), String> {
         }
     };
 
+    let initial_scale = f32::from(
+        app.config
+            .ui_scale_percent
+            .clamp(UI_SCALE_MIN_PERCENT, UI_SCALE_MAX_PERCENT),
+    ) / 100.0;
+    let initial_size = base_window_size_for_style(&app.config.ui_style) * initial_scale;
+    let initial_size = [initial_size.x, initial_size.y];
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("Padfire {VERSION}"))
-            .with_inner_size([MAIN_WINDOW_INNER_WIDTH, MAIN_WINDOW_INNER_HEIGHT])
-            .with_min_inner_size([MAIN_WINDOW_INNER_WIDTH, MAIN_WINDOW_INNER_HEIGHT])
-            .with_max_inner_size([MAIN_WINDOW_INNER_WIDTH, MAIN_WINDOW_INNER_HEIGHT])
+            .with_inner_size(initial_size)
+            .with_min_inner_size(initial_size)
+            .with_max_inner_size(initial_size)
             .with_resizable(false),
         renderer: eframe::Renderer::Glow,
         ..Default::default()

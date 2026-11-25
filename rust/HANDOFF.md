@@ -6,7 +6,7 @@ Updated: 2026-11-24
 
 - Repository: Roaring1/Padfire
 - Default branch: main
-- Current application: Padfire 3.0.0-alpha.1, native Rust only
+- Current application: Padfire 3.0.0 stable, native Rust only
 - Rust-only cleanup commit: `7652a22ffc64f733ca87539c5bd1e39bb5f8ef65`
 - Only active branch: `main`; retired v2.4.0 release tag and old development branches removed. Archive checkpoint tags are non-installable history.
 - The former GTK/Python runtime, launcher, packaging, Python tests and GTK-only workflow are retired from the active tree.
@@ -28,6 +28,6 @@ Local Linux: 144 Rust workspace tests, formatting, strict Clippy, optimized rele
 
 The live process reported Launchpad Mini connected, page 0, no pad playing, and monitor enabled to pulseaudio:vm_music. CLI --status, --show and --reload were exercised.
 
-## Remaining gates
+## Stable 3.0.0 release scope and remaining validation
 
-Physical Launchpad MK1/MK2 pad/LED/reconnect; real PipeWire playback/monitor/VU; Windows WASAPI and visible UI/tray; signed release/provenance. Do not claim these manual checks passed based on CI. The application remains alpha until recorded.
+Padfire 3.0.0 is published as a stable source release with an unsigned Linux x86_64 binary. The Nobara KDE Wayland deployment is live with a connected Launchpad Mini and PipeWire/PulseAudio monitor. Hosted Windows format/test/Clippy/release-build CI is green, but Windows WASAPI and visible UI/tray have not had interactive acceptance. Signed release provenance, Flatpak and distro packages are not provided. Do not infer those items from CI or the Linux deployment.

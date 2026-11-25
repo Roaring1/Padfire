@@ -2,7 +2,7 @@
 
 **Review state:** candidate for user inspection; not a published release and not a production cutover.
 
-**Candidate version:** `3.0.0-alpha.1`
+**Reviewed version:** `3.0.0` (the screenshots remain an archived pre-release UI review fixture)
 
 **Review branch:** `ui/launchpad-native-feel-2026-11-22`
 

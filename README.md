@@ -1,6 +1,6 @@
 # Padfire
 
-Native Rust soundboard and Launchpad controller for Linux and Windows. The active application is Padfire 3.0.0-alpha.1. The old GTK/Python v2.4.0 runtime and its packaging have been retired; the current source tree and workstation install use the Rust application only.
+Native Rust soundboard and Launchpad controller for Linux and Windows. The current stable application is Padfire 3.0.0. The old GTK/Python v2.4.0 runtime and its packaging have been retired; the current source tree and workstation install use the Rust application only.
 
 ## Features
 
@@ -43,7 +43,7 @@ Padfire is a local, single-user desktop application. The Script action runs the 
 
 ## Status
 
-The full Rust automated validation is green on Linux and Windows. Physical Launchpad MK1/MK2 pad/LED/reconnect acceptance, real PipeWire playback/loopback/VU verification, Windows WASAPI and visible UI/tray acceptance, and release signing/provenance remain manual release gates. This is an alpha build, not a stable release.
+Padfire 3.0.0 is the stable release. Automated validation passes on Linux and Windows, and the Linux/Nobara desktop has been exercised with the connected Launchpad and PipeWire monitor. Windows interactive WASAPI/UI/tray acceptance and signed release provenance are not included in this release; no signed installer, Flatpak, distro package or automatic updater is provided.
 
 ## Project records
 
