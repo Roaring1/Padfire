@@ -23,6 +23,12 @@ use std::time::{Duration, Instant};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAIN_WINDOW_INNER_WIDTH: f32 = 456.0;
 const MAIN_WINDOW_INNER_HEIGHT: f32 = 486.0;
+const GRID_MAIN_COLUMNS: usize = 8;
+const GRID_PAD_SIZE: f32 = 48.0;
+const GRID_SIDE_PAD_SIZE: f32 = 32.0;
+const GRID_COLUMN_GAP: f32 = 3.0;
+const GRID_BOARD_WIDTH: f32 =
+    GRID_MAIN_COLUMNS as f32 * (GRID_PAD_SIZE + GRID_COLUMN_GAP) + GRID_SIDE_PAD_SIZE;
 
 fn command_for_script_path(path: &Path) -> Result<String, String> {
     let path = path
@@ -993,26 +999,40 @@ impl PadfireApp {
     }
 
     fn draw_page_selector(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            for index in 0..PAGE_COUNT {
-                let selected = self.page == index;
-                if draw_page_button(ui, index + 1, selected).clicked() {
-                    self.change_page(index);
-                }
-            }
-        });
+        egui::Frame::new()
+            .fill(ui.visuals().faint_bg_color)
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::same(0))
+            .show(ui, |ui| {
+                ui.set_min_width(GRID_BOARD_WIDTH);
+                ui.set_max_width(GRID_BOARD_WIDTH);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = GRID_COLUMN_GAP;
+                    for index in 0..PAGE_COUNT {
+                        let selected = self.page == index;
+                        if draw_page_button(ui, index + 1, selected).clicked() {
+                            self.change_page(index);
+                        }
+                    }
+                    // Continue the strip over the narrow utility-pad column.
+                    ui.allocate_exact_size(
+                        Vec2::new(GRID_SIDE_PAD_SIZE, 24.0),
+                        egui::Sense::hover(),
+                    );
+                });
+            });
     }
 
     fn draw_grid(&mut self, ui: &mut egui::Ui) {
         Grid::new("launchpad_grid")
-            .num_columns(9)
-            .spacing(Vec2::new(3.0, 3.0))
+            .num_columns(GRID_MAIN_COLUMNS + 1)
+            .spacing(Vec2::splat(GRID_COLUMN_GAP))
             .show(ui, |ui| {
                 for row in 0..8_u8 {
-                    for column in 0..8_u8 {
-                        self.draw_pad(ui, row * 16 + column, 48.0);
+                    for column in 0..GRID_MAIN_COLUMNS as u8 {
+                        self.draw_pad(ui, row * 16 + column, GRID_PAD_SIZE);
                     }
-                    self.draw_pad(ui, row * 16 + 8, 32.0);
+                    self.draw_pad(ui, row * 16 + 8, GRID_SIDE_PAD_SIZE);
                     ui.end_row();
                 }
             });
@@ -1295,18 +1315,14 @@ fn draw_page_button(ui: &mut egui::Ui, number: usize, selected: bool) -> egui::R
     if selected {
         button = button.fill(ui.visuals().selection.bg_fill);
     }
-    ui.add_sized(Vec2::new(48.0, 24.0), button)
+    ui.add_sized(Vec2::new(GRID_PAD_SIZE, 24.0), button)
 }
 
 fn draw_stop_audio_button(ui: &mut egui::Ui) -> egui::Response {
-    let stop = egui::Button::new(
-        RichText::new("■  STOP AUDIO")
-            .strong()
-            .color(Color32::WHITE),
-    )
-    .min_size(Vec2::new(108.0, 24.0))
-    .fill(Color32::from_rgb(166, 43, 43))
-    .stroke(Stroke::new(1.0, Color32::from_rgb(205, 76, 76)));
+    let stop = egui::Button::new(RichText::new("STOP AUDIO").strong().color(Color32::WHITE))
+        .min_size(Vec2::new(108.0, 24.0))
+        .fill(Color32::from_rgb(166, 43, 43))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(205, 76, 76)));
     ui.add(stop)
 }
 
@@ -2094,6 +2110,17 @@ mod script_picker_tests {
 #[cfg(test)]
 mod ui_policy_tests {
     use super::*;
+
+    #[test]
+    fn page_selector_strip_spans_the_full_nine_column_pad_board() {
+        assert_eq!(GRID_BOARD_WIDTH, 440.0);
+        assert_eq!(
+            GRID_BOARD_WIDTH,
+            GRID_MAIN_COLUMNS as f32 * GRID_PAD_SIZE
+                + GRID_MAIN_COLUMNS as f32 * GRID_COLUMN_GAP
+                + GRID_SIDE_PAD_SIZE,
+        );
+    }
 
     #[test]
     fn fixed_viewport_size_compensates_for_delayed_zoom_activation() {
