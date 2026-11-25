@@ -9,6 +9,7 @@
 - **Tighter main-window fit.** Removed the redundant 32-pixel page-selector spacer, matched the default/minimum window size to the 440-pixel grid plus 8-pixel side insets and a compact 486-pixel content height, and reduced unused vertical panel margin. The main window now fits the pad grid without the oversized right and bottom gutters.
 - **Fixed window with bounded UI scale.** The main Padfire window can no longer be resized by dragging; its min/max size follows the grid footprint. Settings now provides a saved 75%-125% UI scale slider in 5% increments. The entire UI and window resize together, and keyboard zoom shortcuts are disabled so the setting remains authoritative.
 - **Full-width page strip and text-only Stop Audio.** The 1-8 page selector now forms one continuous strip matching all nine board columns, including the far-right utility column. Removed the unsupported Unicode square from Stop Audio.
+- **Classic and Compact UI styles.** Settings now offers saved Style A (the existing header) and Style B (no branding/action header, with a distinct vector Settings gear beside page 8). Both styles respect the saved UI scale and retain a fixed, non-resizable window.
 
 ## v3.0.0-alpha.1 - 2026-11-24
 

@@ -38,6 +38,10 @@ fn default_ui_scale_percent() -> u16 {
     DEFAULT_UI_SCALE_PERCENT
 }
 
+fn default_ui_style() -> String {
+    "A".to_owned()
+}
+
 fn default_action() -> String {
     "play".to_owned()
 }
@@ -75,6 +79,8 @@ pub struct AppConfig {
     pub monitor_sink: String,
     #[serde(default = "default_ui_scale_percent")]
     pub ui_scale_percent: u16,
+    #[serde(default = "default_ui_style")]
+    pub ui_style: String,
     #[serde(default = "empty_pages")]
     pub pages: Vec<PadPage>,
     #[serde(flatten)]
@@ -91,6 +97,7 @@ impl Default for AppConfig {
             monitor_enabled: false,
             monitor_sink: String::new(),
             ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
+            ui_style: default_ui_style(),
             pages: empty_pages(),
             extra: BTreeMap::new(),
         }
@@ -718,6 +725,12 @@ impl AppConfig {
             })
             .unwrap_or(DEFAULT_UI_SCALE_PERCENT);
         root.insert("ui_scale_percent".to_owned(), Value::from(ui_scale_percent));
+        let ui_style = root
+            .get("ui_style")
+            .and_then(Value::as_str)
+            .filter(|value| matches!(*value, "A" | "B"))
+            .unwrap_or("A");
+        root.insert("ui_style".to_owned(), Value::String(ui_style.to_owned()));
         root.insert("version".to_owned(), Value::from(CONFIG_VERSION));
 
         Ok(Self::deserialize(value)?)
@@ -737,6 +750,12 @@ impl AppConfig {
             issues.push(ValidationIssue {
                 path: "version".to_owned(),
                 message: format!("Expected config version {CONFIG_VERSION}."),
+            });
+        }
+        if !matches!(self.ui_style.as_str(), "A" | "B") {
+            issues.push(ValidationIssue {
+                path: "ui_style".to_owned(),
+                message: "UI style must be A or B.".to_owned(),
             });
         }
         if !(UI_SCALE_MIN_PERCENT..=UI_SCALE_MAX_PERCENT).contains(&self.ui_scale_percent) {

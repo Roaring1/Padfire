@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const MAIN_WINDOW_INNER_WIDTH: f32 = 456.0;
 const MAIN_WINDOW_INNER_HEIGHT: f32 = 486.0;
+const COMPACT_WINDOW_INNER_HEIGHT: f32 = MAIN_WINDOW_INNER_HEIGHT - 40.0;
 const GRID_MAIN_COLUMNS: usize = 8;
 const GRID_PAD_SIZE: f32 = 48.0;
 const GRID_SIDE_PAD_SIZE: f32 = 32.0;
@@ -112,12 +113,17 @@ fn stop_all_shortcut_enabled(keyboard_is_editing: bool, space_pressed: bool) -> 
     !keyboard_is_editing && space_pressed
 }
 
-fn fixed_viewport_size_for_zoom(target_zoom: f32, current_zoom: f32) -> Vec2 {
-    let size_factor = target_zoom / current_zoom.max(0.01);
-    Vec2::new(
-        MAIN_WINDOW_INNER_WIDTH * size_factor,
-        MAIN_WINDOW_INNER_HEIGHT * size_factor,
-    )
+fn base_window_size_for_style(style: &str) -> Vec2 {
+    let height = if style == "B" {
+        COMPACT_WINDOW_INNER_HEIGHT
+    } else {
+        MAIN_WINDOW_INNER_HEIGHT
+    };
+    Vec2::new(MAIN_WINDOW_INNER_WIDTH, height)
+}
+
+fn fixed_viewport_size_for_zoom(target_zoom: f32, current_zoom: f32, base_size: Vec2) -> Vec2 {
+    base_size * (target_zoom / current_zoom.max(0.01))
 }
 
 fn main() {
@@ -271,7 +277,7 @@ struct PadfireApp {
     loudness_message: String,
     meter_level_display: f32,
     meter_last_update: Instant,
-    applied_ui_scale_percent: Option<u16>,
+    applied_ui_preset: Option<(u16, String)>,
     pad_pressed_at: HashMap<u8, Instant>,
     pointer_down_pads: HashSet<u8>,
     tray_initialized: bool,
@@ -305,7 +311,7 @@ impl PadfireApp {
             loudness_message: String::new(),
             meter_level_display: 0.0,
             meter_last_update: Instant::now(),
-            applied_ui_scale_percent: None,
+            applied_ui_preset: None,
             pad_pressed_at: HashMap::new(),
             pointer_down_pads: HashSet::new(),
             tray_initialized: false,
@@ -854,7 +860,13 @@ impl PadfireApp {
             .config
             .ui_scale_percent
             .clamp(UI_SCALE_MIN_PERCENT, UI_SCALE_MAX_PERCENT);
-        if self.applied_ui_scale_percent == Some(scale_percent) {
+        let style = if self.config.ui_style == "B" {
+            "B"
+        } else {
+            "A"
+        };
+        let preset_key = (scale_percent, style.to_owned());
+        if self.applied_ui_preset.as_ref() == Some(&preset_key) {
             return;
         }
 
@@ -862,13 +874,17 @@ impl PadfireApp {
         // egui activates set_zoom_factor at the start of the next frame. The
         // viewport size commands from this frame are converted using the
         // current pixels-per-point, so compensate for that pending zoom delta.
-        let content_size = fixed_viewport_size_for_zoom(target_zoom, context.zoom_factor());
+        let content_size = fixed_viewport_size_for_zoom(
+            target_zoom,
+            context.zoom_factor(),
+            base_window_size_for_style(style),
+        );
         context.set_zoom_factor(target_zoom);
         context.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(content_size));
         context.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(content_size));
         context.send_viewport_cmd(egui::ViewportCommand::InnerSize(content_size));
         context.send_viewport_cmd(egui::ViewportCommand::Resizable(false));
-        self.applied_ui_scale_percent = Some(scale_percent);
+        self.applied_ui_preset = Some(preset_key);
     }
 
     fn draw_settings(&mut self, context: &Context) {
@@ -927,6 +943,16 @@ impl PadfireApp {
                 ui.checkbox(
                     &mut self.config.stop_on_page_change,
                     "Stop audio when changing pages",
+                );
+
+                ui.separator();
+                ui.label("Layout style");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.config.ui_style, "A".to_owned(), "A  Classic");
+                    ui.selectable_value(&mut self.config.ui_style, "B".to_owned(), "B  Compact");
+                });
+                ui.small(
+                    "A keeps the current header. B removes it and places Settings beside page 8.",
                 );
 
                 ui.separator();
@@ -1014,11 +1040,16 @@ impl PadfireApp {
                             self.change_page(index);
                         }
                     }
-                    // Continue the strip over the narrow utility-pad column.
-                    ui.allocate_exact_size(
-                        Vec2::new(GRID_SIDE_PAD_SIZE, 24.0),
-                        egui::Sense::hover(),
-                    );
+                    if self.config.ui_style == "B" {
+                        if draw_settings_icon_button(ui).clicked() {
+                            self.open_settings();
+                        }
+                    } else {
+                        ui.allocate_exact_size(
+                            Vec2::new(GRID_SIDE_PAD_SIZE, 24.0),
+                            egui::Sense::hover(),
+                        );
+                    }
                 });
             });
     }
@@ -1273,9 +1304,11 @@ impl eframe::App for PadfireApp {
         self.apply_ui_scale(&context);
         self.handle_keyboard(&context);
 
-        egui::Panel::top("top_bar")
-            .exact_size(40.0)
-            .show(root_ui, |ui| self.draw_top_bar(ui));
+        if self.config.ui_style != "B" {
+            egui::Panel::top("top_bar")
+                .exact_size(40.0)
+                .show(root_ui, |ui| self.draw_top_bar(ui));
+        }
 
         let central_frame =
             egui::Frame::central_panel(root_ui.style()).inner_margin(egui::Margin::symmetric(8, 6));
@@ -1308,6 +1341,43 @@ fn follow_system_theme(context: &Context) {
 
 fn draw_monitor_checkbox(ui: &mut egui::Ui, enabled: &mut bool) -> egui::Response {
     ui.checkbox(enabled, "Mirror audio to a second output")
+}
+
+fn draw_settings_icon_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(GRID_SIDE_PAD_SIZE, 24.0), egui::Sense::click());
+    let visuals = ui.visuals();
+    let button_rect = rect.shrink2(Vec2::splat(2.0));
+    let fill = if response.hovered() {
+        visuals.widgets.hovered.bg_fill
+    } else {
+        visuals.widgets.inactive.bg_fill
+    };
+    let stroke = visuals.widgets.inactive.bg_stroke;
+    let painter = ui.painter();
+    painter.line_segment(
+        [
+            egui::pos2(rect.left() + 1.0, rect.top() + 4.0),
+            egui::pos2(rect.left() + 1.0, rect.bottom() - 4.0),
+        ],
+        Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
+    );
+    painter.rect_filled(button_rect, 4.0, fill);
+    painter.rect_stroke(button_rect, 4.0, stroke, egui::StrokeKind::Inside);
+    let center = button_rect.center();
+    let icon_color = visuals.text_color();
+    for tooth in 0..8 {
+        let angle = std::f32::consts::TAU * tooth as f32 / 8.0;
+        let direction = Vec2::new(angle.cos(), angle.sin());
+        painter.line_segment(
+            [center + direction * 6.0, center + direction * 9.0],
+            Stroke::new(2.0, icon_color),
+        );
+    }
+    painter.circle_stroke(center, 6.2, Stroke::new(1.8, icon_color));
+    painter.circle_filled(center, 2.4, fill);
+    painter.circle_stroke(center, 2.4, Stroke::new(1.4, icon_color));
+    response.on_hover_text("Settings")
 }
 
 fn draw_page_button(ui: &mut egui::Ui, number: usize, selected: bool) -> egui::Response {
@@ -2124,17 +2194,24 @@ mod ui_policy_tests {
 
     #[test]
     fn fixed_viewport_size_compensates_for_delayed_zoom_activation() {
-        let enlarged = fixed_viewport_size_for_zoom(1.25, 1.0);
+        let enlarged = fixed_viewport_size_for_zoom(1.25, 1.0, base_window_size_for_style("A"));
         assert!((enlarged.x - 570.0).abs() < 0.01);
         assert!((enlarged.y - 607.5).abs() < 0.01);
 
-        let reduced = fixed_viewport_size_for_zoom(0.75, 1.25);
+        let reduced = fixed_viewport_size_for_zoom(0.75, 1.25, base_window_size_for_style("A"));
         assert!((reduced.x - 273.6).abs() < 0.01);
         assert!((reduced.y - 291.6).abs() < 0.01);
 
-        let restored = fixed_viewport_size_for_zoom(1.0, 0.75);
+        let restored = fixed_viewport_size_for_zoom(1.0, 0.75, base_window_size_for_style("A"));
         assert!((restored.x - MAIN_WINDOW_INNER_WIDTH / 0.75 * 1.0).abs() < 0.01);
         assert!((restored.y - MAIN_WINDOW_INNER_HEIGHT / 0.75 * 1.0).abs() < 0.01);
+        let compact = base_window_size_for_style("B");
+        assert_eq!(compact.x, MAIN_WINDOW_INNER_WIDTH);
+        assert_eq!(compact.y, MAIN_WINDOW_INNER_HEIGHT - 40.0);
+        assert_eq!(
+            base_window_size_for_style("unknown"),
+            base_window_size_for_style("A")
+        );
     }
 
     #[test]

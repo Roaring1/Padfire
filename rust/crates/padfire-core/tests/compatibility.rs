@@ -14,6 +14,7 @@ fn default_config_matches_released_v5_contract() {
     assert_eq!(config.monitor_sink, "");
     assert_eq!(config.retrigger, "restart");
     assert_eq!(config.ui_scale_percent, 100);
+    assert_eq!(config.ui_style, "A");
 }
 
 #[test]
@@ -26,10 +27,11 @@ fn v1_migration_adds_eight_pages_and_v5_defaults() {
     assert_eq!(config.retrigger, "restart");
     assert!(!config.monitor_enabled);
     assert_eq!(config.ui_scale_percent, 100);
+    assert_eq!(config.ui_style, "A");
 }
 
 #[test]
-fn ui_scale_is_bounded_and_round_trips() {
+fn ui_scale_and_visual_style_are_bounded_and_round_trips() {
     let minimum = AppConfig::from_json(br#"{"ui_scale_percent": 1}"#).unwrap();
     assert_eq!(minimum.ui_scale_percent, 75);
 
@@ -41,11 +43,15 @@ fn ui_scale_is_bounded_and_round_trips() {
 
     let saved_config = AppConfig {
         ui_scale_percent: 115,
+        ui_style: "B".to_owned(),
         ..AppConfig::default()
     };
     let saved = saved_config.to_pretty_json().unwrap();
     let restored = AppConfig::from_json(&saved).unwrap();
     assert_eq!(restored.ui_scale_percent, 115);
+    assert_eq!(restored.ui_style, "B");
+    let unknown_style = AppConfig::from_json(br#"{"ui_style":"C"}"#).unwrap();
+    assert_eq!(unknown_style.ui_style, "A");
 }
 
 #[test]
