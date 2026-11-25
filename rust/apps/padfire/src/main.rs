@@ -188,8 +188,8 @@ fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("Padfire {VERSION}"))
-            .with_inner_size([540.0, 586.0])
-            .with_min_inner_size([490.0, 510.0])
+            .with_inner_size([456.0, 510.0])
+            .with_min_inner_size([456.0, 486.0])
             .with_resizable(true),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
@@ -945,7 +945,6 @@ impl PadfireApp {
                     self.change_page(index);
                 }
             }
-            ui.allocate_exact_size(Vec2::new(32.0, 24.0), egui::Sense::hover());
         });
     }
 
@@ -1202,13 +1201,17 @@ impl eframe::App for PadfireApp {
             .exact_size(40.0)
             .show(root_ui, |ui| self.draw_top_bar(ui));
 
-        egui::CentralPanel::default().show(root_ui, |ui| {
-            ui.vertical_centered(|ui| {
-                self.draw_page_selector(ui);
-                ui.add_space(5.0);
-                self.draw_grid(ui);
+        let central_frame =
+            egui::Frame::central_panel(root_ui.style()).inner_margin(egui::Margin::symmetric(8, 6));
+        egui::CentralPanel::default()
+            .frame(central_frame)
+            .show(root_ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    self.draw_page_selector(ui);
+                    ui.add_space(5.0);
+                    self.draw_grid(ui);
+                });
             });
-        });
 
         self.draw_editor(&context);
         self.draw_settings(&context);

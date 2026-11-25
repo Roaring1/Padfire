@@ -97,7 +97,7 @@ for image in "$output_dir/01-main-grid.png" "$output_dir/02-settings.png"; do
   }
   width="${dimensions%x*}"
   height="${dimensions#*x}"
-  (( width >= 480 && height >= 480 )) || {
+  (( width >= 456 && height >= 480 )) || {
     echo "Screenshot is unexpectedly small: $image ($dimensions)" >&2
     exit 1
   }
