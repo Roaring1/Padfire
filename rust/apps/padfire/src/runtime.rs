@@ -654,6 +654,17 @@ impl AppRuntime {
             match self.midi_events.try_recv() {
                 Ok(MidiEvent::PadPressed(control)) => {
                     let note = control.note();
+                    let is_script_pad = config
+                        .pages
+                        .get(*page)
+                        .and_then(|pads| pads.get(&note.to_string()))
+                        .is_some_and(|assignment| assignment.action_kind() == PadAction::Script);
+                    if is_script_pad {
+                        eprintln!(
+                            "Padfire MIDI script-pad press received: page={} note={}",
+                            *page, note
+                        );
+                    }
                     self.signals.record_pad_press(note);
                     self.trigger_pad(config, *page, note, status);
                 }
@@ -945,10 +956,19 @@ impl AppRuntime {
                     pad,
                     command,
                 } => {
-                    if let Err(error) = self.processes.start_script(token, pad, command, false) {
-                        *status = format!("Could not queue script: {error}");
-                    } else {
-                        *status = format!("Starting script on {}", pad.to_key());
+                    let pad_label = pad.to_key();
+                    match self.processes.start_script(token, pad, command, false) {
+                        Err(error) => {
+                            eprintln!(
+                                "Padfire script queue failed: pad={} error={}",
+                                pad_label, error
+                            );
+                            *status = format!("Could not queue script: {error}");
+                        }
+                        Ok(()) => {
+                            eprintln!("Padfire script queue accepted: pad={pad_label}");
+                            *status = format!("Starting script on {pad_label}");
+                        }
                     }
                 }
                 ActionEffect::StopScript { pad, .. } => {
