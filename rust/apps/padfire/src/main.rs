@@ -4,7 +4,10 @@ mod runtime;
 use eframe::egui::{self, Align, Color32, Context, Grid, Layout, RichText, Stroke, Vec2};
 use padfire_core::audio::OutputDevice;
 use padfire_core::ipc::{CliAction, IpcCommand, StatusResponse};
-use padfire_core::{AppConfig, PAGE_COUNT, PadAction, PadAssignment, PadKey};
+use padfire_core::{
+    AppConfig, PAGE_COUNT, PadAction, PadAssignment, PadKey, UI_SCALE_MAX_PERCENT,
+    UI_SCALE_MIN_PERCENT,
+};
 use padfire_platform::audio_engine::enumerate_output_devices;
 use padfire_platform::config_store::{ConfigStore, LoadState};
 use padfire_platform::ipc_server;
@@ -18,6 +21,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const MAIN_WINDOW_INNER_WIDTH: f32 = 456.0;
+const MAIN_WINDOW_INNER_HEIGHT: f32 = 486.0;
 
 fn command_for_script_path(path: &Path) -> Result<String, String> {
     let path = path
@@ -99,6 +104,14 @@ fn page_shortcut_index(keyboard_is_editing: bool, pressed: [bool; 8]) -> Option<
 
 fn stop_all_shortcut_enabled(keyboard_is_editing: bool, space_pressed: bool) -> bool {
     !keyboard_is_editing && space_pressed
+}
+
+fn fixed_viewport_size_for_zoom(target_zoom: f32, current_zoom: f32) -> Vec2 {
+    let size_factor = target_zoom / current_zoom.max(0.01);
+    Vec2::new(
+        MAIN_WINDOW_INNER_WIDTH * size_factor,
+        MAIN_WINDOW_INNER_HEIGHT * size_factor,
+    )
 }
 
 fn main() {
@@ -188,9 +201,10 @@ fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("Padfire {VERSION}"))
-            .with_inner_size([456.0, 486.0])
-            .with_min_inner_size([456.0, 486.0])
-            .with_resizable(true),
+            .with_inner_size([MAIN_WINDOW_INNER_WIDTH, MAIN_WINDOW_INNER_HEIGHT])
+            .with_min_inner_size([MAIN_WINDOW_INNER_WIDTH, MAIN_WINDOW_INNER_HEIGHT])
+            .with_max_inner_size([MAIN_WINDOW_INNER_WIDTH, MAIN_WINDOW_INNER_HEIGHT])
+            .with_resizable(false),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
@@ -198,7 +212,12 @@ fn run() -> Result<(), String> {
     eframe::run_native(
         "Padfire",
         options,
-        Box::new(move |_creation_context| Ok(Box::new(app))),
+        Box::new(move |creation_context| {
+            creation_context
+                .egui_ctx
+                .options_mut(|options| options.zoom_with_keyboard = false);
+            Ok(Box::new(app))
+        }),
     )
     .map_err(|error| error.to_string())
 }
@@ -246,6 +265,7 @@ struct PadfireApp {
     loudness_message: String,
     meter_level_display: f32,
     meter_last_update: Instant,
+    applied_ui_scale_percent: Option<u16>,
     pad_pressed_at: HashMap<u8, Instant>,
     pointer_down_pads: HashSet<u8>,
     tray_initialized: bool,
@@ -279,6 +299,7 @@ impl PadfireApp {
             loudness_message: String::new(),
             meter_level_display: 0.0,
             meter_last_update: Instant::now(),
+            applied_ui_scale_percent: None,
             pad_pressed_at: HashMap::new(),
             pointer_down_pads: HashSet::new(),
             tray_initialized: false,
@@ -822,6 +843,28 @@ impl PadfireApp {
         }
     }
 
+    fn apply_ui_scale(&mut self, context: &Context) {
+        let scale_percent = self
+            .config
+            .ui_scale_percent
+            .clamp(UI_SCALE_MIN_PERCENT, UI_SCALE_MAX_PERCENT);
+        if self.applied_ui_scale_percent == Some(scale_percent) {
+            return;
+        }
+
+        let target_zoom = f32::from(scale_percent) / 100.0;
+        // egui activates set_zoom_factor at the start of the next frame. The
+        // viewport size commands from this frame are converted using the
+        // current pixels-per-point, so compensate for that pending zoom delta.
+        let content_size = fixed_viewport_size_for_zoom(target_zoom, context.zoom_factor());
+        context.set_zoom_factor(target_zoom);
+        context.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(content_size));
+        context.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(content_size));
+        context.send_viewport_cmd(egui::ViewportCommand::InnerSize(content_size));
+        context.send_viewport_cmd(egui::ViewportCommand::Resizable(false));
+        self.applied_ui_scale_percent = Some(scale_percent);
+    }
+
     fn draw_settings(&mut self, context: &Context) {
         if !self.settings_open {
             return;
@@ -879,6 +922,18 @@ impl PadfireApp {
                     &mut self.config.stop_on_page_change,
                     "Stop audio when changing pages",
                 );
+
+                ui.separator();
+                ui.label("UI scale");
+                ui.add(
+                    egui::Slider::new(
+                        &mut self.config.ui_scale_percent,
+                        UI_SCALE_MIN_PERCENT..=UI_SCALE_MAX_PERCENT,
+                    )
+                    .step_by(5.0)
+                    .suffix("%"),
+                );
+                ui.small("Adjusts the fixed window and all controls from 75% to 125%.");
 
                 ui.separator();
                 draw_monitor_checkbox(ui, &mut self.config.monitor_enabled);
@@ -1195,6 +1250,7 @@ impl eframe::App for PadfireApp {
         // Follow the desktop's light/dark theme (KDE, Windows, etc.).
         // Eframe supplies the native system theme through egui input.
         follow_system_theme(&context);
+        self.apply_ui_scale(&context);
         self.handle_keyboard(&context);
 
         egui::Panel::top("top_bar")
@@ -2038,6 +2094,21 @@ mod script_picker_tests {
 #[cfg(test)]
 mod ui_policy_tests {
     use super::*;
+
+    #[test]
+    fn fixed_viewport_size_compensates_for_delayed_zoom_activation() {
+        let enlarged = fixed_viewport_size_for_zoom(1.25, 1.0);
+        assert!((enlarged.x - 570.0).abs() < 0.01);
+        assert!((enlarged.y - 607.5).abs() < 0.01);
+
+        let reduced = fixed_viewport_size_for_zoom(0.75, 1.25);
+        assert!((reduced.x - 273.6).abs() < 0.01);
+        assert!((reduced.y - 291.6).abs() < 0.01);
+
+        let restored = fixed_viewport_size_for_zoom(1.0, 0.75);
+        assert!((restored.x - MAIN_WINDOW_INNER_WIDTH / 0.75 * 1.0).abs() < 0.01);
+        assert!((restored.y - MAIN_WINDOW_INNER_HEIGHT / 0.75 * 1.0).abs() < 0.01);
+    }
 
     #[test]
     fn titlebar_close_hides_only_when_tray_exists_and_quit_was_not_requested() {

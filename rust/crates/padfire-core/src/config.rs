@@ -11,6 +11,9 @@ use std::fmt;
 
 pub const CONFIG_VERSION: u64 = 5;
 pub const PAGE_COUNT: usize = 8;
+pub const UI_SCALE_MIN_PERCENT: u16 = 75;
+pub const UI_SCALE_MAX_PERCENT: u16 = 125;
+pub const DEFAULT_UI_SCALE_PERCENT: u16 = 100;
 pub const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 /// Page keys and runtime PadKey identities use an unsigned byte.
 pub const MAX_CONFIG_PAGES: usize = 256;
@@ -29,6 +32,10 @@ fn default_version() -> u64 {
 
 fn default_retrigger() -> String {
     "restart".to_owned()
+}
+
+fn default_ui_scale_percent() -> u16 {
+    DEFAULT_UI_SCALE_PERCENT
 }
 
 fn default_action() -> String {
@@ -66,6 +73,8 @@ pub struct AppConfig {
     pub monitor_enabled: bool,
     #[serde(default)]
     pub monitor_sink: String,
+    #[serde(default = "default_ui_scale_percent")]
+    pub ui_scale_percent: u16,
     #[serde(default = "empty_pages")]
     pub pages: Vec<PadPage>,
     #[serde(flatten)]
@@ -81,6 +90,7 @@ impl Default for AppConfig {
             retrigger: default_retrigger(),
             monitor_enabled: false,
             monitor_sink: String::new(),
+            ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
             pages: empty_pages(),
             extra: BTreeMap::new(),
         }
@@ -697,6 +707,17 @@ impl AppConfig {
         if !retrigger_is_valid {
             root.insert("retrigger".to_owned(), Value::String("restart".to_owned()));
         }
+        let ui_scale_percent = root
+            .get("ui_scale_percent")
+            .and_then(Value::as_u64)
+            .map(|value| {
+                value.clamp(
+                    u64::from(UI_SCALE_MIN_PERCENT),
+                    u64::from(UI_SCALE_MAX_PERCENT),
+                ) as u16
+            })
+            .unwrap_or(DEFAULT_UI_SCALE_PERCENT);
+        root.insert("ui_scale_percent".to_owned(), Value::from(ui_scale_percent));
         root.insert("version".to_owned(), Value::from(CONFIG_VERSION));
 
         Ok(Self::deserialize(value)?)
@@ -716,6 +737,14 @@ impl AppConfig {
             issues.push(ValidationIssue {
                 path: "version".to_owned(),
                 message: format!("Expected config version {CONFIG_VERSION}."),
+            });
+        }
+        if !(UI_SCALE_MIN_PERCENT..=UI_SCALE_MAX_PERCENT).contains(&self.ui_scale_percent) {
+            issues.push(ValidationIssue {
+                path: "ui_scale_percent".to_owned(),
+                message: format!(
+                    "UI scale must be between {UI_SCALE_MIN_PERCENT}% and {UI_SCALE_MAX_PERCENT}%."
+                ),
             });
         }
         if self.pages.len() < PAGE_COUNT {

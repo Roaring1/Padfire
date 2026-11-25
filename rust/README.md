@@ -46,6 +46,8 @@ Useful commands:
 
 The Nobara workstation runs the installed binary through the padfire-rust.service user unit, attached to graphical-session.target. The unit starts with the graphical session and is managed with systemctl --user. The installer itself does not silently create or enable a service.
 
+The main window is fixed-size and cannot be resized by dragging. Its min/max dimensions track the pad-grid footprint. Use Settings > UI scale to resize the entire interface and its window together from 75% to 125% in 5% increments; Save persists the choice, while Cancel restores the previous scale. The built-in keyboard zoom shortcuts are disabled so the window cannot drift away from the selected size.
+
 On KDE Wayland, the titlebar close button sends Padfire to the tray instead of exiting. KWin hides the window from the taskbar, pager and app switcher while the soundboard process and controller workers stay active. Left-click the tray icon or choose Show from its menu to restore and focus the window. This uses a short-lived, process-scoped KWin script through `qdbus`, because Wayland does not support the generic window hide/unminimize calls used by other backends.
 
 ## User configuration

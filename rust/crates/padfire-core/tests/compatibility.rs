@@ -13,6 +13,7 @@ fn default_config_matches_released_v5_contract() {
     assert!(!config.monitor_enabled);
     assert_eq!(config.monitor_sink, "");
     assert_eq!(config.retrigger, "restart");
+    assert_eq!(config.ui_scale_percent, 100);
 }
 
 #[test]
@@ -24,6 +25,27 @@ fn v1_migration_adds_eight_pages_and_v5_defaults() {
     assert_eq!(config.pages[0]["0"].action, "play");
     assert_eq!(config.retrigger, "restart");
     assert!(!config.monitor_enabled);
+    assert_eq!(config.ui_scale_percent, 100);
+}
+
+#[test]
+fn ui_scale_is_bounded_and_round_trips() {
+    let minimum = AppConfig::from_json(br#"{"ui_scale_percent": 1}"#).unwrap();
+    assert_eq!(minimum.ui_scale_percent, 75);
+
+    let maximum = AppConfig::from_json(br#"{"ui_scale_percent": 250}"#).unwrap();
+    assert_eq!(maximum.ui_scale_percent, 125);
+
+    let invalid = AppConfig::from_json(br#"{"ui_scale_percent": "large"}"#).unwrap();
+    assert_eq!(invalid.ui_scale_percent, 100);
+
+    let saved_config = AppConfig {
+        ui_scale_percent: 115,
+        ..AppConfig::default()
+    };
+    let saved = saved_config.to_pretty_json().unwrap();
+    let restored = AppConfig::from_json(&saved).unwrap();
+    assert_eq!(restored.ui_scale_percent, 115);
 }
 
 #[test]

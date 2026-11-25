@@ -13,8 +13,9 @@ pub mod runtime;
 
 pub use actions::{ActionEffect, PadActivity, plan_pad_press};
 pub use config::{
-    AppConfig, CONFIG_VERSION, ConfigError, MAX_CONFIG_BYTES, PAGE_COUNT, PadAction, PadAssignment,
-    PadPage, RetriggerMode, ValidationIssue,
+    AppConfig, CONFIG_VERSION, ConfigError, DEFAULT_UI_SCALE_PERCENT, MAX_CONFIG_BYTES, PAGE_COUNT,
+    PadAction, PadAssignment, PadPage, RetriggerMode, UI_SCALE_MAX_PERCENT, UI_SCALE_MIN_PERCENT,
+    ValidationIssue,
 };
 pub use midi::{
     Control, LED_AMBER, LED_DIM, LED_GREEN, LED_OFF, LED_ORANGE, LED_PG_HAS, LED_RED,
