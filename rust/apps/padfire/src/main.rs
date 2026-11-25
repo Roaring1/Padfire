@@ -188,7 +188,7 @@ fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("Padfire {VERSION}"))
-            .with_inner_size([456.0, 510.0])
+            .with_inner_size([456.0, 486.0])
             .with_min_inner_size([456.0, 486.0])
             .with_resizable(true),
         renderer: eframe::Renderer::Glow,
