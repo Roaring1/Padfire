@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(600);
 const TEST_TIMEOUT: Duration = Duration::from_secs(30);
-const CROSSHAIR_TIMEOUT: Duration = Duration::from_secs(5);
+// Crosshair waits up to ten seconds for a cold-start overlay acknowledgement.
+const CROSSHAIR_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const MAX_OUTPUT_LINES: usize = 10;
 const MAX_OUTPUT_LINE_CHARS: usize = 512;
@@ -1172,7 +1173,7 @@ mod tests {
     fn process_timeouts_match_the_released_behavior() {
         assert_eq!(SCRIPT_TIMEOUT, Duration::from_secs(600));
         assert_eq!(TEST_TIMEOUT, Duration::from_secs(30));
-        assert_eq!(CROSSHAIR_TIMEOUT, Duration::from_secs(5));
+        assert_eq!(CROSSHAIR_TIMEOUT, Duration::from_secs(15));
     }
 
     #[test]
